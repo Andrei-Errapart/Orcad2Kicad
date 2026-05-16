@@ -247,7 +247,7 @@ Pin name validation: all bytes must be printable ASCII (32–126). Coordinate va
 
 The **body point** is where the pin stub meets the symbol body rectangle. The **hotpoint** is the wire connection end of the pin. Pin direction is derived from the hotpoint→body vector. Pin length is the distance between hotpoint and body point.
 
-**Pin numbering**: The pin number is the **1-based sequential position** in the Cache pin list. Pin 1 is the first record, pin 2 the second, etc. This order corresponds to the pin numbers used in page-stream pin placement records: page-stream `pin_num = N` references the N-th pin in the Cache list for that cell. The pin *name* (e.g., "Vdda", "AD20") is distinct from the pin *number* (its position in the list).
+**Pin numbering**: Physical pin numbers are stored in a separate **0x7f-separated pin number list** (see below). The N-th entry in that list is the physical pin number for the N-th pin in the IC-style Cache pin list. For most ICs and connectors the list is simply sequential (1, 2, 3, ...), but for components like DIP switches the ordering differs from the Cache storage order — e.g., DIP-6 maps cache positions to physical pins [1, 2, 3, 8, 7, 6, 4, 5, 9, 10, 11, 12] following the standard DIP convention (down the left side, up the right side). Page-stream `pin_num = N` references the N-th pin in the Cache list for that cell. The pin *name* (e.g., "Vdda", "AD20") is distinct from the pin *number*.
 
 **Pin names**: For simple components (R, C), pin names are just numbers ("1", "2"). For ICs and connectors, names may be signal names ("DAT0", "CLK") or "NC" for unconnected pins. BGA pins use ball designators as names. Multi-pin components may have duplicate names (e.g., 107 "NC" pins on eMMC(153BGA)).
 
@@ -407,6 +407,8 @@ null(1)                  null terminator
 ```
 
 Pin numbering is sequential: 1st pin = pin 1, 2nd = pin 2, etc. BGA pins use ball designators (e.g., "AJ22", "AA21") as names.
+
+The same 0x7f-separated format also appears in the **Cache stream** for non-BGA cells, indexed by `CellName\x00` (without `.Normal` suffix). Here the entries are physical pin *numbers* (as ASCII strings), not pin *names*. Each entry maps the corresponding IC-style Cache pin at the same index to its physical pin number. For most components the list is simply `["1", "2", ..., "N"]`, but for DIP-package components the list reflects the standard DIP pin convention (e.g., DIP-8: `["1","2","3","4","5","6","7","8","16","15","14","13","12","11","10","9"]`).
 
 ### Hierarchy Stream
 

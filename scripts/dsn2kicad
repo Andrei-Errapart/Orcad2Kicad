@@ -2734,6 +2734,62 @@ def _parse_cache_graphics(data, aps, scan_end):
     return body_rects, body_lines, text_annotations
 
 
+def _parse_cache_pin_numbers(data):
+    """Parse 0x7f-separated pin number lists from Cache.
+
+    These appear as: CellName\\x00 count(u16LE) then count entries of
+    u16LE(len) + ASCII(len) + \\x7f.  Each entry is the physical pin
+    number for the corresponding pin in the IC-style (RECORD_MARKER)
+    pin list at the same index.
+
+    Returns {cell_name: [pin_number_str, ...]}.
+    """
+    PIN_NUM_RE = re.compile(
+        rb'([A-Za-z0-9_.+/()-]{2,30})\x00(..)',
+        re.DOTALL,
+    )
+    result = {}
+    for m in PIN_NUM_RE.finditer(data):
+        name = m.group(1).decode('ascii')
+        if '.Normal' in name or '.Convert' in name:
+            continue
+        count = struct.unpack_from('<H', m.group(2), 0)[0]
+        if count < 2 or count > 500:
+            continue
+        p = m.end()
+        nlen = struct.unpack_from('<H', data, p)[0] if p + 2 <= len(data) else 0
+        if nlen < 1 or nlen > 10 or p + 2 + nlen >= len(data):
+            continue
+        nb = data[p + 2:p + 2 + nlen]
+        if not all(32 <= b < 127 for b in nb):
+            continue
+        if data[p + 2 + nlen] not in (0x7f, 0x00):
+            continue
+        entries = []
+        p2 = p
+        ok = True
+        for _ in range(count):
+            if p2 + 2 > len(data):
+                ok = False
+                break
+            nl = struct.unpack_from('<H', data, p2)[0]
+            if nl < 1 or nl > 10 or p2 + 2 + nl >= len(data):
+                ok = False
+                break
+            eb = data[p2 + 2:p2 + 2 + nl]
+            if not all(32 <= b < 127 for b in eb):
+                ok = False
+                break
+            entries.append(eb.decode('ascii'))
+            p2 += 2 + nl
+            while p2 < len(data) and data[p2] in (0x00, 0x7f):
+                p2 += 1
+        if ok and len(entries) == count:
+            if name not in result or len(entries) > len(result[name]):
+                result[name] = entries
+    return result
+
+
 def parse_cache_cells(ole):
     """Parse Cache stream to extract cell pin definitions, body rects, lines,
     and text annotations.
@@ -2810,11 +2866,14 @@ def parse_cache_cells(ole):
                      or len(pins) > len(cells[cell_name])):
             cells[cell_name] = pins
 
-    return cells, body_rects, body_lines, cell_text_annotations
+    pin_numbers = _parse_cache_pin_numbers(data)
+
+    return cells, body_rects, body_lines, pin_numbers, cell_text_annotations
 
 
 def register_cache_cells(cache_cells, cache_body_rects=None,
                          cache_body_lines=None,
+                         cache_pin_numbers=None,
                          cache_text_annotations=None):
     """Populate _cell_pin_defs, _cell_body_rects, _cell_body_lines,
     _cell_text_annotations from Cache data.
@@ -2828,6 +2887,8 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         cache_body_rects = {}
     if cache_body_lines is None:
         cache_body_lines = {}
+    if cache_pin_numbers is None:
+        cache_pin_numbers = {}
     if cache_text_annotations is None:
         cache_text_annotations = {}
     for cell_name, pins in cache_cells.items():
@@ -2838,13 +2899,18 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         cx = (min(hxs) + max(hxs)) / 2
         cy = (min(hys) + max(hys)) / 2
 
+        num_list = cache_pin_numbers.get(cell_name)
         pin_positions = []
         for pin_idx, (pin_name, hx, hy, bx, by) in enumerate(pins, 1):
+            if num_list and pin_idx <= len(num_list):
+                pin_num = num_list[pin_idx - 1]
+            else:
+                pin_num = str(pin_idx)
             sym_hx = round((hx - cx) * UNIT_TO_MM, 2)
             sym_hy = round(-(hy - cy) * UNIT_TO_MM, 2)
             sym_bx = round((bx - cx) * UNIT_TO_MM, 2)
             sym_by = round(-(by - cy) * UNIT_TO_MM, 2)
-            pin_positions.append((str(pin_idx), sym_hx, sym_hy, pin_name,
+            pin_positions.append((pin_num, sym_hx, sym_hy, pin_name,
                                   sym_bx, sym_by))
         _cell_pin_defs[cell_name] = pin_positions
         _cell_centers[cell_name] = (cx, cy)
@@ -3216,8 +3282,8 @@ def main():
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
-    cache_cells, cache_body_rects, cache_body_lines, cache_text_annotations = parse_cache_cells(ole)
-    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_text_annotations)
+    cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations = parse_cache_cells(ole)
+    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations)
     cache_count = len(_cell_pin_defs)
     for cname, cpins in cache_cells.items():
         print(f"    {cname}: {len(cpins)} pins")

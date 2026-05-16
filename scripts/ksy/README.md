@@ -20,7 +20,7 @@ needed.
 | `dsn_cache.ksy` | `Cache` | `parse_cache_cells`, `_parse_cache_graphics` |
 | `dsn_library.ksy` | `Library` | `parse_title_block` (heuristic) and 60-byte style records |
 | `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `parse_hierarchy_nets` |
-| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, `Packages Directory`, `Symbols Directory`, `Views Directory`, `ExportBlocks Directory`, `Graphics Directory` | reverse-engineered from CPU board sample, all 104 Cells/Parts entries consumed exactly |
+| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, `Packages Directory`, `Symbols Directory`, `Views Directory`, `ExportBlocks Directory`, `Graphics Directory` | all 104 Cells/Parts entries consumed exactly on the example of the CPU board |
 
 Streams not modeled (no parser in `dsn2kicad`, format unknown):
 `AdminData`, `NetBundleMapData`, `Packages/*` (per-unit binary, not the
@@ -35,7 +35,7 @@ to the marker. Kaitai prefers strictly described layouts; here we model
 records as `repeat-until: _io.eof` with a parametric "skip until marker"
 helper. This loses some declarativeness but matches what `dsn2kicad`
 actually does — the format has padding/unknown bytes between records that
-have not been fully reverse-engineered.
+have not been fully determined.
 
 A stricter alternative (record header with explicit length field) may
 become possible once more of the format is known. Treat these sketches as

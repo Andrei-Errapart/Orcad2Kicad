@@ -36,7 +36,7 @@ types:
     doc: |
       Header preamble. Starts with the bytes 'B1' followed by the
       schematic name (e.g. "SCHEMATIC1"). The exact layout after the
-      schematic name has not been reverse-engineered; consumers should
+      schematic name has not been determined; consumers should
       seek to the first marker to begin reading net records.
     seq:
       - id: magic

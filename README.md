@@ -42,7 +42,7 @@ Walks the OLE compound document and prints all parseable records from every stre
 
 ## Documentation
 
-- [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — Reverse-engineered DSN binary format specification
+- [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — DSN binary format specification
 - [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN streams
 
 ## Tests

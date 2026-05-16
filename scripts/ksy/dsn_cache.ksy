@@ -102,10 +102,7 @@ types:
       The bbox is typically ~8×9 OrCAD units (~2.0×2.3 mm), i.e. one
       glyph cell.
 
-      Historical note: earlier reverse-engineering reads (including the
-      first version of this file) treated this record as a "line
-      segment" between (bbox_x1, bbox_y1) and (bbox_x2, bbox_y2),
-      yielding spurious diagonal 45° lines. The third coordinate pair —
+      The third coordinate pair —
       a near-duplicate of the first — is actually the text anchor and
       is what gives the giveaway. The trailing bytes carry the embedded
       ASCII character. See doc/ORCAD_DSN_FILES.md for the corrected

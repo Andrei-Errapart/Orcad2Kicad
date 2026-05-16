@@ -2723,7 +2723,7 @@ def parse_cache_cells(ole):
                 if zeros == 0:
                     name_len = struct.unpack_from('<H', data, idx + 8)[0]
                     name_end = idx + 10 + name_len
-                    if (1 <= name_len <= 10 and name_end + 17 <= len(data)
+                    if (1 <= name_len <= 40 and name_end + 17 <= len(data)
                             and data[name_end] == 0):
                         name_bytes = data[idx + 10:name_end]
                         if all(32 <= b < 127 for b in name_bytes):
@@ -2766,26 +2766,13 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         cy = (min(hys) + max(hys)) / 2
 
         pin_positions = []
-        name_counts = {}
-        for pin_name, hx, hy, bx, by in pins:
-            name_counts[pin_name] = name_counts.get(pin_name, 0) + 1
-
-        name_seen = {}
-        for pin_name, hx, hy, bx, by in pins:
-            if name_counts[pin_name] > 1:
-                idx = name_seen.get(pin_name, 0) + 1
-                name_seen[pin_name] = idx
-                unique_name = f"{pin_name}_{idx}"
-            else:
-                unique_name = pin_name
+        for pin_idx, (pin_name, hx, hy, bx, by) in enumerate(pins, 1):
             sym_hx = round((hx - cx) * UNIT_TO_MM, 2)
             sym_hy = round(-(hy - cy) * UNIT_TO_MM, 2)
             sym_bx = round((bx - cx) * UNIT_TO_MM, 2)
             sym_by = round(-(by - cy) * UNIT_TO_MM, 2)
-            pin_positions.append((unique_name, sym_hx, sym_hy, pin_name,
+            pin_positions.append((str(pin_idx), sym_hx, sym_hy, pin_name,
                                   sym_bx, sym_by))
-
-        pin_positions.sort(key=lambda p: _pin_sort_key(p[0]))
         _cell_pin_defs[cell_name] = pin_positions
         _cell_centers[cell_name] = (cx, cy)
         _cell_pin_lists[cell_name] = [(hx, hy) for _, hx, hy, _, _ in pins]

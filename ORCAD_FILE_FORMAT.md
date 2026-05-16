@@ -234,7 +234,7 @@ After the graphic primitives, pin records follow as `RECORD_MARKER`-delimited re
 ```
 ff e4 5c 39              RECORD_MARKER
 00 00 00 00              4 zero bytes
-name_len(2, LE)          pin name length (1–10)
+name_len(2, LE)          pin name length (1–40)
 pin_name(name_len)       ASCII pin name (e.g., "1", "DAT0", "NC")
 null(1)                  null terminator
 body_x(4, LE signed)     X where pin meets body
@@ -243,11 +243,11 @@ hot_x(4, LE signed)      X wire connection point (hotspot)
 hot_y(4, LE signed)      Y wire connection point (hotspot)
 ```
 
-Pin name validation: all bytes must be printable ASCII (32–126). Coordinate validation: all four values must be within ±5000 units.
+Pin name validation: all bytes must be printable ASCII (32–126). Coordinate validation: all four values must be within ±5000 units. Pin names can be up to 40 characters (e.g., `SEL_DFC/SCL_DFC1` at 16 chars).
 
 The **body point** is where the pin stub meets the symbol body rectangle. The **hotpoint** is the wire connection end of the pin. Pin direction is derived from the hotpoint→body vector. Pin length is the distance between hotpoint and body point.
 
-**Pin ordering**: Pins appear in the Cache in the order they were defined in the OLB library. This order corresponds to the 1-based pin numbers used in page-stream pin placement records: page-stream `pin_num = N` references the N-th pin in the Cache list for that cell.
+**Pin numbering**: The pin number is the **1-based sequential position** in the Cache pin list. Pin 1 is the first record, pin 2 the second, etc. This order corresponds to the pin numbers used in page-stream pin placement records: page-stream `pin_num = N` references the N-th pin in the Cache list for that cell. The pin *name* (e.g., "Vdda", "AD20") is distinct from the pin *number* (its position in the list).
 
 **Pin names**: For simple components (R, C), pin names are just numbers ("1", "2"). For ICs and connectors, names may be signal names ("DAT0", "CLK") or "NC" for unconnected pins. BGA pins use ball designators as names. Multi-pin components may have duplicate names (e.g., 107 "NC" pins on eMMC(153BGA)).
 
@@ -393,7 +393,20 @@ the "Title-block" subsection of "Page Streams" below.
 
 ### Packages
 
-Four streams `CPU_0` through `CPU_3` — these are the four units of the CPU symbol. Binary format containing pin definitions, coordinates, and graphics for each unit.
+Four streams `CPU_0` through `CPU_3` — these are the four units of the CPU symbol. Binary format containing pin definitions, coordinates, and graphics for each unit. Uses a different pin list encoding from the IC-style Cache records:
+
+```
+pin_count(2, LE)         number of pins in this unit
+name_len(2, LE)          length of first pin name
+pin_name(name_len)       ASCII ball designator (e.g., "AD20", "V18")
+null(1)                  null terminator
+[0x7f separator          marker between pins
+ name_len(2, LE)         length of next pin name
+ pin_name(name_len)      next pin name
+ null(1)]...             repeats (pin_count - 1) times
+```
+
+Pin numbering is sequential: 1st pin = pin 1, 2nd = pin 2, etc. BGA pins use ball designators (e.g., "AJ22", "AA21") as names.
 
 ### Hierarchy Stream
 

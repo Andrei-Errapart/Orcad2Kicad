@@ -2,9 +2,8 @@
 
 Convert OrCAD Capture `.DSN` schematics to multi-page KiCad schematic projects.
 
-Generates KiCad `.kicad_sch` files with wires, net labels, power symbols, component
-placements, and a symbol library — preserving electrical connectivity from the
-original OrCAD design.
+Generates KiCad `.kicad_sch` files with wires, net labels, power symbols,
+component placements, and a symbol library. The converter is still incomplete, though.
 
 ## Requirements
 
@@ -45,6 +44,15 @@ Walks the OLE compound document and prints all parseable records from every stre
 - [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — DSN binary format specification
 - [PDF_COLORS.md](PDF_COLORS.md) — OrCAD schematic PDF color map
 - [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN streams
+
+## Current Limitations
+
+- Electrical equivalence is not yet proven automatically; there is no generated
+  KiCad-vs-OrCAD netlist diff.
+- Parsed hierarchy nets and explicit power-symbol records are not yet used as
+  authoritative conversion data.
+- Component values/properties are still incomplete for many symbols.
+- Output UUIDs are currently random, so repeated conversions produce noisy diffs.
 
 ## Tests
 

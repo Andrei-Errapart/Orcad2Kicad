@@ -1417,7 +1417,10 @@ PIN_LENGTH = 2.54
 
 
 def _inverse_rotate(dx, dy, orient_byte):
-    """Undo OrCAD CW rotation to get symbol-local offsets."""
+    """Undo OrCAD orient (mirror + CW rotation) to get symbol-local offsets."""
+    mirror = bool(orient_byte & 0x04)
+    if mirror:
+        dx = -dx
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
     if orcad_angle == 90:
@@ -1430,7 +1433,7 @@ def _inverse_rotate(dx, dy, orient_byte):
 
 
 def _forward_rotate(dx, dy, orient_byte):
-    """Apply OrCAD CW rotation to a symbol-local offset.
+    """Apply OrCAD orient (CW rotation + mirror) to a symbol-local offset.
 
     Inverse of `_inverse_rotate`: takes a (dx, dy) in cache-local
     coords and returns the equivalent (dx, dy) in page-stream coords
@@ -1439,11 +1442,14 @@ def _forward_rotate(dx, dy, orient_byte):
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
     if orcad_angle == 90:
-        return (dy, -dx)
+        dx, dy = (dy, -dx)
     elif orcad_angle == 180:
-        return (-dx, -dy)
+        dx, dy = (-dx, -dy)
     elif orcad_angle == 270:
-        return (-dy, dx)
+        dx, dy = (-dy, dx)
+    mirror = bool(orient_byte & 0x04)
+    if mirror:
+        dx = -dx
     return (dx, dy)
 
 
@@ -2034,12 +2040,13 @@ def orient_to_angle(orient_byte, cell_name):
 def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
                   ref_pos=None, val_pos=None,
                   ref_text_angle=None, val_text_angle=None,
-                  unit=1):
+                  unit=1, mirror_x=False):
     """Generate a KiCad component instance (symbol placement).
 
     ref_pos/val_pos: absolute KiCad mm positions for Reference/Value text.
     If None, uses default offsets from the component center.
     unit: 1-based unit number for multi-unit symbols.
+    mirror_x: if True, emit (mirror x) to flip the symbol horizontally.
     """
     uid = new_uuid()
     ref_esc = _esc_kicad_str(ref)
@@ -2063,10 +2070,12 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
     ref_angle = ref_text_angle if ref_text_angle is not None else angle
     val_angle = val_text_angle if val_text_angle is not None else angle
 
+    mirror_line = "\t\t(mirror y)\n" if mirror_x else ""
     parts = [
         f"\t(symbol\n"
         f"\t\t(lib_id \"{lib_id}\")\n"
         f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
+        f"{mirror_line}"
         f"\t\t(unit {unit})\n"
         f"\t\t(exclude_from_sim no)\n"
         f"\t\t(in_bom yes)\n"
@@ -2289,13 +2298,15 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         comp_unit = 1
         if comp['cell'] in _multi_unit_cell_map:
             _, comp_unit = _multi_unit_cell_map[comp['cell']]
+        mirror_x = bool(comp['orient'] & 0x04)
         parts.append(sch_component(ref, lib_id, x, y, angle, comp_value,
                                    pin_numbers=pin_nums,
                                    ref_pos=(dsn_to_mm(rp[0]), dsn_to_mm(rp[1])) if rp else None,
                                    val_pos=(dsn_to_mm(vp[0]), dsn_to_mm(vp[1])) if vp else None,
                                    ref_text_angle=comp.get('ref_text_angle'),
                                    val_text_angle=comp.get('val_text_angle'),
-                                   unit=comp_unit))
+                                   unit=comp_unit,
+                                   mirror_x=mirror_x))
 
     # Power-symbol glyphs are emitted at wire endpoints that lie on a
     # power net AND are not stuck on a component pin (otherwise every

@@ -74,8 +74,11 @@ class TestInverseRotate:
     def test_270(self, dsn2kicad):
         assert dsn2kicad._inverse_rotate(10, 5, 0x03) == (5, -10)
 
+    def test_mirror_only(self, dsn2kicad):
+        assert dsn2kicad._inverse_rotate(10, 5, 0x04) == (-10, 5)
+
     def test_mirrored_90(self, dsn2kicad):
-        assert dsn2kicad._inverse_rotate(10, 5, 0x05) == (-5, 10)
+        assert dsn2kicad._inverse_rotate(10, 5, 0x05) == (-5, -10)
 
 
 class TestForwardRotate:
@@ -91,8 +94,11 @@ class TestForwardRotate:
     def test_270(self, dsn2kicad):
         assert dsn2kicad._forward_rotate(10, 5, 0x03) == (-5, 10)
 
+    def test_mirror_only(self, dsn2kicad):
+        assert dsn2kicad._forward_rotate(10, 5, 0x04) == (-10, 5)
+
     def test_roundtrip(self, dsn2kicad):
-        for orient in (0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07):
+        for orient in (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07):
             dx, dy = 7, 3
             fwd = dsn2kicad._forward_rotate(dx, dy, orient)
             back = dsn2kicad._inverse_rotate(*fwd, orient)

@@ -515,14 +515,23 @@ cell_end + 17:  orient_byte          orientation encoding
 
 **Orientation encoding**:
 
-| Byte value | OrCAD angle |
-|------------|-------------|
-| 0x00       | 0° (default horizontal) |
-| 0x01, 0x05 | 90° CW |
-| 0x02, 0x06 | 180° |
-| 0x03, 0x07 | 270° CW |
+The orient byte encodes both rotation and mirror as a 3-bit field:
+- Bits 0–1: rotation (0=0°, 1=90°CW, 2=180°, 3=270°CW)
+- Bit 2: mirror flag (horizontal flip, negates X)
 
-The difference between 0x01/0x05 (and 0x02/0x06, etc.) is believed to be related to mirror state.
+| Byte value | Rotation | Mirror | Description |
+|------------|----------|--------|-------------|
+| 0x00       | 0°       | No     | Default horizontal |
+| 0x01       | 90° CW   | No     | |
+| 0x02       | 180°     | No     | |
+| 0x03       | 270° CW  | No     | |
+| 0x04       | 0°       | Yes    | Mirrored horizontally |
+| 0x05       | 90° CW   | Yes    | Mirrored + 90° |
+| 0x06       | 180°     | Yes    | Mirrored + 180° |
+| 0x07       | 270° CW  | Yes    | Mirrored + 270° |
+
+The forward transform applies rotation first, then mirror (negate X).
+The inverse transform undoes mirror first (negate X), then undoes rotation.
 
 **Reference designator**: Found by scanning from `cell_end + 16` for up to 300 bytes, looking for `0x18` marker byte followed by:
 

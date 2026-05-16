@@ -1524,7 +1524,7 @@ def _direction_from_vector(hx, hy, bx, by):
 
 
 def lib_symbol_from_pins(name, pin_positions, body_rects=None,
-                         text_annotations=None):
+                         body_lines=None, text_annotations=None):
     """Generate a symbol definition from pin positions.
 
     pin_positions: list of tuples, either:
@@ -1538,6 +1538,9 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     rect, sharing one edge). All rects are emitted as KiCad
     `(rectangle ...)` primitives. Already centered and Y-flipped to
     symbol coordinates.
+    body_lines: optional list of (x1, y1, x2, y2) in mm. Line segments
+    from Cache (0x2929 records). Emitted as KiCad `(polyline ...)`
+    primitives.
     text_annotations: optional list of (cx, cy, text) in mm — internal
     body labels such as 'A', 'B', 'G' on SD-card socket symbols.
 
@@ -1599,10 +1602,13 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
                 body_ys.append(hy)
 
     if body_rects:
-        # Compute overall bounding box across all rectangles (used to
-        # place the Reference/Value labels above/below the body).
         all_xs = [c for r in body_rects for c in (r[0], r[2])]
         all_ys = [c for r in body_rects for c in (r[1], r[3])]
+        bx1, bx2 = min(all_xs), max(all_xs)
+        by1, by2 = min(all_ys), max(all_ys)
+    elif body_lines:
+        all_xs = [c for ln in body_lines for c in (ln[0], ln[2])]
+        all_ys = [c for ln in body_lines for c in (ln[1], ln[3])]
         bx1, bx2 = min(all_xs), max(all_xs)
         by1, by2 = min(all_ys), max(all_ys)
     else:
@@ -1637,19 +1643,35 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     parts.append('\t\t\t)\n')
 
     parts.append(f'\t\t\t(symbol "{name}_0_1"\n')
-    rects_to_emit = body_rects if body_rects else [(bx1, by1, bx2, by2)]
-    for rx1, ry1, rx2, ry2 in rects_to_emit:
-        parts.append(f'\t\t\t\t(rectangle\n')
-        parts.append(f'\t\t\t\t\t(start {rx1:.2f} {ry1:.2f})\n')
-        parts.append(f'\t\t\t\t\t(end {rx2:.2f} {ry2:.2f})\n')
-        parts.append('\t\t\t\t\t(stroke\n')
-        parts.append('\t\t\t\t\t\t(width 0.254)\n')
-        parts.append('\t\t\t\t\t\t(type default)\n')
-        parts.append('\t\t\t\t\t)\n')
-        parts.append('\t\t\t\t\t(fill\n')
-        parts.append('\t\t\t\t\t\t(type background)\n')
-        parts.append('\t\t\t\t\t)\n')
-        parts.append('\t\t\t\t)\n')
+    if body_lines and not body_rects:
+        for lx1, ly1, lx2, ly2 in body_lines:
+            parts.append(f'\t\t\t\t(polyline\n')
+            parts.append(f'\t\t\t\t\t(pts\n')
+            parts.append(f'\t\t\t\t\t\t(xy {lx1:.2f} {ly1:.2f})\n')
+            parts.append(f'\t\t\t\t\t\t(xy {lx2:.2f} {ly2:.2f})\n')
+            parts.append(f'\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t\t(stroke\n')
+            parts.append('\t\t\t\t\t\t(width 0.254)\n')
+            parts.append('\t\t\t\t\t\t(type default)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t\t(fill\n')
+            parts.append('\t\t\t\t\t\t(type none)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t)\n')
+    else:
+        rects_to_emit = body_rects if body_rects else [(bx1, by1, bx2, by2)]
+        for rx1, ry1, rx2, ry2 in rects_to_emit:
+            parts.append(f'\t\t\t\t(rectangle\n')
+            parts.append(f'\t\t\t\t\t(start {rx1:.2f} {ry1:.2f})\n')
+            parts.append(f'\t\t\t\t\t(end {rx2:.2f} {ry2:.2f})\n')
+            parts.append('\t\t\t\t\t(stroke\n')
+            parts.append('\t\t\t\t\t\t(width 0.254)\n')
+            parts.append('\t\t\t\t\t\t(type default)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t\t(fill\n')
+            parts.append('\t\t\t\t\t\t(type background)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t)\n')
     if text_annotations:
         for tx, ty, text in text_annotations:
             if not text:
@@ -1846,6 +1868,11 @@ _cell_pin_defs = {}
 # bodies (e.g. SD-card socket CARD_SOCKET).
 _cell_body_rects = {}
 
+# Body line segments from Cache: {cell_name: [(x1_mm, y1_mm, x2_mm, y2_mm), ...]}
+# in symbol coords. Used by DIP-switch symbols and others whose body is drawn
+# with individual lines rather than a rectangle record.
+_cell_body_lines = {}
+
 # Text annotations from Cache: {cell_name: [(cx_mm, cy_mm, text), ...]} in symbol coords
 _cell_text_annotations = {}
 
@@ -1948,10 +1975,12 @@ def get_lib_symbol(cell_name):
     if pin_positions:
         rects = _cell_body_rects.get(cell_name)
         ann = _cell_text_annotations.get(cell_name)
+        lines = _cell_body_lines.get(cell_name)
         return (cell_name, ref_prefix,
                 lambda name=cell_name, pp=pin_positions, body_rects=rects,
-                       text_annotations=ann:
+                       body_lines=lines, text_annotations=ann:
                     lib_symbol_from_pins(name, pp, body_rects=body_rects,
+                                         body_lines=body_lines,
                                          text_annotations=text_annotations))
     return (cell_name, ref_prefix,
             lambda name=cell_name: lib_symbol_generic_fallback(name))
@@ -2612,11 +2641,13 @@ def _pin_sort_key(pin_name):
 
 
 def _parse_cache_graphics(data, aps, scan_end):
-    """Parse graphic primitives (body rectangles, text annotations) from a Cache cell.
+    """Parse graphic primitives (body rectangles, line segments, text annotations)
+    from a Cache cell.
 
     Scans from aps (after OLB path) until the first pin record or scan_end.
-    Returns (body_rects, text_annotations) where:
+    Returns (body_rects, body_lines, text_annotations) where:
       body_rects = [(x1, y1, x2, y2), ...]  in declaration order
+      body_lines = [(x1, y1, x2, y2), ...]  line segments
       text_annotations = [(bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                             anchor_x, anchor_y, text), ...]
 
@@ -2627,10 +2658,15 @@ def _parse_cache_graphics(data, aps, scan_end):
       - `0x282828` record (type_word `0x2828` + 0x28) carries an outer
         rect at offset +10 (i32×4)
 
+    The `0x2929` record is a line segment with two endpoints at offset +10
+    (i32×4).  Used by DIP-switch symbols and others whose body is drawn
+    with individual lines rather than a rectangle record.
+
     The `0x2e2e` record is a text annotation, formerly misread as a
     line segment. See doc/ORCAD_DSN_FILES.md for the format.
     """
     body_rects = []
+    body_lines = []
     text_annotations = []
     pos = aps
 
@@ -2662,6 +2698,17 @@ def _parse_cache_graphics(data, aps, scan_end):
             pos = nm + 8
             continue
 
+        if type_word == 0x2929 and pos + 26 <= len(data):
+            x1, y1, x2, y2 = struct.unpack_from('<iiii', data, pos + 10)
+            if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
+                if not (x1 == x2 == 0 and y1 == y2 == 0):
+                    body_lines.append((x1, y1, x2, y2))
+            nm = data.find(RECORD_MARKER, pos + 26, scan_end)
+            if nm < 0:
+                break
+            pos = nm + 8
+            continue
+
         if type_word == 0x2e2e and pos + 42 <= len(data):
             bx1, by1, bx2, by2 = struct.unpack_from('<iiii', data, pos + 10)
             ax, ay = struct.unpack_from('<ii', data, pos + 26)
@@ -2684,22 +2731,24 @@ def _parse_cache_graphics(data, aps, scan_end):
             break
         pos = nm + 8
 
-    return body_rects, text_annotations
+    return body_rects, body_lines, text_annotations
 
 
 def parse_cache_cells(ole):
-    """Parse Cache stream to extract cell pin definitions, body rects, and text annotations.
+    """Parse Cache stream to extract cell pin definitions, body rects, lines,
+    and text annotations.
 
-    Returns (cells, body_rects, cell_text_annotations) where:
+    Returns (cells, body_rects, body_lines, cell_text_annotations) where:
       cells = {cell_name: [(pin_name, hot_x, hot_y, body_x, body_y), ...]}
       body_rects = {cell_name: [(x1, y1, x2, y2), ...]}   one or more rectangles in OrCAD units
+      body_lines = {cell_name: [(x1, y1, x2, y2), ...]}   line segments in OrCAD units
       cell_text_annotations = {cell_name:
           [(bbox_x1, bbox_y1, bbox_x2, bbox_y2, anchor_x, anchor_y, text), ...]}
     """
     try:
         data = ole.openstream('Cache').read()
     except Exception:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     cell_regions = []
     for m in CELL_RE.finditer(data):
@@ -2708,6 +2757,7 @@ def parse_cache_cells(ole):
 
     cells = {}
     body_rects = {}
+    body_lines = {}
     cell_text_annotations = {}
     seen_names = set()
 
@@ -2722,9 +2772,11 @@ def parse_cache_cells(ole):
             path_len = struct.unpack_from('<H', data, end)[0]
             aps = end + 2 + path_len + 1
             if aps + 32 <= len(data):
-                rects, anns = _parse_cache_graphics(data, aps, scan_end)
+                rects, lines, anns = _parse_cache_graphics(data, aps, scan_end)
                 if rects:
                     body_rects[cell_name] = rects
+                if lines:
+                    body_lines[cell_name] = lines
                 if anns:
                     cell_text_annotations[cell_name] = anns
 
@@ -2758,13 +2810,14 @@ def parse_cache_cells(ole):
                      or len(pins) > len(cells[cell_name])):
             cells[cell_name] = pins
 
-    return cells, body_rects, cell_text_annotations
+    return cells, body_rects, body_lines, cell_text_annotations
 
 
 def register_cache_cells(cache_cells, cache_body_rects=None,
+                         cache_body_lines=None,
                          cache_text_annotations=None):
-    """Populate _cell_pin_defs, _cell_body_rects, _cell_text_annotations
-    from Cache data.
+    """Populate _cell_pin_defs, _cell_body_rects, _cell_body_lines,
+    _cell_text_annotations from Cache data.
 
     Each pin entry is (unique_name, hot_x_mm, hot_y_mm, orig_name,
                        body_x_mm, body_y_mm).
@@ -2773,6 +2826,8 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
     """
     if cache_body_rects is None:
         cache_body_rects = {}
+    if cache_body_lines is None:
+        cache_body_lines = {}
     if cache_text_annotations is None:
         cache_text_annotations = {}
     for cell_name, pins in cache_cells.items():
@@ -2805,6 +2860,17 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
                     round(-(ry2 - cy) * UNIT_TO_MM, 2),
                 ))
             _cell_body_rects[cell_name] = sym_rects
+
+        if cell_name in cache_body_lines:
+            sym_lines = []
+            for lx1, ly1, lx2, ly2 in cache_body_lines[cell_name]:
+                sym_lines.append((
+                    round((lx1 - cx) * UNIT_TO_MM, 2),
+                    round(-(ly1 - cy) * UNIT_TO_MM, 2),
+                    round((lx2 - cx) * UNIT_TO_MM, 2),
+                    round(-(ly2 - cy) * UNIT_TO_MM, 2),
+                ))
+            _cell_body_lines[cell_name] = sym_lines
 
         if cell_name in cache_text_annotations:
             sym_anns = []
@@ -3146,11 +3212,12 @@ def main():
     print("  Parsing Cache stream...")
     _cell_pin_defs.clear()
     _cell_body_rects.clear()
+    _cell_body_lines.clear()
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
-    cache_cells, cache_body_rects, cache_text_annotations = parse_cache_cells(ole)
-    register_cache_cells(cache_cells, cache_body_rects, cache_text_annotations)
+    cache_cells, cache_body_rects, cache_body_lines, cache_text_annotations = parse_cache_cells(ole)
+    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_text_annotations)
     cache_count = len(_cell_pin_defs)
     for cname, cpins in cache_cells.items():
         print(f"    {cname}: {len(cpins)} pins")

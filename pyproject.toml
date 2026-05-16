@@ -1,0 +1,11 @@
+[project]
+name = "orcad2kicad"
+version = "0.1.0"
+description = "Convert OrCAD Capture .DSN schematics to KiCad format"
+requires-python = ">=3.9"
+dependencies = ["olefile>=0.46"]
+readme = "README.md"
+
+[project.optional-dependencies]
+freetype = ["freetype-py"]
+dev = ["pytest>=7", "olefile>=0.46"]

@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Dump the contents of an OrCAD Capture .DSN file.
+
+Walks the OLE compound document and prints every parseable record from
+every stream. For known stream types (DsnStream, Cache, Hierarchy,
+Views/SCHEMATIC1/Pages/*) the records are parsed using the same
+primitives as scripts/dsn2kicad and printed in full. For unknown
+streams a hex+ASCII preview is shown so the tool never crashes on
+streams it doesn't understand.
+
+Usage:
+    scripts/dsn_dump <file.DSN> [--stream NAME] [--max-records N]
+                                [--max-pins N] [--hex-bytes N] [--no-color]
+
+All record details are printed by default. Use --max-records / --max-pins
+to cap output on very large schematics.
+"""
+
+import argparse
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+try:
+    import olefile
+except ImportError:
+    print("olefile not found. Install with: pip install olefile",
+          file=sys.stderr)
+    sys.exit(1)
+
+
+def _load_dsn2kicad():
+    """Import scripts/dsn2kicad as a module (it has no .py extension)."""
+    from importlib.machinery import SourceFileLoader
+    path = str(SCRIPT_DIR / "dsn2kicad")
+    loader = SourceFileLoader("dsn2kicad", path)
+    spec = importlib.util.spec_from_loader("dsn2kicad", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+DSN = _load_dsn2kicad()
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+class Out:
+    def __init__(self, color=True):
+        self.color = color and sys.stdout.isatty()
+
+    def _c(self, code, s):
+        if not self.color:
+            return s
+        return f"\033[{code}m{s}\033[0m"
+
+    def bold(self, s):   return self._c("1", s)
+    def dim(self, s):    return self._c("2", s)
+    def cyan(self, s):   return self._c("36", s)
+    def yellow(self, s): return self._c("33", s)
+    def green(self, s):  return self._c("32", s)
+    def red(self, s):    return self._c("31", s)
+
+
+def hex_dump(data, max_bytes=256, width=16):
+    """Return a hex+ASCII dump of up to `max_bytes` of `data`."""
+    lines = []
+    n = min(len(data), max_bytes)
+    for off in range(0, n, width):
+        chunk = data[off:off + width]
+        hex_part = " ".join(f"{b:02x}" for b in chunk)
+        hex_part = hex_part.ljust(width * 3 - 1)
+        ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"  {off:08x}  {hex_part}  {ascii_part}")
+    if len(data) > max_bytes:
+        lines.append(f"  ... ({len(data) - max_bytes} more bytes)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Per-stream pretty-printers
+# ---------------------------------------------------------------------------
+
+def print_dsn_stream(data, out, args):
+    """20-byte prefix + marker-framed record containing the JSON metadata.
+
+    Layout (see scripts/ksy/dsn_stream.ksy):
+      0x00 u4  tag_and_payload_size  (low byte = 0x04 record tag)
+      0x04 u4  zeros
+      0x08 u4  version_word          (constant 0x00010400)
+      0x0c u4  type_word             (constant 0x00000015 = 21)
+      0x10 u4  variant               (per-DSN identifier)
+      0x14 4B  record_marker         FF E4 5C 39
+      0x18 u4  rec_len
+      0x1c u4  rec_len_dup
+      0x20 u4  const_07              (constant 0x00000007)
+      0x24 u4  const_06              (constant 0x00000006)
+      0x28 ..  json_payload          rec_len - 12 bytes
+    """
+    import struct
+    if len(data) < 40:
+        print(f"  {out.yellow('truncated DsnStream (< 40 bytes)')}")
+        print(hex_dump(data, max_bytes=len(data)))
+        return
+
+    tag_payload  = struct.unpack_from('<I', data,  0)[0]
+    version_word = struct.unpack_from('<I', data,  8)[0]
+    type_word    = struct.unpack_from('<I', data, 12)[0]
+    variant      = struct.unpack_from('<I', data, 16)[0]
+    marker       = data[20:24]
+    rec_len      = struct.unpack_from('<I', data, 24)[0]
+    rec_len_dup  = struct.unpack_from('<I', data, 28)[0]
+    const_07     = struct.unpack_from('<I', data, 32)[0]
+    const_06     = struct.unpack_from('<I', data, 36)[0]
+
+    marker_ok = marker == bytes([0xff, 0xe4, 0x5c, 0x39])
+    consts_ok = (version_word == 0x00010400
+                 and type_word == 0x00000015
+                 and const_07 == 7 and const_06 == 6)
+
+    print(f"  {out.dim('prefix:')}  "
+          f"tag_payload=0x{tag_payload:08x}  "
+          f"version=0x{version_word:08x}  "
+          f"type={type_word}  "
+          f"variant=0x{variant:08x}  "
+          f"{out.green('constants ok') if consts_ok else out.red('CONSTANTS MISMATCH')}")
+    print(f"  {out.dim('record:')}  "
+          f"marker={'ok' if marker_ok else out.red('MISSING')}  "
+          f"rec_len={rec_len} (dup={rec_len_dup})  "
+          f"const_07=0x{const_07:x}  const_06=0x{const_06:x}")
+
+    # rec_len covers everything after the rec_len field itself (rec_len_dup,
+    # const_07, const_06, JSON, and trailing nul padding inside the record).
+    record_end = 28 + rec_len
+    record_body = data[40:record_end]
+    json_bytes = record_body.rstrip(b"\x00")
+    padding = record_body[len(json_bytes):]
+    payload = json_bytes.decode("ascii", errors="replace")
+    try:
+        obj = json.loads(payload)
+        print(f"  {out.dim('JSON payload')} ({len(json_bytes)} bytes):")
+        for k, v in obj.items():
+            print(f"    {out.cyan(k)}: {v}")
+    except Exception as e:
+        print(f"  {out.yellow('payload (not JSON):')} {payload!r}  ({e})")
+    if padding:
+        print(f"  {out.dim(f'record padding ({len(padding)} bytes):')} {padding.hex(' ')}")
+
+    extra = data[record_end:]
+    if extra:
+        print(f"  {out.dim(f'after-record bytes ({len(extra)}):')} {extra.hex(' ')}")
+
+
+def print_hierarchy(data, out, args):
+    """Cross-page net table."""
+    pos = 0
+    nets = {}
+    while True:
+        idx = data.find(DSN.RECORD_MARKER, pos)
+        if idx < 0:
+            break
+        import struct
+        rec_start = idx + 8
+        if rec_start + 6 >= len(data):
+            break
+        net_id = struct.unpack_from("<I", data, rec_start)[0]
+        name_len = struct.unpack_from("<H", data, rec_start + 4)[0]
+        name_start = rec_start + 6
+        if name_len < 1 or name_len > 80 or name_start + name_len > len(data):
+            pos = idx + 4
+            continue
+        raw = data[name_start:name_start + name_len]
+        if any(b < 32 or b > 126 for b in raw):
+            pos = idx + 4
+            continue
+        name = raw.decode("ascii").rstrip("\0")
+        if name:
+            nets[net_id] = name
+        pos = name_start + name_len + 1
+
+    print(f"  {out.dim(f'{len(nets)} nets')}")
+    limit = args.max_records
+    for i, (nid, name) in enumerate(sorted(nets.items())):
+        if limit and i >= limit:
+            print(f"  ... ({len(nets) - limit} more)")
+            break
+        print(f"    {out.cyan(f'#{nid:>10}')}  {name}")
+
+
+def _pin_direction(hx, hy, bx, by):
+    """Approximate pin direction from the hotpoint->body vector.
+
+    Returns 'L', 'R', 'U', 'D', or '?' depending on which axis dominates.
+    In OrCAD page coordinates, Y grows downward, so body above hotpoint
+    (by < hy) means the pin points up.
+    """
+    dx, dy = bx - hx, by - hy
+    if dx == 0 and dy == 0:
+        return "?"
+    if abs(dx) >= abs(dy):
+        return "R" if dx > 0 else "L"
+    return "D" if dy > 0 else "U"
+
+
+def print_cache(ole, out, args):
+    """Cell definitions: pin lists, body rectangles, text annotations.
+
+    Per cell: body rect in mm, pin extent, direction histogram, pin
+    length stats, duplicate pin names, text annotations (bbox + anchor
+    + character), and per-pin coordinates. All capped by --max-records
+    / --max-pins (0 = no cap).
+    """
+    cells, body_rects, cell_anns = DSN.parse_cache_cells(ole)
+    u2mm = DSN.UNIT_TO_MM
+
+    total_pins = sum(len(p) for p in cells.values())
+    cells_with_anns = len(cell_anns)
+    cells_with_body = len(body_rects)
+    if cells:
+        largest = max(cells, key=lambda c: len(cells[c]))
+    else:
+        largest = None
+    print(f"  {out.dim(f'{len(cells)} cells, {total_pins} total pins, '
+                       f'{cells_with_body} body rects, '
+                       f'{cells_with_anns} cells with text annotations')}")
+    if largest:
+        print(f"  {out.dim(f'largest cell: {largest!r} ({len(cells[largest])} pins)')}")
+
+    limit = args.max_records
+    for i, cell_name in enumerate(sorted(cells)):
+        if limit and i >= limit:
+            print(f"  ... ({len(cells) - limit} more cells)")
+            break
+        pins = cells[cell_name]
+        rects = body_rects.get(cell_name, [])
+        anns  = cell_anns.get(cell_name, [])
+
+        hxs = [p[1] for p in pins]
+        hys = [p[2] for p in pins]
+        pin_extent = (
+            (min(hxs), min(hys), max(hxs), max(hys)) if pins else None
+        )
+
+        name_counts = {}
+        for p in pins:
+            name_counts[p[0]] = name_counts.get(p[0], 0) + 1
+        dup_names = {n: c for n, c in name_counts.items() if c > 1}
+
+        dir_hist = {"L": 0, "R": 0, "U": 0, "D": 0, "?": 0}
+        for pname, hx, hy, bx, by in pins:
+            dir_hist[_pin_direction(hx, hy, bx, by)] += 1
+
+        pin_lens = [
+            ((hx - bx) ** 2 + (hy - by) ** 2) ** 0.5
+            for _, hx, hy, bx, by in pins
+        ] or [0]
+        len_min, len_max = min(pin_lens), max(pin_lens)
+        len_avg = sum(pin_lens) / len(pin_lens)
+
+        header_extras = []
+        for ri, r in enumerate(rects):
+            w_u, h_u = r[2] - r[0], r[3] - r[1]
+            label = "body" if len(rects) == 1 else f"body[{ri}]"
+            header_extras.append(
+                f"{label}=({r[0]},{r[1]})→({r[2]},{r[3]})  "
+                f"{w_u}×{h_u} u  ({w_u*u2mm:.2f}×{h_u*u2mm:.2f} mm)")
+        if anns:
+            chars = "".join(a[6] or "?" for a in anns)
+            header_extras.append(f"{len(anns)} text annotation"
+                                 + ("s" if len(anns) != 1 else "")
+                                 + f" [{chars}]")
+        if dup_names:
+            header_extras.append(
+                f"{len(dup_names)} duplicated pin name"
+                + ("s" if len(dup_names) > 1 else ""))
+
+        print(f"  {out.bold(cell_name)}  {len(pins)} pins"
+              + (("\n      " + "\n      ".join(header_extras)) if header_extras else ""))
+
+        # Direction histogram + length stats (only useful when pins exist)
+        if pins:
+            print(f"      directions: "
+                  + "  ".join(f"{out.cyan(k)}={v}"
+                              for k, v in dir_hist.items() if v > 0))
+            print(f"      pin length: "
+                  f"min={len_min:.1f} u ({len_min*u2mm:.2f} mm)  "
+                  f"max={len_max:.1f} u ({len_max*u2mm:.2f} mm)  "
+                  f"avg={len_avg:.1f} u ({len_avg*u2mm:.2f} mm)")
+            if pin_extent:
+                px1, py1, px2, py2 = pin_extent
+                print(f"      pin extent: "
+                      f"({px1},{py1})→({px2},{py2})  "
+                      f"{px2-px1}×{py2-py1} u")
+
+        # Duplicate pin name detail
+        if dup_names:
+            top = sorted(dup_names.items(), key=lambda kv: -kv[1])[:5]
+            extra = f", +{len(dup_names)-5} more" if len(dup_names) > 5 else ""
+            print(f"      duplicate names: "
+                  + ", ".join(f"{n!r}×{c}" for n, c in top) + extra)
+
+        # Text annotations (bbox + anchor + char)
+        if anns:
+            cap = args.max_pins or len(anns)
+            for j, (bx1, by1, bx2, by2, ax, ay, text) in enumerate(anns):
+                if j >= cap:
+                    print(f"      ... ({len(anns) - cap} more text annotations)")
+                    break
+                w_u, h_u = bx2 - bx1, by2 - by1
+                print(f"      text {text!r:4s} bbox=({bx1:>3},{by1:>3})→"
+                      f"({bx2:>3},{by2:>3})  {w_u}×{h_u} u  "
+                      f"anchor=({ax:>3},{ay:>3})")
+
+        # Per-pin detail
+        cap = args.max_pins or len(pins)
+        for j, (pname, hx, hy, bx, by) in enumerate(pins):
+            if j >= cap:
+                print(f"      ... ({len(pins) - cap} more pins)")
+                break
+            d = _pin_direction(hx, hy, bx, by)
+            plen = ((hx - bx) ** 2 + (hy - by) ** 2) ** 0.5
+            print(f"      pin {pname!r:12s} dir={d}  "
+                  f"body=({bx:>5},{by:>5}) hot=({hx:>5},{hy:>5})  "
+                  f"len={plen:.1f} u ({plen*u2mm:.2f} mm)")
+
+
+def print_page(data, out, args, page_name=""):
+    """Page header, net table, wires, components (with pins), power symbols."""
+    name, paper = DSN.parse_page_header(data)
+    print(f"  {out.dim('page:')} {out.bold(name or page_name)}  "
+          f"{out.dim('paper:')} {paper}")
+
+    nets = DSN.parse_net_table(data)
+    wires = DSN.parse_wires(data, nets)
+    comps = DSN.parse_components(data)
+    pwr = DSN.parse_power_symbols(data, nets)
+    texts = DSN.parse_text_annotations(data, paper)
+    rects, lines_g = DSN.parse_page_graphics(data, paper)
+
+    print(f"  {out.dim('nets:')} {len(nets)}   "
+          f"{out.dim('wires:')} {len(wires)}   "
+          f"{out.dim('components:')} {len(comps)}   "
+          f"{out.dim('power symbols:')} {len(pwr)}   "
+          f"{out.dim('texts:')} {len(texts)}   "
+          f"{out.dim('rects:')} {len(rects)}   "
+          f"{out.dim('lines:')} {len(lines_g)}")
+
+    limit = args.max_records  # None = no limit
+    def _capped(seq):
+        if limit is None:
+            return enumerate(seq), 0
+        items = list(seq)
+        return enumerate(items[:limit]), max(0, len(items) - limit)
+
+    print(f"  {out.cyan('nets:')}")
+    iters, dropped = _capped(sorted(nets.items()))
+    for _, (nid, n) in iters:
+        print(f"    #{nid:>10}  {n}")
+    if dropped:
+        print(f"    ... ({dropped} more nets)")
+
+    print(f"  {out.cyan('wires:')}")
+    iters, dropped = _capped(wires)
+    for _, w in iters:
+        print(f"    ({w['x1']:>5},{w['y1']:>5}) → "
+              f"({w['x2']:>5},{w['y2']:>5})  "
+              f"net={w['net']!r} (#{w['net_id']})")
+    if dropped:
+        print(f"    ... ({dropped} more wires)")
+
+    print(f"  {out.cyan('components:')}")
+    iters, dropped = _capped(comps)
+    for _, c in iters:
+        print(f"    {c['ref']!r:8s} cell={c['cell']!r:24s} "
+              f"({c['x']:>5},{c['y']:>5}) orient=0x{c['orient']:02x} "
+              f"pins={len(c['pins'])}")
+    if dropped:
+        print(f"    ... ({dropped} more components)")
+
+    print(f"  {out.cyan('power symbols:')}")
+    iters, dropped = _capped(pwr)
+    for _, p in iters:
+        print(f"    {p['name']!r:14s} ({p['x']:>5},{p['y']:>5})")
+    if dropped:
+        print(f"    ... ({dropped} more power symbols)")
+
+    styles = getattr(args, '_library_styles', None) or []
+    print(f"  {out.cyan('texts:')}")
+    iters, dropped = _capped(texts)
+    for _, t in iters:
+        # Show the text with embedded newlines escaped for one-line display
+        s = t['text'].replace('\r', '\\r').replace('\n', '\\n').replace('\t', '\\t')
+        sid = t['style_id']
+        style_summary = ''
+        if 1 <= sid <= len(styles):
+            ent = styles[sid - 1]
+            bi = ''
+            if ent['weight'] == 700: bi += 'B'
+            if ent['italic']: bi += 'I'
+            face = ent['face'] or '?'
+            style_summary = f"  → {face!r}/{bi or '-'}"
+        print(f"    ({t['x']:>5},{t['y']:>5})  sid={sid:>3}{style_summary}  {s!r:.50s}")
+    if dropped:
+        print(f"    ... ({dropped} more texts)")
+
+    print(f"  {out.cyan('rectangles:')}")
+    iters, dropped = _capped(rects)
+    for _, r in iters:
+        print(f"    ({r['x1']:>5},{r['y1']:>5})→({r['x2']:>5},{r['y2']:>5})  "
+              f"{r['x2']-r['x1']}×{r['y2']-r['y1']}  color={r['color']}")
+    if dropped:
+        print(f"    ... ({dropped} more rectangles)")
+
+    print(f"  {out.cyan('lines:')}")
+    iters, dropped = _capped(lines_g)
+    for _, ln in iters:
+        print(f"    ({ln['x1']:>5},{ln['y1']:>5})→({ln['x2']:>5},{ln['y2']:>5})  "
+              f"color={ln['color']}")
+    if dropped:
+        print(f"    ... ({dropped} more lines)")
+
+
+def print_library(data, out, args):
+    """Library stream: dump the u16-length-prefixed string table."""
+    strings = list(DSN._enumerate_u16_strings(data))
+    print(f"  {out.dim(f'stream size: {len(data):,} bytes')}")
+    print(f"  {out.dim(f'string table: {len(strings)} entries')} "
+          f"(first string at offset 0x{strings[0][0]:x})" if strings else "")
+
+    limit = args.max_records
+    for i, (off, length, text) in enumerate(strings):
+        if limit and i >= limit:
+            print(f"  ... ({len(strings) - limit} more strings)")
+            break
+        print(f"    {out.cyan(f'[{i:>4}]')} @0x{off:04x}  len={length:>3}  {text!r}")
+
+
+def print_unknown(data, out, args):
+    print(f"  {out.yellow('(no parser for this stream — hex preview)')}")
+    print(hex_dump(data, max_bytes=args.hex_bytes))
+
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+KNOWN_STREAMS = {
+    "DsnStream":       ("dsn_stream",  print_dsn_stream),
+    "Library":         ("library",     print_library),
+    "Views/SCHEMATIC1/Hierarchy/Hierarchy":
+                       ("hierarchy",   print_hierarchy),
+}
+
+
+def stream_kind(path):
+    if path in KNOWN_STREAMS:
+        return KNOWN_STREAMS[path][0], KNOWN_STREAMS[path][1]
+    if path == "Cache":
+        return ("cache", None)  # needs the ole object, handled inline
+    if path.startswith("Views/SCHEMATIC1/Pages/"):
+        return ("page", print_page)
+    return ("unknown", print_unknown)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("dsn_path", type=Path)
+    ap.add_argument("--stream", default=None,
+                    help="dump only the stream whose path matches this "
+                         "substring")
+    ap.add_argument("--max-records", type=int, default=0,
+                    help="cap records printed per stream (0 = no limit, default)")
+    ap.add_argument("--max-pins", type=int, default=0,
+                    help="cap pins / text annotations per cell "
+                         "(0 = no limit, default)")
+    ap.add_argument("--hex-bytes", type=int, default=256,
+                    help="bytes to show in hex preview of unknown streams")
+    ap.add_argument("--no-color", action="store_true")
+    args = ap.parse_args()
+    if args.max_records == 0:
+        args.max_records = None
+
+    if not args.dsn_path.exists():
+        print(f"DSN not found: {args.dsn_path}", file=sys.stderr)
+        sys.exit(1)
+
+    out = Out(color=not args.no_color)
+
+    print(out.bold(f"=== {args.dsn_path.name} ==="))
+    print(f"size: {args.dsn_path.stat().st_size:,} bytes\n")
+
+    ole = olefile.OleFileIO(str(args.dsn_path))
+
+    # Title-block summary from the Library stream. The DSN may carry the
+    # title-block values from a renamed/cloned file — what we print here
+    # is what's *stored*, not what the filename or PDF says.
+    tb = DSN.parse_title_block(ole)
+    if tb:
+        bits = "  ".join(f"{out.cyan(k)}={v!r}" for k, v in tb.items())
+        print(f"{out.dim('title block:')}  {bits}\n")
+    else:
+        print(f"{out.dim('title block: (none found)')}\n")
+
+    # Library style table — used by page-stream text records to set
+    # weight, italic, and face.
+    args._library_styles = DSN.parse_library_styles(ole)
+    if args._library_styles:
+        n_bold = sum(1 for s in args._library_styles if s['weight'] == 700)
+        n_italic = sum(1 for s in args._library_styles if s['italic'])
+        print(f"{out.dim('library styles:')}  {len(args._library_styles)} records "
+              f"({n_bold} bold, {n_italic} italic)\n")
+
+    # Collect streams (skip directory storages, keep streams only)
+    streams = []
+    for entry in ole.listdir(streams=True, storages=False):
+        path = "/".join(entry)
+        try:
+            size = ole.get_size(path)
+        except Exception:
+            size = -1
+        streams.append((path, size))
+    streams.sort()
+
+    for path, size in streams:
+        if args.stream and args.stream not in path:
+            continue
+
+        kind, printer = stream_kind(path)
+        print(out.green(f"--- {path}  ({size:,} bytes, kind={kind}) ---"))
+        try:
+            if kind == "cache":
+                print_cache(ole, out, args)
+            else:
+                data = ole.openstream(path).read()
+                printer(data, out, args)
+        except Exception as e:
+            print(f"  {out.red(f'!! parse failed: {type(e).__name__}: {e}')}")
+            try:
+                data = ole.openstream(path).read()
+                print(hex_dump(data, max_bytes=args.hex_bytes))
+            except Exception:
+                pass
+        print()
+
+
+if __name__ == "__main__":
+    main()

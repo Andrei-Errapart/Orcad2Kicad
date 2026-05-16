@@ -234,8 +234,10 @@ types:
   # Net name table (parse_net_table)
   # -------------------------------------------------------------------------
   #
-  # The net table is NOT marker-framed. It sits at file offsets 0x300–0x2000
-  # as a run of repeating (length-prefixed name, null, u4 net_id) entries.
+  # The net table is preceded by the anchor bytes 30000000 05000000 03000000
+  # (the last such occurrence in the stream). After the anchor:
+  #   extra_count(u2) + skip_entries(extra_count * 4) + net_count(u2) + entries
+  # Each entry is (length-prefixed name, null, u4 net_id).
   # Kaitai cannot easily auto-locate it; treat the entry layout as a
   # subtype the application invokes by seeking to the table offset.
 

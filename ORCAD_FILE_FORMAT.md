@@ -474,13 +474,17 @@ Paper size is an ASCII string: `A0`–`A4`, `A`–`E`.
 
 #### Net name table
 
-Located at approximately offset `0x300`–`0x2000`. Sequential entries:
+Preceded by the 12-byte anchor sequence `30 00 00 00 05 00 00 00 03 00 00 00` (the same bytes appear many times in the page stream as part of per-pin records with value `34 17` after them; the net table follows the **last** occurrence). After the anchor:
 
 ```
-name_len(2, LE) + name(name_len) + null(1) + net_id(4, LE)
+extra_count(2, LE)                  — number of 4-byte entries to skip (often 0)
+skip_entries(extra_count * 4)       — optional ID list (purpose unknown)
+net_count(2, LE)                    — number of net entries that follow
+net_entry[]                         — repeated net_count times:
+    name_len(2, LE) + name(name_len) + null(1) + net_id(4, LE)
 ```
 
-Net IDs are 32-bit unsigned integers. The table can be found by scanning for the first entry where `name_len` is 2–50, the string is printable ASCII with an underscore or is a known power net name, and is followed by a null byte and a 4-byte ID. Subsequent entries follow immediately.
+Net IDs are 32-bit unsigned integers. Net names are printable ASCII (1–50 chars). The declared `net_count` matches the actual number of parseable entries.
 
 #### Wire records
 

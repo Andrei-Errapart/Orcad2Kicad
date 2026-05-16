@@ -139,57 +139,64 @@ def _extract_strings(data, min_len=2):
     return strings
 
 
+_NET_TABLE_ANCHOR = b'\x30\x00\x00\x00\x05\x00\x00\x00\x03\x00\x00\x00'
+
+
+def _parse_net_entries(data, pos, count):
+    """Parse count net entries starting at pos. Each entry: len(2)+name(len)+null(1)+net_id(4)."""
+    nets = {}
+    for _ in range(count):
+        if pos + 6 >= len(data):
+            break
+        nl = struct.unpack_from('<H', data, pos)[0]
+        if nl < 1 or nl > 50:
+            break
+        ne = pos + 2 + nl
+        if ne >= len(data) or data[ne] != 0:
+            break
+        nb = data[pos + 2:ne]
+        if any(b < 32 or b > 126 for b in nb):
+            break
+        nid = struct.unpack_from('<I', data, ne + 1)[0]
+        nets[nid] = nb.decode('ascii')
+        pos = ne + 5
+    return nets
+
+
 def parse_net_table(data):
     """Parse the net name table from a page stream.
 
-    The net table sits early in the page stream after the header section.
-    Format: len(2) + name(len) + null(1) + net_id(4), repeated.
+    The net table is preceded by the anchor sequence 30000000 05000000 03000000,
+    followed by an optional skip list (count_u16 + count*4 bytes), then the net
+    count (u16) and the net entries (len_u16 + name + null + net_id_u32 each).
+    We locate the last anchor in the page whose trailing structure yields a valid
+    net table.
     """
     nets = {}
+    positions = []
+    pos = 0
+    while True:
+        idx = data.find(_NET_TABLE_ANCHOR, pos)
+        if idx < 0:
+            break
+        positions.append(idx)
+        pos = idx + 1
 
-    search_start = 0x300
-    for start_offset in range(search_start, min(len(data) - 20, 0x2000)):
-        name_len = struct.unpack_from('<H', data, start_offset)[0]
-        if name_len < 2 or name_len > 50:
+    for anchor_pos in reversed(positions):
+        after = anchor_pos + 12
+        if after + 4 > len(data):
             continue
-        name_end = start_offset + 2 + name_len
-        if name_end >= len(data):
+        extra_count = struct.unpack_from('<H', data, after)[0]
+        net_count_pos = after + 2 + extra_count * 4
+        if net_count_pos + 2 > len(data):
             continue
-        name_bytes = data[start_offset + 2:name_end]
-        if any(b < 32 or b > 126 for b in name_bytes):
+        net_count = struct.unpack_from('<H', data, net_count_pos)[0]
+        if net_count < 1 or net_count > 1000:
             continue
-        if data[name_end] != 0:
-            continue
-        name = name_bytes.decode('ascii')
-        if '_' not in name and name not in ('GND', 'VDD', 'VCC', 'VSS'):
-            continue
-        net_id = struct.unpack_from('<I', data, name_end + 1)[0]
-
-        pos = name_end + 5
-        second_len = struct.unpack_from('<H', data, pos)[0] if pos + 2 < len(data) else 0
-        if second_len < 1 or second_len > 50:
-            continue
-
-        nets[net_id] = name
-        pos = name_end + 5
-        while pos + 6 < len(data):
-            nl = struct.unpack_from('<H', data, pos)[0]
-            if nl < 1 or nl > 50:
-                break
-            ne = pos + 2 + nl
-            if ne >= len(data):
-                break
-            nb = data[pos + 2:ne]
-            if any(b < 32 or b > 126 for b in nb):
-                break
-            if data[ne] != 0:
-                break
-            n = nb.decode('ascii')
-            nid = struct.unpack_from('<I', data, ne + 1)[0]
-            nets[nid] = n
-            pos = ne + 5
-
-        break
+        net_start = net_count_pos + 2
+        nets = _parse_net_entries(data, net_start, net_count)
+        if nets:
+            break
 
     return nets
 

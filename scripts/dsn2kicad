@@ -2601,6 +2601,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         if m:
             bus_member_prefixes[m.group(1)] = bus_name
     bus_entry_landings = set()
+    bus_member_nets = set()
     for w in regular_wires:
         if not w['net']:
             continue
@@ -2611,6 +2612,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 break
         if not matched_bus:
             continue
+        bus_member_nets.add(w['net'])
         bp = bus_points[matched_bus]
         for wx, wy in [(w['x1'], w['y1']), (w['x2'], w['y2'])]:
             candidates = []
@@ -2691,7 +2693,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             is_gnd = _is_gnd_power_name(lbl['name'])
             parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd))
             power_positions.add((lbl['x'], lbl['y']))
-        elif lbl['name'] in global_nets:
+        elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
             parts.append(sch_global_label(lbl['name'], x, y))
         else:
             parts.append(sch_label(lbl['name'], x, y))

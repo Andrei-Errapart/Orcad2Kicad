@@ -441,6 +441,12 @@ Same-value components share the same index (all five 10K resistors have
 value index 0x00EE). The index is a u16 (not a single byte) — SP1
 demonstrates this with high byte = 0x01.
 
+**Do Not Populate (DNP)**: OrCAD marks DNP components solely via the
+` *DNP` suffix on the value string (e.g., `10K/1005 *DNP`). There is no
+binary flag in the component record or any other stream. The converter
+strips the suffix for display and emits `(dnp yes)` + `(in_bom no)` in
+the KiCad output.
+
 Implemented in `scripts/dsn2kicad` as `parse_library_value_strings()`
 and `lookup_component_value()`.
 
@@ -672,8 +678,13 @@ The orient byte encodes both rotation and mirror as a 3-bit field:
 | 0x06       | 180°     | Yes    | Mirrored + 180° |
 | 0x07       | 270° CW  | Yes    | Mirrored + 270° |
 
-The forward transform applies rotation first, then mirror (negate X).
-The inverse transform undoes mirror first (negate X), then undoes rotation.
+The forward transform applies mirror first (negate X), then rotation.
+The inverse transform undoes rotation first, then undoes mirror (negate X).
+
+**KiCad angle conversion**: KiCad applies rotation first, then mirror — the
+opposite order from OrCAD. To compensate, mirrored components (bit 2 set) need
+their rotation angle negated: 90°↔270°, while 0° and 180° are unchanged.
+Non-mirrored orientations map directly to the KiCad angle.
 
 **Reference designator**: Found by scanning from `cell_end + 16` for up to 300 bytes, looking for `0x18` marker byte followed by:
 
@@ -766,7 +777,7 @@ the net table are the same net.
 
 **Computing component origin from pin records**:
 
-Given a page-stream pin with `pin_num=N` at page position `(px, py)`, and the N-th Cache pin having hotpoint `(hx, hy)`, the Cache hotpoint must first be transformed by the component's orientation (rotation + mirror) before subtracting:
+Given a page-stream pin with `pin_num=N` at page position `(px, py)`, and the N-th Cache pin having hotpoint `(hx, hy)`, the Cache hotpoint must first be transformed by the component's orientation (mirror then rotation) before subtracting:
 
 ```
 (rhx, rhy) = forward_rotate(hx, hy, orient_byte)

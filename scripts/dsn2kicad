@@ -1517,28 +1517,32 @@ PIN_LENGTH = 2.54
 
 
 def _inverse_rotate(dx, dy, orient_byte):
-    """Undo OrCAD orient (mirror + CW rotation) to get symbol-local offsets."""
-    mirror = bool(orient_byte & 0x04)
-    if mirror:
-        dx = -dx
+    """Undo OrCAD orient (mirror then CW rotation) to get symbol-local offsets.
+
+    Inverse of _forward_rotate: un-rotate first, then un-mirror.
+    """
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
     if orcad_angle == 90:
-        return (-dy, dx)
+        dx, dy = (-dy, dx)
     elif orcad_angle == 180:
-        return (-dx, -dy)
+        dx, dy = (-dx, -dy)
     elif orcad_angle == 270:
-        return (dy, -dx)
+        dx, dy = (dy, -dx)
+    if orient_byte & 0x04:
+        dx = -dx
     return (dx, dy)
 
 
 def _forward_rotate(dx, dy, orient_byte):
-    """Apply OrCAD orient (CW rotation + mirror) to a symbol-local offset.
+    """Apply OrCAD orient (mirror then CW rotation) to a symbol-local offset.
 
-    Inverse of `_inverse_rotate`: takes a (dx, dy) in cache-local
-    coords and returns the equivalent (dx, dy) in page-stream coords
-    after the component's orient is applied.
+    Takes a (dx, dy) in cache-local coords and returns the equivalent
+    (dx, dy) in page-stream coords after the component's orient is applied.
+    OrCAD applies mirror first (flip X), then rotates.
     """
+    if orient_byte & 0x04:
+        dx = -dx
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
     if orcad_angle == 90:
@@ -1547,9 +1551,6 @@ def _forward_rotate(dx, dy, orient_byte):
         dx, dy = (-dx, -dy)
     elif orcad_angle == 270:
         dx, dy = (-dy, dx)
-    mirror = bool(orient_byte & 0x04)
-    if mirror:
-        dx = -dx
     return (dx, dy)
 
 
@@ -2346,9 +2347,16 @@ def orient_to_angle(orient_byte, cell_name):
     KiCad R/C symbols have vertical body (pins top/bottom) at angle=0,
     so OrCAD's 90° (vertical) maps to KiCad 0°, and vice versa.
     Generic symbols with horizontal body use the direct mapping.
+
+    When mirrored (bit 2 set), KiCad applies rotation first then mirror,
+    but OrCAD applies mirror first then rotation. To compensate, the
+    rotation angle is negated (90<->270) for mirrored components.
     """
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
+
+    if orient_byte & 0x04:
+        orcad_angle = (360 - orcad_angle) % 360
 
     if cell_name in VERTICAL_BODY_CELLS:
         return (90 - orcad_angle) % 360

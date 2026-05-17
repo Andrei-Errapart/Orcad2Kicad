@@ -30,6 +30,10 @@ def dsn2kicad():
 def reset_globals(dsn2kicad):
     dsn2kicad._cell_pin_defs.clear()
     dsn2kicad._cell_body_rects.clear()
+    dsn2kicad._cell_body_lines.clear()
+    dsn2kicad._cell_body_ellipses.clear()
+    dsn2kicad._cell_body_arcs.clear()
+    dsn2kicad._cell_body_polygons.clear()
     dsn2kicad._cell_text_annotations.clear()
     dsn2kicad._cell_centers.clear()
     dsn2kicad._cell_pin_lists.clear()

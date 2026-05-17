@@ -89,3 +89,69 @@ class TestGetPageStreams:
         pages = dsn2kicad.get_page_streams(ole)
         names = [p.split("/")[-1] for p in pages]
         assert names == sorted(names)
+
+
+class TestCacheGraphics:
+    def test_filled_polygon_record(self, dsn2kicad):
+        record = bytearray(28 + 4 * 3)
+        struct.pack_into('<H', record, 0, 0x2c2c)
+        struct.pack_into('<H', record, 26, 3)
+        struct.pack_into('<hhh', record, 28, 0, 0, 10)
+        struct.pack_into('<hhh', record, 34, 0, 10, 10)
+
+        rects, lines, ellipses, arcs, polys, anns = dsn2kicad._parse_cache_graphics(
+            bytes(record), 0, len(record))
+
+        assert rects == []
+        assert lines == []
+        assert ellipses == []
+        assert arcs == []
+        assert anns == []
+        assert polys == [[(0, 0), (0, 10), (10, 10)]]
+
+    def test_filled_polygon_drops_redundant_close_points(self, dsn2kicad):
+        record = bytearray(28 + 4 * 5)
+        struct.pack_into('<H', record, 0, 0x2c2c)
+        struct.pack_into('<H', record, 26, 5)
+        for idx, point in enumerate([(2, 32), (2, 32), (0, 36), (4, 34), (2, 32)]):
+            struct.pack_into('<hh', record, 28 + idx * 4, *point)
+
+        *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+
+        assert polys == [[(32, 2), (36, 0), (34, 4)]]
+
+    def test_filled_polygon_trailing_path_becomes_line(self, dsn2kicad):
+        record = bytearray(28 + 4 * 7)
+        struct.pack_into('<H', record, 0, 0x2c2c)
+        struct.pack_into('<H', record, 26, 7)
+        points = [(10, 13), (10, 13), (10, 13), (15, 3), (4, 3), (10, 13), (4, 13)]
+        for idx, point in enumerate(points):
+            struct.pack_into('<hh', record, 28 + idx * 4, *point)
+
+        _, lines, *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+
+        assert lines == [(13, 10, 13, 4)]
+        assert polys == [[(13, 10), (3, 15), (3, 4)]]
+
+    def test_filled_polygon_arrowhead_keeps_tip_vertex(self, dsn2kicad):
+        record = bytearray(28 + 4 * 6)
+        struct.pack_into('<H', record, 0, 0x2c2c)
+        struct.pack_into('<H', record, 26, 6)
+        points = [(32, 40), (32, 40), (29, 33), (27, 35), (25, 36), (32, 40)]
+        for idx, point in enumerate(points):
+            struct.pack_into('<hh', record, 28 + idx * 4, *point)
+
+        *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+
+        assert polys == [[(40, 32), (33, 29), (35, 27), (36, 25)]]
+
+    def test_emits_filled_polygon_in_symbol_body(self, dsn2kicad):
+        symbol = dsn2kicad.lib_symbol_from_pins(
+            "POLY",
+            [],
+            body_polygons=[[(0, 0), (1.27, 0), (1.27, -1.27)]],
+        )
+
+        assert '(symbol "POLY_0_1"' in symbol
+        assert '(xy 0.00 0.00) (xy 1.27 0.00) (xy 1.27 -1.27)' in symbol
+        assert '(fill\n\t\t\t\t\t\t(type outline)' in symbol

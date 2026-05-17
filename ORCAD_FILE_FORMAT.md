@@ -297,6 +297,32 @@ ferrite bead bumps, etc. `scripts/dsn2kicad` emits KiCad
 `(arc (start X Y) (mid X Y) (end X Y) ...)` for circular arcs and a
 32-segment `(polyline ...)` for elliptical arcs.
 
+**Filled polygon / compound path** (type `0x2c2c`):
+
+```
+ff e4 5c 39              RECORD_MARKER
+00 00 00 00              zeros
+2c 2c                    type = 0x2c2c (filled polygon / path)
+00 00 00 00 00 00 00 00  unknown (8 bytes)
+00 00 00 00 00 00 00 00  unknown (8 bytes)
+vertex_count(2, LE)
+vertex_count × {
+    y(2, LE signed)
+    x(2, LE signed)
+}
+```
+
+The vertex order is `(y, x)`, unlike line, rectangle, ellipse, and arc
+records, whose coordinates are stored as `(x, y)`. Records often repeat
+the first vertex and may append the first vertex again as a close marker;
+do not globally de-duplicate vertices because repeated points can encode
+path structure.
+
+Most observed records are simple filled triangles used for LED arrowheads
+and transistor arrows. Some records appear to be compound paths: a closed
+filled subpath followed by extra stroke vertices. The exact semantics of
+those trailing vertices are not fully decoded.
+
 **Container wrapper** (subtype `0x0030`):
 
 The body rectangle record described above (in "Body rectangle") uses

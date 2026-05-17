@@ -22,10 +22,11 @@ Usage:
 import json
 import math
 import os
+import hashlib
+import random
 import re
 import struct
 import sys
-import uuid
 from collections import defaultdict
 from pathlib import Path
 
@@ -57,8 +58,19 @@ CELL_RE = re.compile(rb'([A-Za-z0-9_./+\-()]+)\.(Normal|Convert)\x00')
 REF_RE = re.compile(r'^[A-Z]{1,3}\d+[A-Z]?$')
 
 
+_uuid_rng = random.Random(0)
+
+
+def seed_uuid_rng(data: bytes):
+    _uuid_rng.seed(hashlib.sha256(data).digest())
+
+
 def new_uuid():
-    return str(uuid.uuid4())
+    b = bytes(_uuid_rng.getrandbits(8) for _ in range(16))
+    b = bytearray(b)
+    b[6] = (b[6] & 0x0F) | 0x40
+    b[8] = (b[8] & 0x3F) | 0x80
+    return f"{b[0:4].hex()}-{b[4:6].hex()}-{b[6:8].hex()}-{b[8:10].hex()}-{b[10:16].hex()}"
 
 
 def dsn_to_mm(coord):
@@ -2640,7 +2652,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             if net_name and is_power_net(net_name):
                 power_names_used.add(net_name)
 
-    for pname in power_names_used:
+    for pname in sorted(power_names_used):
         if _is_gnd_power_name(pname):
             lid = 'power:GND'
             if lid not in symbols_needed:
@@ -3824,6 +3836,7 @@ def main():
               "ratio for text sizing; install `freetype-py` and ensure "
               "Arial TTF is available for exact measurements)")
     ole = olefile.OleFileIO(str(dsn_path))
+    seed_uuid_rng(dsn_path.read_bytes())
 
     # Parse title-block fields (project-wide, applied to every page)
     title_block = parse_title_block(ole)

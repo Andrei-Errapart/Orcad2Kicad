@@ -1922,8 +1922,16 @@ def detect_multi_unit_components(ole):
         if not base:
             base = ref
         unit_map = {}
-        for i, cell_name in enumerate(distinct, 1):
-            unit_map[cell_name] = i
+        for cell_name in distinct:
+            suffix = cell_name[len(base):].lstrip('_')
+            last_ch = suffix[-1] if suffix else ''
+            if last_ch.isalpha():
+                unit_num = ord(last_ch.upper()) - ord('A') + 1
+            else:
+                unit_num = len(unit_map) + 1
+            while unit_num in unit_map.values():
+                unit_num += 1
+            unit_map[cell_name] = unit_num
         _multi_unit_groups[base] = unit_map
         for cell_name, unit_num in unit_map.items():
             _multi_unit_cell_map[cell_name] = (base, unit_num)
@@ -3295,17 +3303,10 @@ def main():
     if multi_groups:
         for base, umap in sorted(multi_groups.items()):
             print(f"    {base}: {len(umap)} units")
-        for cell_name in _multi_unit_cell_map:
-            _cell_pin_defs.pop(cell_name, None)
-            _cell_body_rects.pop(cell_name, None)
-            _cell_text_annotations.pop(cell_name, None)
-            _cell_centers.pop(cell_name, None)
-            _cell_pin_lists.pop(cell_name, None)
     else:
         print("    (none)")
 
     # Supplement with page-stream pin data for cells not found in Cache
-    # (includes multi-unit cells whose Cache data was removed above)
     print("  Scanning pages for additional cell definitions...")
     for stream_path in page_streams:
         data = page_data_cache[stream_path]
@@ -3318,10 +3319,6 @@ def main():
     extra = len(_cell_pin_defs) - cache_count
     if extra:
         print(f"  +{extra} cells from page streams")
-
-    # Rename numeric page-stream pins to Cache pin names for multi-unit cells
-    if _multi_unit_cell_map:
-        _rename_multi_unit_pins(cache_cells)
 
     print(f"  Total: {len(_cell_pin_defs)} cell definitions (+ R, C built-in)")
 

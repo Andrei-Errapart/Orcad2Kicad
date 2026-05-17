@@ -453,6 +453,16 @@ immediately after the ref-name null terminator — see "Component records"
 below). The actual value string is at position `value_index + 7` in
 this table (the offset of 7 skips the field-name headers).
 
+Some larger DSNs contain local Library table runs where one populated
+property slot is absent. In those cases `value_index + 7` can land on
+metadata such as a GUID, INS instance ID, version string, or library path
+instead of a component value. The converter treats those strings as invalid
+component values and tries nearby offsets, especially `value_index + 6`. In
+one observed CPU-board component, the nominal `value_index + 7` slot is a
+GUID-shaped metadata string, while `value_index + 6` is the actual value. No
+explicit `6` field-count byte has been identified in the surrounding component
+placement bytes yet.
+
 Example (one small board, 358 total entries):
 
 | Ref    | u16 index | +7 → table position | Resolved value        |

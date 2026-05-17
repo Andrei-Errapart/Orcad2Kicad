@@ -27,10 +27,12 @@ scripts/dsn2kicad <file.DSN> [output_dir]
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
 references, a symbol library, and a KiCad project file. Output defaults to a
-directory named after the DSN file. Symbol pin-name and pin-number visibility is
-derived from the DSN Cache symbol records: redundant numeric pin names are hidden,
-and two-terminal symbols whose Cache pin flags hide numbers emit hidden KiCad pin
-names and pin numbers.
+directory named after the DSN file. Root schematic sheet symbols are placed
+top-to-bottom, then left-to-right, so KiCad's hierarchy navigator follows the
+original DSN page order. Symbol pin-name and pin-number visibility is derived
+from the DSN Cache symbol records: one-pin symbols hide both labels, redundant
+numeric pin names are hidden, and two-terminal symbols whose Cache pin flags hide
+numbers emit hidden KiCad pin names and pin numbers.
 
 ### dsn_dump
 

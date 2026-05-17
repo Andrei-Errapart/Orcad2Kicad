@@ -220,3 +220,17 @@ def test_generate_root_sch(dsn2kicad):
     assert "(sheet" in content
     assert '"page1.kicad_sch"' in content
     assert '"Page 1"' in content
+
+
+def test_generate_root_sch_places_pages_in_hierarchy_order(dsn2kicad):
+    content = dsn2kicad.generate_root_sch(
+        [f"page{i}.kicad_sch" for i in range(1, 6)],
+        [f"Page {i}" for i in range(1, 6)],
+        "test_project",
+    )
+
+    assert '\t\t(at 15 25)' in content
+    assert '\t\t(at 15 42)' in content
+    assert '\t\t(at 15 59)' in content
+    assert '\t\t(at 15 76)' in content
+    assert '\t\t(at 83 25)' in content

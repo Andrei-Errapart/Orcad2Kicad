@@ -3035,15 +3035,18 @@ def generate_root_sch(page_filenames, page_names, project_name=""):
     parts = [sch_header("A3", f"{project_name} (DSN import)")]
     parts.append("\t(lib_symbols)\n")
 
-    cols = 4
+    rows = 4
     sheet_w, sheet_h = 60, 12
     margin_x, margin_y = 15, 25
     gap_x, gap_y = 8, 5
     root_uuid = new_uuid()
 
     for i, (fname, name) in enumerate(zip(page_filenames, page_names)):
-        col = i % cols
-        row = i // cols
+        # KiCad's hierarchy navigator sorts sheet symbols by position. Place
+        # imported pages top-to-bottom, then left-to-right, so that sort order
+        # follows the DSN page order.
+        row = i % rows
+        col = i // rows
         x = margin_x + col * (sheet_w + gap_x)
         y = margin_y + row * (sheet_h + gap_y)
 

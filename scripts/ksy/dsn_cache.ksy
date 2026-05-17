@@ -39,25 +39,30 @@ types:
 
   body_rect_record:
     doc: |
-      Body rectangle, written immediately after the OLB path string of the
-      second occurrence of a cell. Layout (see `_parse_cache_graphics`,
-      dsn2kicad lines 1409–1458):
+      Container wrapper (subtype 0x30) for the first body graphic of a cell.
+      Written immediately after the OLB path string of the second occurrence.
+      Layout:
         subtype(4)    == 0x30
         unknown(2)
-        type_word(2)  == 0x2828        identifies "standard body rectangle"
+        type_word(2)  == 0x2828 (rectangle) or 0x2b2b (ellipse)
         unknown(8)
-        x1(4 signed)                   body rectangle corner 1
+        x1(4 signed)                   bounding box corner 1
         y1(4 signed)
-        x2(4 signed)                   body rectangle corner 2
+        x2(4 signed)                   bounding box corner 2
         y2(4 signed)
       Total: 32 bytes from subtype start.
+
+      When type_word is 0x2828, the bbox defines the body rectangle.
+      When type_word is 0x2b2b, it defines the inscribed ellipse/circle.
     seq:
       - id: subtype
         contents: [0x30, 0x00, 0x00, 0x00]
       - id: unknown1
         size: 2
       - id: type_word
-        contents: [0x28, 0x28]
+        type: u2
+        doc: |
+          0x2828 = body rectangle, 0x2b2b = ellipse/circle.
       - id: unknown2
         size: 8
       - id: x1
@@ -177,6 +182,84 @@ types:
       - id: trailer
         size: 12
         doc: Remaining bytes of the 42-byte record.
+
+  # -------------------------------------------------------------------------
+  # Line segment record (graphic primitive)
+  # -------------------------------------------------------------------------
+
+  line_segment_record:
+    doc: |
+      Standalone line segment forming part of the symbol body graphic.
+      Type word `0x2929`. Same layout as `ellipse_record` — only the
+      type word differs.
+
+      Layout from marker:
+        marker(4)              FF E4 5C 39
+        zeros(4)
+        type_word(2)           == 0x2929
+        unknown(8)
+        x1(4 signed)           start X
+        y1(4 signed)           start Y
+        x2(4 signed)           end X
+        y2(4 signed)           end Y
+    seq:
+      - id: marker
+        type: dsn_common::record_marker
+      - id: zeros
+        contents: [0x00, 0x00, 0x00, 0x00]
+      - id: type_word
+        contents: [0x29, 0x29]
+      - id: unknown
+        size: 8
+      - id: x1
+        type: s4
+      - id: y1
+        type: s4
+      - id: x2
+        type: s4
+      - id: y2
+        type: s4
+
+  # -------------------------------------------------------------------------
+  # Ellipse / circle record (graphic primitive)
+  # -------------------------------------------------------------------------
+
+  ellipse_record:
+    doc: |
+      Ellipse or circle bounding box. Type word `0x2b2b`. When both axes
+      are equal it is a circle. Can appear standalone (after marker) or
+      wrapped inside the `body_rect_record` container (subtype 0x30) with
+      inner_type 0x2b2b at offset +6, bbox at offset +16.
+
+      Layout from marker (standalone form):
+        marker(4)              FF E4 5C 39
+        zeros(4)
+        type_word(2)           == 0x2b2b
+        unknown(8)
+        x1(4 signed)           bounding box corner 1 X
+        y1(4 signed)           bounding box corner 1 Y
+        x2(4 signed)           bounding box corner 2 X
+        y2(4 signed)           bounding box corner 2 Y
+
+      `dsn2kicad` emits KiCad `(circle ...)` for equal-axis cases and a
+      32-segment `(polyline ...)` for true ellipses.
+    seq:
+      - id: marker
+        type: dsn_common::record_marker
+      - id: zeros
+        contents: [0x00, 0x00, 0x00, 0x00]
+      - id: type_word
+        contents: [0x2b, 0x2b]
+      - id: unknown
+        size: 8
+      - id: x1
+        type: s4
+      - id: y1
+        type: s4
+      - id: x2
+        type: s4
+      - id: y2
+        type: s4
 
   # -------------------------------------------------------------------------
   # Pin record (the main payload of a Cache cell's second occurrence)

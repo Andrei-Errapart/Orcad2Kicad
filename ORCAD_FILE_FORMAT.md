@@ -221,6 +221,74 @@ Text annotations are extracted from the Cache and rendered as KiCad `(text "X" (
 
 **Prevalence**: 21 of 120 cells in the CPU board DSN carry text annotations (e.g., CPU units, connectors, PMICs). The previous "cells with line segments" counts are unchanged in arithmetic, only their interpretation.
 
+**Line segment** (type `0x2929`):
+
+```
+ff e4 5c 39              RECORD_MARKER
+00 00 00 00              zeros
+29 29                    type = 0x2929 (line segment)
+00 00 00 00 00 00 00 00  unknown (8 bytes)
+x1(4, LE signed)         start X
+y1(4, LE signed)         start Y
+x2(4, LE signed)         end X
+y2(4, LE signed)         end Y
+```
+
+Standalone line segments forming part of the symbol body graphic (e.g.,
+pin-stub lines for test pads, internal dividers). Same record layout as
+`0x2b2b` ellipses — the type word at offset +4 (after zeros) is the only
+difference.
+
+**Ellipse / circle** (type `0x2b2b`):
+
+```
+ff e4 5c 39              RECORD_MARKER
+00 00 00 00              zeros
+2b 2b                    type = 0x2b2b (ellipse bounding box)
+00 00 00 00 00 00 00 00  unknown (8 bytes)
+x1(4, LE signed)         bounding box corner 1 X
+y1(4, LE signed)         bounding box corner 1 Y
+x2(4, LE signed)         bounding box corner 2 X
+y2(4, LE signed)         bounding box corner 2 Y
+```
+
+The bounding box defines the axis-aligned rectangle circumscribing the
+ellipse. When `|x2−x1| == |y2−y1|` it is a circle. Can appear either as
+a standalone record or wrapped inside a `0x0030` container record (see
+below).
+
+**Inside a `0x0030` wrapper**: the inner type word at wrapper offset +6
+is `0x2b2b` and the bounding box is at wrapper offset +16 (4 × i32 LE),
+same layout as wrapped `0x2828` rectangles but 6 bytes deeper into the
+wrapper.
+
+`scripts/dsn2kicad` emits KiCad `(circle (center X Y) (radius R) ...)`
+for equal-axis ellipses and a 32-segment `(polyline ...)` approximation
+for true ellipses.
+
+**Container wrapper** (subtype `0x0030`):
+
+The body rectangle record described above (in "Body rectangle") uses
+subtype `0x30` as a wrapper that contains an inner graphic primitive.
+The wrapper layout:
+
+```
++0   u32  subtype = 0x00000030
++4   2B   unknown
++6   u16  inner_type         0x2828 = rectangle, 0x2b2b = ellipse
++8   8B   unknown
++16  i32  x1                 inner primitive bounding box
++20  i32  y1
++24  i32  x2
++28  i32  y2
+```
+
+Total: 32 bytes. The inner type at +6 determines interpretation. This
+is the first body graphic encountered per cell (the "inner" body
+rectangle or ellipse). Additional standalone graphics (`0x282828` outer
+rect, `0x2b2b` standalone ellipse, `0x2929` lines) follow as separate
+`RECORD_MARKER`-delimited records.
+
 **Outer body rectangle** (type `0x282828`):
 
 A 42-byte record with type bytes `28 28 28` at offset 0 (after marker+zeros). Contains rectangle coordinates at offsets 10–26 as int32 LE. This is a *second* body rectangle that, together with the inner rectangle from the preceding `0x0030` record, draws cells with composite outlines.

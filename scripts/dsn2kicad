@@ -1523,8 +1523,29 @@ def _direction_from_vector(hx, hy, bx, by):
     return 270 if dy < 0 else 90
 
 
+def _emit_ellipse_polyline(parts, cx, cy, rx, ry, n=32):
+    """Approximate an ellipse as a closed polyline."""
+    parts.append(f'\t\t\t\t(polyline\n')
+    parts.append(f'\t\t\t\t\t(pts\n')
+    for i in range(n + 1):
+        angle = 2 * math.pi * i / n
+        x = cx + rx * math.cos(angle)
+        y = cy + ry * math.sin(angle)
+        parts.append(f'\t\t\t\t\t\t(xy {x:.2f} {y:.2f})\n')
+    parts.append(f'\t\t\t\t\t)\n')
+    parts.append('\t\t\t\t\t(stroke\n')
+    parts.append('\t\t\t\t\t\t(width 0.254)\n')
+    parts.append('\t\t\t\t\t\t(type default)\n')
+    parts.append('\t\t\t\t\t)\n')
+    parts.append('\t\t\t\t\t(fill\n')
+    parts.append('\t\t\t\t\t\t(type none)\n')
+    parts.append('\t\t\t\t\t)\n')
+    parts.append('\t\t\t\t)\n')
+
+
 def lib_symbol_from_pins(name, pin_positions, body_rects=None,
-                         body_lines=None, text_annotations=None):
+                         body_lines=None, body_ellipses=None,
+                         text_annotations=None):
     """Generate a symbol definition from pin positions.
 
     pin_positions: list of tuples, either:
@@ -1685,6 +1706,26 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t\t\t)\n')
             parts.append('\t\t\t\t\t)\n')
             parts.append('\t\t\t\t)\n')
+    if body_ellipses:
+        for ex1, ey1, ex2, ey2 in body_ellipses:
+            ecx = (ex1 + ex2) / 2
+            ecy = (ey1 + ey2) / 2
+            rx = abs(ex2 - ex1) / 2
+            ry = abs(ey2 - ey1) / 2
+            if abs(rx - ry) < 0.01:
+                parts.append(f'\t\t\t\t(circle\n')
+                parts.append(f'\t\t\t\t\t(center {ecx:.2f} {ecy:.2f})\n')
+                parts.append(f'\t\t\t\t\t(radius {rx:.2f})\n')
+                parts.append('\t\t\t\t\t(stroke\n')
+                parts.append('\t\t\t\t\t\t(width 0.254)\n')
+                parts.append('\t\t\t\t\t\t(type default)\n')
+                parts.append('\t\t\t\t\t)\n')
+                parts.append('\t\t\t\t\t(fill\n')
+                parts.append('\t\t\t\t\t\t(type none)\n')
+                parts.append('\t\t\t\t\t)\n')
+                parts.append('\t\t\t\t)\n')
+            else:
+                _emit_ellipse_polyline(parts, ecx, ecy, rx, ry)
     parts.append('\t\t\t)\n')
 
     parts.append(f'\t\t\t(symbol "{name}_1_1"\n')
@@ -1759,6 +1800,7 @@ def _build_unit_pin_data(cell_name):
 
     rects = _cell_body_rects.get(cell_name)
     ann = _cell_text_annotations.get(cell_name)
+    ellipses = _cell_body_ellipses.get(cell_name)
 
     if not rects and body_xs:
         x1, y1 = min(body_xs), min(body_ys)
@@ -1772,7 +1814,7 @@ def _build_unit_pin_data(cell_name):
             y2 += MIN_BODY
         rects = [(x1, y1, x2, y2)]
 
-    return classified, rects, ann
+    return classified, rects, ann, ellipses
 
 
 def lib_symbol_multi_unit(base_name, unit_map):
@@ -1810,7 +1852,7 @@ def lib_symbol_multi_unit(base_name, unit_map):
         data = _build_unit_pin_data(cell_name)
         if data is None:
             continue
-        classified, rects, ann = data
+        classified, rects, ann, ellipses = data
 
         # Unit body (graphics): {base}_{unit}_0
         parts.append(f'\t\t\t(symbol "{base_name}_{unit_num}_0"\n')
@@ -1840,6 +1882,26 @@ def lib_symbol_multi_unit(base_name, unit_map):
                 parts.append('\t\t\t\t\t\t)\n')
                 parts.append('\t\t\t\t\t)\n')
                 parts.append('\t\t\t\t)\n')
+        if ellipses:
+            for ex1, ey1, ex2, ey2 in ellipses:
+                ecx = (ex1 + ex2) / 2
+                ecy = (ey1 + ey2) / 2
+                rx = abs(ex2 - ex1) / 2
+                ry = abs(ey2 - ey1) / 2
+                if abs(rx - ry) < 0.01:
+                    parts.append(f'\t\t\t\t(circle\n')
+                    parts.append(f'\t\t\t\t\t(center {ecx:.2f} {ecy:.2f})\n')
+                    parts.append(f'\t\t\t\t\t(radius {rx:.2f})\n')
+                    parts.append('\t\t\t\t\t(stroke\n')
+                    parts.append('\t\t\t\t\t\t(width 0.254)\n')
+                    parts.append('\t\t\t\t\t\t(type default)\n')
+                    parts.append('\t\t\t\t\t)\n')
+                    parts.append('\t\t\t\t\t(fill\n')
+                    parts.append('\t\t\t\t\t\t(type none)\n')
+                    parts.append('\t\t\t\t\t)\n')
+                    parts.append('\t\t\t\t)\n')
+                else:
+                    _emit_ellipse_polyline(parts, ecx, ecy, rx, ry)
         parts.append('\t\t\t)\n')
 
         # Unit pins: {base}_{unit}_1
@@ -1872,6 +1934,7 @@ _cell_body_rects = {}
 # in symbol coords. Used by DIP-switch symbols and others whose body is drawn
 # with individual lines rather than a rectangle record.
 _cell_body_lines = {}
+_cell_body_ellipses = {}
 
 # Text annotations from Cache: {cell_name: [(cx_mm, cy_mm, text), ...]} in symbol coords
 _cell_text_annotations = {}
@@ -1984,11 +2047,14 @@ def get_lib_symbol(cell_name):
         rects = _cell_body_rects.get(cell_name)
         ann = _cell_text_annotations.get(cell_name)
         lines = _cell_body_lines.get(cell_name)
+        ellipses = _cell_body_ellipses.get(cell_name)
         return (cell_name, ref_prefix,
                 lambda name=cell_name, pp=pin_positions, body_rects=rects,
-                       body_lines=lines, text_annotations=ann:
+                       body_lines=lines, body_ellipses=ellipses,
+                       text_annotations=ann:
                     lib_symbol_from_pins(name, pp, body_rects=body_rects,
                                          body_lines=body_lines,
+                                         body_ellipses=body_ellipses,
                                          text_annotations=text_annotations))
     return (cell_name, ref_prefix,
             lambda name=cell_name: lib_symbol_generic_fallback(name))
@@ -2649,13 +2715,14 @@ def _pin_sort_key(pin_name):
 
 
 def _parse_cache_graphics(data, aps, scan_end):
-    """Parse graphic primitives (body rectangles, line segments, text annotations)
-    from a Cache cell.
+    """Parse graphic primitives (body rectangles, line segments, ellipses,
+    text annotations) from a Cache cell.
 
     Scans from aps (after OLB path) until the first pin record or scan_end.
-    Returns (body_rects, body_lines, text_annotations) where:
+    Returns (body_rects, body_lines, body_ellipses, text_annotations) where:
       body_rects = [(x1, y1, x2, y2), ...]  in declaration order
       body_lines = [(x1, y1, x2, y2), ...]  line segments
+      body_ellipses = [(x1, y1, x2, y2), ...]  bounding boxes
       text_annotations = [(bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                             anchor_x, anchor_y, text), ...]
 
@@ -2675,6 +2742,7 @@ def _parse_cache_graphics(data, aps, scan_end):
     """
     body_rects = []
     body_lines = []
+    body_ellipses = []
     text_annotations = []
     pos = aps
 
@@ -2687,6 +2755,11 @@ def _parse_cache_graphics(data, aps, scan_end):
                 x1, y1, x2, y2 = struct.unpack_from('<iiii', data, pos + 16)
                 if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
                     body_rects.append((x1, y1, x2, y2))
+            elif tw == 0x2b2b and pos + 32 <= len(data):
+                x1, y1, x2, y2 = struct.unpack_from('<iiii', data, pos + 16)
+                if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
+                    if not (x1 == x2 == 0 and y1 == y2 == 0):
+                        body_ellipses.append((x1, y1, x2, y2))
             nm = data.find(RECORD_MARKER, pos + 32, scan_end)
             if nm < 0:
                 break
@@ -2717,6 +2790,17 @@ def _parse_cache_graphics(data, aps, scan_end):
             pos = nm + 8
             continue
 
+        if type_word == 0x2b2b and pos + 26 <= len(data):
+            x1, y1, x2, y2 = struct.unpack_from('<iiii', data, pos + 10)
+            if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
+                if not (x1 == x2 == 0 and y1 == y2 == 0):
+                    body_ellipses.append((x1, y1, x2, y2))
+            nm = data.find(RECORD_MARKER, pos + 26, scan_end)
+            if nm < 0:
+                break
+            pos = nm + 8
+            continue
+
         if type_word == 0x2e2e and pos + 42 <= len(data):
             bx1, by1, bx2, by2 = struct.unpack_from('<iiii', data, pos + 10)
             ax, ay = struct.unpack_from('<ii', data, pos + 26)
@@ -2739,7 +2823,7 @@ def _parse_cache_graphics(data, aps, scan_end):
             break
         pos = nm + 8
 
-    return body_rects, body_lines, text_annotations
+    return body_rects, body_lines, body_ellipses, text_annotations
 
 
 def _parse_cache_pin_numbers(data):
@@ -2800,19 +2884,21 @@ def _parse_cache_pin_numbers(data):
 
 def parse_cache_cells(ole):
     """Parse Cache stream to extract cell pin definitions, body rects, lines,
-    and text annotations.
+    ellipses, and text annotations.
 
-    Returns (cells, body_rects, body_lines, cell_text_annotations) where:
+    Returns (cells, body_rects, body_lines, pin_numbers,
+             cell_text_annotations, body_ellipses) where:
       cells = {cell_name: [(pin_name, hot_x, hot_y, body_x, body_y), ...]}
-      body_rects = {cell_name: [(x1, y1, x2, y2), ...]}   one or more rectangles in OrCAD units
+      body_rects = {cell_name: [(x1, y1, x2, y2), ...]}   rectangles in OrCAD units
       body_lines = {cell_name: [(x1, y1, x2, y2), ...]}   line segments in OrCAD units
+      body_ellipses = {cell_name: [(x1, y1, x2, y2), ...]} bounding boxes in OrCAD units
       cell_text_annotations = {cell_name:
           [(bbox_x1, bbox_y1, bbox_x2, bbox_y2, anchor_x, anchor_y, text), ...]}
     """
     try:
         data = ole.openstream('Cache').read()
     except Exception:
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}, {}
 
     cell_regions = []
     for m in CELL_RE.finditer(data):
@@ -2822,6 +2908,7 @@ def parse_cache_cells(ole):
     cells = {}
     body_rects = {}
     body_lines = {}
+    body_ellipses = {}
     cell_text_annotations = {}
     seen_names = set()
 
@@ -2836,11 +2923,13 @@ def parse_cache_cells(ole):
             path_len = struct.unpack_from('<H', data, end)[0]
             aps = end + 2 + path_len + 1
             if aps + 32 <= len(data):
-                rects, lines, anns = _parse_cache_graphics(data, aps, scan_end)
+                rects, lines, ellipses, anns = _parse_cache_graphics(data, aps, scan_end)
                 if rects:
                     body_rects[cell_name] = rects
                 if lines:
                     body_lines[cell_name] = lines
+                if ellipses:
+                    body_ellipses[cell_name] = ellipses
                 if anns:
                     cell_text_annotations[cell_name] = anns
 
@@ -2876,15 +2965,16 @@ def parse_cache_cells(ole):
 
     pin_numbers = _parse_cache_pin_numbers(data)
 
-    return cells, body_rects, body_lines, pin_numbers, cell_text_annotations
+    return cells, body_rects, body_lines, pin_numbers, cell_text_annotations, body_ellipses
 
 
 def register_cache_cells(cache_cells, cache_body_rects=None,
                          cache_body_lines=None,
                          cache_pin_numbers=None,
-                         cache_text_annotations=None):
+                         cache_text_annotations=None,
+                         cache_body_ellipses=None):
     """Populate _cell_pin_defs, _cell_body_rects, _cell_body_lines,
-    _cell_text_annotations from Cache data.
+    _cell_body_ellipses, _cell_text_annotations from Cache data.
 
     Each pin entry is (unique_name, hot_x_mm, hot_y_mm, orig_name,
                        body_x_mm, body_y_mm).
@@ -2899,6 +2989,8 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         cache_pin_numbers = {}
     if cache_text_annotations is None:
         cache_text_annotations = {}
+    if cache_body_ellipses is None:
+        cache_body_ellipses = {}
     for cell_name, pins in cache_cells.items():
         if cell_name in CELL_TO_KICAD:
             continue
@@ -2946,11 +3038,20 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
                 ))
             _cell_body_lines[cell_name] = sym_lines
 
+        if cell_name in cache_body_ellipses:
+            sym_ellipses = []
+            for ex1, ey1, ex2, ey2 in cache_body_ellipses[cell_name]:
+                sym_ellipses.append((
+                    round((ex1 - cx) * UNIT_TO_MM, 2),
+                    round(-(ey1 - cy) * UNIT_TO_MM, 2),
+                    round((ex2 - cx) * UNIT_TO_MM, 2),
+                    round(-(ey2 - cy) * UNIT_TO_MM, 2),
+                ))
+            _cell_body_ellipses[cell_name] = sym_ellipses
+
         if cell_name in cache_text_annotations:
             sym_anns = []
             for bx1, by1, bx2, by2, ax, ay, text in cache_text_annotations[cell_name]:
-                # Center of the bbox is a reasonable anchor for a KiCad
-                # (text ...) primitive — Y flipped to match symbol space.
                 mx = (bx1 + bx2) / 2
                 my = (by1 + by2) / 2
                 sym_anns.append((
@@ -3287,11 +3388,12 @@ def main():
     _cell_pin_defs.clear()
     _cell_body_rects.clear()
     _cell_body_lines.clear()
+    _cell_body_ellipses.clear()
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
-    cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations = parse_cache_cells(ole)
-    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations)
+    cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses = parse_cache_cells(ole)
+    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses)
     cache_count = len(_cell_pin_defs)
     for cname, cpins in cache_cells.items():
         print(f"    {cname}: {len(cpins)} pins")

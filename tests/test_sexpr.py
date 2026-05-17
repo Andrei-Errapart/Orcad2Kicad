@@ -180,6 +180,17 @@ def test_lib_symbol_keeps_two_pin_switch_numbers_from_pin_flags(dsn2kicad):
     assert "(pin_numbers hide)" not in sym
 
 
+def test_lib_symbol_hides_single_pin_labels(dsn2kicad):
+    sym = dsn2kicad.lib_symbol_from_pins(
+        "TP_PAD",
+        [
+            ("1", -2.54, 0, "TEST_POINT", 0, 0, 0x21),
+        ],
+    )
+    assert "(pin_names\n\t\t\t\t(offset 1.016)\n\t\t\t\thide)" in sym
+    assert "(pin_numbers hide)" in sym
+
+
 def test_lib_symbol_power_gnd(dsn2kicad):
     g = dsn2kicad.lib_symbol_power_gnd()
     assert "power:GND" in g

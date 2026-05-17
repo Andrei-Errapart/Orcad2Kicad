@@ -1663,6 +1663,8 @@ def _pin_record_hides_number(pin_flags):
 
 def _symbol_pin_visibility(classified):
     """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
+    if len(classified) == 1:
+        return True, True
     pin_flags = [p[7] for p in classified if p[7] is not None]
     if (len(classified) == 2 and pin_flags
             and any(_pin_record_hides_number(flags) for flags in pin_flags)):

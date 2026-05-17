@@ -981,7 +981,10 @@ def sch_junction(x, y):
 def sch_label(name, x, y, angle=0):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
-    justify = "right" if angle == 180 else "left"
+    if angle in (180, 270):
+        justify = "right bottom"
+    else:
+        justify = "left bottom"
     return (
         f"\t(label \"{name_esc}\"\n"
         f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
@@ -2789,7 +2792,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
             parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
         else:
-            parts.append(sch_label(lbl['name'], x, y, angle=lbl['angle']))
+            local_angle = (lbl['angle'] + 180) % 360
+            parts.append(sch_label(lbl['name'], x, y, angle=local_angle))
 
     # Bus labels — placed at the true free endpoints of the bus
     # (using all bus segments including diagonals so intermediate

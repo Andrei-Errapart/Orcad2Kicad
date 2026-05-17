@@ -749,9 +749,20 @@ ff e4 5c 39          record marker
 pin_num(2, LE)       1-based index into Cache pin list for this cell
 pin_x(2, LE signed)  pin hotpoint X in page coordinates (10-mil units)
 pin_y(2, LE signed)  pin hotpoint Y in page coordinates (10-mil units)
+unknown(4)           per-pin metadata; values vary
+net_id(4, LE)        optional net-table ID at marker+18
 ```
 
 The `pin_num` is a 1-based index into the Cache pin list for the cell, NOT a named pin number. For a 153-pin BGA cell, `pin_num=3` refers to the 3rd pin in the Cache list, which may have a signal-style name such as "DAT0".
+
+The `net_id` field is considered present only when it resolves through the
+page's net table. This field is important because some OrCAD connections are
+stored directly on the pin record without an intervening wire segment — for
+example, a power port placed directly on a resistor pin. The PDF export shows
+the connection as a power label above the component, but in the binary format
+the only evidence is this net_id on the pin record. OrCAD net names are
+case-insensitive, so `VDD1G_1p8` in rendered/text contexts and `VDD1G_1P8` in
+the net table are the same net.
 
 **Computing component origin from pin records**:
 
@@ -779,7 +790,10 @@ Where `(center_x, center_y)` is `((min_hx + max_hx)/2, (min_hy + max_hy)/2)` com
 | SD1 | CARD_SOCKET | (1095, 435) | (1130, 310) | 14/14, origin spread = 0 |
 | U1 | BGA_153 | (1315, 1483) | (1350, 250) | 33/153, origin spread = 0 |
 
-Note: not all pins have page-stream records — only pins with wire connections. But even one matched pin suffices to compute the exact origin.
+Note: not all physical pins have page-stream records — only pins participating
+in page connectivity. Most of these are wire-connected pins, but direct
+power-port-to-pin cases can also appear only as a `net_id` on the pin record.
+Even one matched pin suffices to compute the exact origin.
 
 #### Power symbol records
 
@@ -822,6 +836,12 @@ every wire endpoint that:
    `<digits>V`, etc.),
 2. is a "free" wire endpoint (count == 1 in the segment graph), and
 3. does **not** coincide with a component pin position.
+
+There is one additional source of synthesized power glyphs: a component pin
+record may carry a resolved power `net_id` even when no parsed wire touches the
+pin. In that case `scripts/dsn2kicad` emits the power symbol directly at the
+pin hotpoint. This covers direct OrCAD power-port connections where the binary
+stores the net association on the pin record rather than as a wire segment.
 
 The pin-position filter is essential: without it, a multi-pin
 connector with a GND bus running across its left column ends up

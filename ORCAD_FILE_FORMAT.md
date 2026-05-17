@@ -2,9 +2,11 @@
 
 Notes about the DSN files used during development.
 
-## Test files
+## Development fixtures
 
-No test files yet.
+The current local fixtures cover multiple boards, including small two-page
+schematics and a larger multi-page schematic. Each fixture has a DSN and, where
+available, a matching PDF export for visual cross-checking.
 
 ---
 
@@ -118,9 +120,9 @@ between streams):
 
 | Stream | Example entries | `kind` | trailer |
 |--------|-----------------|--------|---------|
-| `Cells Directory`        | `CPU_0M`, `CPU_1N`, ...        | `0x0006` | `d8 04 02 00` |
-| `Parts Directory`        | `CPU_0E.Normal`, ...           | `0x0018` | `d8 04 02 00` |
-| `Packages Directory`     | `CPU_0`..`CPU_3`               | `0x001f` | `d8 04 02 00` |
+| `Cells Directory`        | `<unit_0>M`, `<unit_1>N`, ...  | `0x0006` | `d8 04 02 00` |
+| `Parts Directory`        | `<unit_0>E.Normal`, ...        | `0x0018` | `d8 04 02 00` |
+| `Packages Directory`     | `<unit_0>`..`<unit_3>`         | `0x001f` | `d8 04 02 00` |
 | `Symbols Directory`      | `ERC` (single entry)           | `0x004b` | `03 00 02 00` |
 | `Views Directory`        | `SCHEMATIC1` (single entry)    | `0x0009` | `03 00 02 00` |
 | `ExportBlocks Directory` | (empty)                        | n/a     | n/a     |
@@ -131,15 +133,15 @@ which is what the DSNs show for `ExportBlocks Directory`,
 `Graphics Directory`, and several others that some of the schematics do not
 populate.
 
-**Cells Directory** entries are the cell (symbol) names — multi-unit
-symbols for the SoC use names like `CPU_0M`, `CPU_1N`,
-`CPU_2O`, `CPU_3P`.
+**Cells Directory** entries are the cell (symbol) names — large multi-unit
+symbols use names like `<unit_0>M`, `<unit_1>N`, `<unit_2>O`,
+`<unit_3>P`.
 
 **Parts Directory** entries are part names that map to cells; the
 `.Normal` suffix likely distinguishes body styles (Normal vs DeMorgan).
-Example: `CPU_0E.Normal`, `CPU_0S.Normal`, `CPU_1N.Normal`.
+Example: `<unit_0>E.Normal`, `<unit_0>S.Normal`, `<unit_1>N.Normal`.
 
-**Verification**: CPU board `Cells Directory` is 3,542 bytes =
+**Verification**: one larger board `Cells Directory` is 3,542 bytes =
 `6 + 104 entries × 34 bytes` (each 9-character name); `Parts Directory`
 is 4,270 bytes, 104 entries, consumed exactly with zero leftover.
 
@@ -189,7 +191,7 @@ Total: 32 bytes from subtype start. The body rectangle defines the main outline 
 | Cell | Body rect | Pin hotpoint range | Padding |
 |------|-----------|-------------------|---------|
 | BOARD_CONNECTOR | (0,0)→(50,160) | x=[-10..60], y=[10..150] | 10 units top/bottom |
-| eMMC(153BGA) | (0,0)→(180,1220) | x=[-30..210], y=[10..1200] | 10/20 units |
+| BGA_153 | (0,0)→(180,1220) | x=[-30..210], y=[10..1200] | 10/20 units |
 | CARD_SOCKET | (0,10)→(110,80) | x=[-30..120], y=[10..120] | irregular (bottom pins extend below body) |
 
 #### Graphic primitives (second occurrence, after body rect)
@@ -215,11 +217,11 @@ text(text_len)           text characters (e.g., 'A', 'B', 'G')
 null(1)                  null terminator
 ```
 
-Total: 42 bytes per record (with a 1-character label). Text annotations are symbol-internal labels visible on the schematic — for example the six letters `A`, `B`, `G`, `G`, `G`, `G` placed above the bottom-row contacts of the `CARD_SOCKET` microSD socket. Bounding boxes are typically ~8×9 OrCAD units (~2.0×2.3 mm), i.e. one glyph cell.
+Total: 42 bytes per record (with a 1-character label). Text annotations are symbol-internal labels visible on the schematic — for example the six letters `A`, `B`, `G`, `G`, `G`, `G` placed above the bottom-row contacts of the `CARD_SOCKET` card socket. Bounding boxes are typically ~8×9 OrCAD units (~2.0×2.3 mm), i.e. one glyph cell.
 
 Text annotations are extracted from the Cache and rendered as KiCad `(text "X" (at x y 0) ...)` primitives in the symbol definition (`_0_1` sub-symbol). The annotation anchor is the bbox centre, converted to mm using the same centering transform as pin positions.
 
-**Prevalence**: 21 of 120 cells in the CPU board DSN carry text annotations (e.g., CPU units, connectors, PMICs). The previous "cells with line segments" counts are unchanged in arithmetic, only their interpretation.
+**Prevalence**: 21 of 120 cells in the one larger board DSN carry text annotations (e.g., multi-unit symbols, connectors, PMICs). The previous "cells with line segments" counts are unchanged in arithmetic, only their interpretation.
 
 **Line segment** (type `0x2929`):
 
@@ -317,7 +319,7 @@ The **body point** is where the pin stub meets the symbol body rectangle. The **
 
 **Pin numbering**: Physical pin numbers are stored in a separate **0x7f-separated pin number list** (see below). The N-th entry in that list is the physical pin number for the N-th pin in the IC-style Cache pin list. For most ICs and connectors the list is simply sequential (1, 2, 3, ...), but for components like DIP switches the ordering differs from the Cache storage order — e.g., DIP-6 maps cache positions to physical pins [1, 2, 3, 8, 7, 6, 4, 5, 9, 10, 11, 12] following the standard DIP convention (down the left side, up the right side). Page-stream `pin_num = N` references the N-th pin in the Cache list for that cell. The pin *name* (e.g., "Vdda", "AD20") is distinct from the pin *number*.
 
-**Pin names**: For simple components (R, C), pin names are just numbers ("1", "2"). For ICs and connectors, names may be signal names ("DAT0", "CLK") or "NC" for unconnected pins. BGA pins use ball designators as names. Multi-pin components may have duplicate names (e.g., 107 "NC" pins on eMMC(153BGA)).
+**Pin names**: For simple components (R, C), pin names are just numbers ("1", "2"). For ICs and connectors, names may be signal names ("DAT0", "CLK") or "NC" for unconnected pins. BGA pins use ball designators as names. Multi-pin components may have duplicate names, for example many repeated "NC" pins on a large BGA component.
 
 **Empirical examples**:
 
@@ -326,7 +328,7 @@ The **body point** is where the pin stub meets the symbol body rectangle. The **
 | R | 2 | (-10, 10) | (0, 10) | 10 units (2.54 mm) |
 | C | 2 | (-10, 10) | (0, 10) | 10 units (2.54 mm) |
 | BOARD_CONNECTOR | 30 | (-10, 10) | (0, 10) | 10 units (left pins), 10 units (right pins) |
-| eMMC(153BGA) | 153 | (210, 10) | (180, 10) | 30 units (right pins), 30 units (left pins) |
+| BGA_153 | 153 | (210, 10) | (180, 10) | 30 units (right pins), 30 units (left pins) |
 | CARD_SOCKET | 14 | (-30, 10) | (0, 10) | 30 units (left pins 1–8), 30 units (bottom pins 9–14) |
 
 #### Text annotations (second occurrence, after pins)
@@ -370,7 +372,7 @@ The `Library` stream is the project's **style table + title-block field storage*
 
 #### Value string table
 
-After a binary header (~3 KB on the microSD board), the `Library`
+After a binary header, the `Library`
 stream contains a sequence of **u16-LE length-prefixed ASCII strings**
 (`u16_LE(len) + chars(len) + null_terminator`). These serve as:
 
@@ -386,7 +388,7 @@ immediately after the ref-name null terminator — see "Component records"
 below). The actual value string is at position `value_index + 7` in
 this table (the offset of 7 skips the field-name headers).
 
-Example (microSD board, 358 total entries):
+Example (one small board, 358 total entries):
 
 | Ref    | u16 index | +7 → table position | Resolved value        |
 |--------|-----------|---------------------|-----------------------|
@@ -416,7 +418,7 @@ the "Title-block" subsection of "Page Streams" below.
 #### Status
 
 - Font names, weight (Normal/Bold), and italic flag are decoded
-  cleanly. Confirmed: 6 records in the microSD board's `Library`
+  cleanly. Confirmed: 6 records in the one small board's `Library`
   carry `weight = 700`, and one of them (`@ 0x07ee`, tag = -64) is
   bold-italic Arial.
 - **Page-stream text records reference Library styles by a 1-based
@@ -424,15 +426,15 @@ the "Title-block" subsection of "Page Streams" below.
   `library_styles[text.style_id - 1]` is the style for that text.
   The text record field was originally misnamed `font_size`; it is
   actually a **style ID**, NOT a point size.
-- Verified on the microSD cover page: every distinct text style ID
+- Verified on the one cover page: every distinct text style ID
   maps to a Library record whose weight + italic flag match the
-  visible rendering — the bold-italic title `microSD Sub Board`
+  visible rendering — the bold-italic title `the board title`
   (`style_id=34`) hits the only bold-italic Arial record (index 33),
   bold body paragraphs (`style_id=35`) hit bold Arial records, plain
   black labels (`style_id=15, 17`) hit normal Arial records.
 - Font **color has not been found in the DSN.** Investigation
-  summary (microSD cover page, where there are 3 visible colors —
-  black body text, green `INDEX` and `microSD Sub Board` title,
+  summary (one cover page, where there are 3 visible colors —
+  black body text, green `INDEX` and `the board title` title,
   red `CAUTION` heading and body paragraphs):
 
   | Place we looked | Result |
@@ -461,7 +463,7 @@ the "Title-block" subsection of "Page Streams" below.
 
 ### Packages
 
-Four streams `CPU_0` through `CPU_3` — these are the four units of the CPU symbol. Binary format containing pin definitions, coordinates, and graphics for each unit. Uses a different pin list encoding from the IC-style Cache records:
+Four per-unit package streams — these are the units of a large multi-unit symbol. Binary format containing pin definitions, coordinates, and graphics for each unit. Uses a different pin list encoding from the IC-style Cache records:
 
 ```
 pin_count(2, LE)         number of pins in this unit
@@ -480,7 +482,10 @@ The same 0x7f-separated format also appears in the **Cache stream** for non-BGA 
 
 ### Hierarchy Stream
 
-Contains the complete net connectivity information. This is the schematic-level netlist.
+Contains schematic-level net records. The current parser extracts net IDs and
+net names from this stream, but the pin-to-net connectivity records after the
+net names are still only partially understood. Treat this as an important
+netlist source, not yet as a fully decoded schematic netlist.
 
 **Header**: Starts with `42 31` marker ("B1"), followed by schematic name `SCHEMATIC1`.
 
@@ -490,17 +495,20 @@ Contains the complete net connectivity information. This is the schematic-level 
 - The net name as a null-terminated ASCII string
 - Followed by binary connectivity data
 
-From the EVK Hierarchy stream, 574 nets were extracted:
+From the one larger-board Hierarchy stream, 574 nets were extracted:
 - 331 named signal nets (PCIE_REFCLKP0, VDD5G_1P8_EN, ETC_RESETN, etc.)
 - 243 anonymous nets (ANON_NET_B, ANON_NET_C, etc.)
 
-From the eMMC Hierarchy stream, 16 nets were extracted:
-- QSD0_CLK, GND, QSD0_CMD, QSD0_DAT0–DAT7, QSD0_RST_N
-- MICROSD0_3.3V, MICROSD0_1833V, EMMC_VDDI, EMMC_DS
+From the one small-board Hierarchy stream, 16 nets were extracted:
+- Interface clock, command, data, reset, ground, and supply nets
 
-After the net name records, there are repeating blocks containing `BH` markers and binary data — likely the pin-to-net connectivity records linking component pins to nets. These records are ~26 bytes each and repeat once per connection point. In the eMMC hierarchy (8 KB, 16 nets), there are approximately 250 of these blocks, suggesting ~250 connection points (pins wired to nets).
+After the net name records, there are repeating blocks containing `BH` markers and binary data — likely the pin-to-net connectivity records linking component pins to nets. These records are ~26 bytes each and repeat once per connection point.
 
-**The Hierarchy stream provides cross-page net information.** Net names are used to determine which nets are global (appear on multiple pages → global labels in KiCad) versus local (single page → local labels). The per-page net tables in each page stream provide the actual wire-to-net assignments.
+**The Hierarchy stream provides cross-page net-name information.** Net names can
+be used to determine which nets are global (appear on multiple pages → global
+labels in KiCad) versus local (single page → local labels). The per-page net
+tables in each page stream provide the actual wire-to-net assignments currently
+used by `scripts/dsn2kicad`.
 
 ### Page Streams
 
@@ -508,7 +516,7 @@ Each page stream contains the schematic drawing data for one page.
 
 **Header** (first ~300 bytes):
 - `0x0a` record marker
-- Page name (e.g., `15_POWER1`, `02_eMMC`)
+- Page name (e.g., `15_POWER1`, `02_MEMORY`)
 - Paper size string (e.g., `A2`)
 - Page dimensions as 32-bit LE integers
 - Drawing area bounds
@@ -526,7 +534,7 @@ The page streams contain embedded ASCII strings for:
 - Property values
 - Pin names from symbol instantiations
 
-From the eMMC page 02 stream, the following net names were found as embedded strings: MICROSD0_1833V, MICROSD0_3.3V, QSD0_RST_N, QSD0_DAT0–DAT7, QSD0_CLK, QSD0_CMD, EMMC_DS, EMMC_VDDI, GND.
+From one page stream, interface signal names, supply names, and ground were found as embedded strings.
 
 **Coordinate system**: All coordinates in OrCAD page streams are in units of 10 mils (0.254 mm). Y increases downward. To convert to KiCad schematic millimeters: `coord × 0.254`.
 
@@ -630,7 +638,10 @@ Same-value components share the same index.
 
 #### Value/Reference text position records
 
-Between the orientation byte and the pin placement records, two `RECORD_MARKER`-delimited records encode the page-relative offset for the component's Value and Reference text. They always appear as a consecutive pair:
+Between the orientation byte and the pin placement records, two
+`RECORD_MARKER`-delimited records encode the page-relative offsets for the
+component's Reference and Value text. They normally appear as a consecutive
+pair:
 
 ```
 ff e4 5c 39          record marker
@@ -640,13 +651,23 @@ x_off(2, LE signed)  X offset from component origin (10-mil units)
 y_off(2, LE signed)  Y offset from component origin (10-mil units)
 ```
 
-**Order**: The first record is the **Value** text position; the second is the **Reference** text position. Verified across all 1159 components in three DSN files — the second record always immediately precedes the `0x18` reference designator tag.
+**Order used by `scripts/dsn2kicad`**: the first record is the **Reference**
+text position; the second is the **Value** text position. The second record
+normally immediately precedes the `0x18` reference designator tag. Earlier
+notes had this order reversed.
 
-**Property ID**: The `prop_id` field varies between DSN files (e.g., 0x1e/0x1f in microSD, 0x1c/0x1d in eMMC and CPU board). These are likely indices into a file-internal property table. The order (first=Value, second=Reference) is reliable regardless of the specific ID values.
+**Property ID**: The `prop_id` field varies between DSN files (e.g.,
+0x1e/0x1f in one board, 0x1c/0x1d in other boards). These are likely
+indices into a file-internal property table. Current parser behavior treats
+the first position record as Reference and the second as Value regardless of
+the specific ID values.
 
-**Coordinate system**: Offsets are in page coordinates (not component-local), so they do not need rotation transformation. Text is always rendered horizontally.
+**Coordinate system**: Offsets are in page coordinates (not component-local),
+so they do not need rotation transformation. Byte 17 of the position record is
+used by `scripts/dsn2kicad` to detect 90° rotated reference/value text
+(`0x40` flag bit).
 
-**Empirical examples** (microSD board):
+**Empirical examples** (one small board):
 
 | Component | Cell | Value offset | Reference offset |
 |-----------|------|-------------|-----------------|
@@ -668,7 +689,7 @@ pin_x(2, LE signed)  pin hotpoint X in page coordinates (10-mil units)
 pin_y(2, LE signed)  pin hotpoint Y in page coordinates (10-mil units)
 ```
 
-The `pin_num` is a 1-based index into the Cache pin list for the cell, NOT a named pin number. For cell "eMMC(153BGA)" with 153 Cache pins, `pin_num=3` refers to the 3rd pin in the Cache list (which is named "DAT0").
+The `pin_num` is a 1-based index into the Cache pin list for the cell, NOT a named pin number. For a 153-pin BGA cell, `pin_num=3` refers to the 3rd pin in the Cache list, which may have a signal-style name such as "DAT0".
 
 **Computing component origin from pin records**:
 
@@ -686,13 +707,13 @@ kicad_center = origin + all_pin_hotpoint_midpoint
 
 Where `all_pin_hotpoint_midpoint` is `((min_hx + max_hx)/2, (min_hy + max_hy)/2)` computed from the Cache pin list.
 
-**Empirical verification** (microSD board):
+**Empirical verification** (one small board):
 
 | Component | Cell | Raw (x,y) | Origin (computed) | Page pins matched |
 |-----------|------|-----------|-------------------|-------------------|
 | CN1 | BOARD_CONNECTOR | (279, 483) | (300, 280) | 22/30, origin spread = 0 |
 | SD1 | CARD_SOCKET | (1095, 435) | (1130, 310) | 14/14, origin spread = 0 |
-| U1 (eMMC) | eMMC(153BGA) | (1315, 1483) | (1350, 250) | 33/153, origin spread = 0 |
+| U1 | BGA_153 | (1315, 1483) | (1350, 250) | 33/153, origin spread = 0 |
 
 Note: not all pins have page-stream records — only pins with wire connections. But even one matched pin suffices to compute the exact origin.
 
@@ -717,12 +738,12 @@ The `header` field varies widely between DSN files and is NOT a reliable filter.
 
 ##### Caveat: these are *not* glyph-placement records
 
-Empirical testing on `DOC-BOARD-001_microSD_Sub_Board_Schematics.DSN`
+Empirical testing on one small-board DSN
 showed that **none** of the 12 records identified by the layout above
 have coordinates that land on any wire endpoint of the matching net.
 The bbox sizes (10×20 OrCAD units for GND records, 22×65/72 for
 VCC_BAR records) match the dimensions of the **caption text label**
-("GND", "VCC_BAR", "MICROSD0_3.3V", …) drawn next to the glyph —
+("GND", "VCC_BAR", a supply net name, …) drawn next to the glyph —
 not the glyph anchor itself. OrCAD apparently draws the actual GND /
 VCC glyph **implicitly** at the wire endpoint when the net is a
 power net, and these records carry the bounding box of the caption
@@ -808,8 +829,7 @@ prefix). Layout from the type-word offset:
 +36  u16  style_id               1-based index into the Library
                                    stream's style table. The referenced
                                    record carries the font face,
-                                   weight, italic flag, and (encoded)
-                                   color/size for this text.
+                                   weight, and italic flag for this text.
 +38  u16  unknown                varies widely (0, 67, 2153, 53569, …);
                                    meaning not yet decoded
 +40  u16  text_len               length of the ASCII text in bytes
@@ -897,7 +917,7 @@ stream's records (those are all font references, no line/fill style
 records were observed). It is more likely an index into an **implicit
 OrCAD-side rendering palette** hardcoded in Capture itself.
 
-Empirical mapping from the microSD cover page's PDF render:
+Empirical mapping from the one cover page's PDF render:
 - index 0 (INDEX table, all decorative lines): black, 0.36 pt stroke
 - index 1 (CAUTION block border): red, 1.08 pt stroke (3× thicker)
 
@@ -924,7 +944,7 @@ equal-axis ellipses and a 32-segment `(polyline ...)` for true ellipses.
 **both** endpoints fall inside the bottom-right title-block region are
 filtered out, like free-text records.
 
-**Sample (microSD cover page, `01_NOTE`)**:
+**Sample (one cover page, `01_NOTE`)**:
 
 | Record | Coords (10-mil) | Color | Use |
 |--------|-----------------|-------|-----|
@@ -989,15 +1009,15 @@ Top-level schematic metadata. Contains page ordering and hierarchy information.
 First 32 bytes:
 
 ```
-EVK board:     02 05 14 00 03 00 00 00 01 00 00 00 03 00 00 00 09 00 00 00 ...
-Sub-boards:    04 15 13 00 03 00 00 00 01 00 00 00 03 00 00 00 09 00 00 00 ...
+one larger board:     02 05 14 00 03 00 00 00 01 00 00 00 03 00 00 00 09 00 00 00 ...
+smaller boards:      04 15 13 00 03 00 00 00 01 00 00 00 03 00 00 00 09 00 00 00 ...
 ```
 
-First 4 bytes appear to be a format version. The EVK board and sub-boards use different versions, which affects the internal record format.
+First 4 bytes appear to be a format version. The one larger board and smaller boards use different versions, which affects the internal record format.
 
-### String Table (EVK board, format `02 05 14 00`)
+### String Table (one larger board, format `02 05 14 00`)
 
-Located at offset `0x1200` in the EVK board file. Contains 5,269 sequential entries (IDs 124–5392).
+Located at offset `0x1200` in the one larger board file. Contains 5,269 sequential entries (IDs 124–5392).
 
 **Record format**: `[4-byte LE sequential ID] [null-terminated ASCII string] [padding to 4-byte boundary]`
 
@@ -1016,24 +1036,24 @@ The table contains a mix of:
 - **Layer names**: TOP, BOTTOM, LABEL L1–L8, etc.
 - **Metadata**: TP_PAD, SILKLINE_TOP, BACK_GROUND, etc.
 
-### String Table (sub-boards, format `04 15 13 00`)
+### String Table (smaller boards, format `04 15 13 00`)
 
-Different format from the EVK board. Strings are **not** preceded by sequential IDs. Instead:
+Different format from the one larger board. Strings are **not** preceded by sequential IDs. Instead:
 
 ```
 [null-terminated string] [padding to 4-byte boundary] [4-byte pointer/reference]
 ```
 
-Example from eMMC sub-board at offset `0x1348`:
+Example from one smaller board at offset `0x1348`:
 ```
-EMMC_VDDI\0\0\0  b8 3b 78 0c
+SUPPLY_A\0\0\0     b8 3b 78 0c
 GND\0              bd 3b 78 0c
-MICROSD0_1833V\0\0 cd 3b 78 0c
+SUPPLY_B\0\0       cd 3b 78 0c
 ```
 
 The 4-byte values after each string share a common base (`0x0C783Bxx`) and differ by amounts that seem related to the string lengths of adjacent entries.
 
-### Component Records (EVK board)
+### Component Records (one larger board)
 
 Component reference designators appear as embedded null-terminated strings within larger records. Located well past the string table (e.g., C572 appears at offsets `0x401fcc` and `0x402024`).
 
@@ -1061,13 +1081,13 @@ b6 23 00 00          unknown reference (0x23B6 = 9142, not in string table)
 02 00 01 00          attributes (pad count? layer?)
 ```
 
-**Coordinate units**: The EVK board's coordinates appear to be in units of ~100nm. C572's coordinates (720,000 × 589,000) correspond to (72.0mm × 58.9mm), matching the KiCad import position of C572 at (72, -59.2).
+**Coordinate units**: The one larger board's coordinates appear to be in units of ~100nm. C572's coordinates (720,000 × 589,000) correspond to (72.0mm × 58.9mm), matching the KiCad import position of C572 at (72, -59.2).
 
 **The net-to-pin mapping has NOT been decoded.** The component records contain coordinate data and reference strings, but the records that associate specific pads with specific net IDs from the string table have not been identified. The string table IDs (4-byte LE values like ID 927 = GND) do appear throughout the file (GND's ID found at 279 locations), but the record format around them varies and no consistent netlist record structure has been identified.
 
 ### Embedded Text Sections
 
-Several XML and text sections are embedded near the end of the file (offsets > 0x3580000 in the EVK board):
+Several XML and text sections are embedded near the end of the file (offsets > 0x3580000 in the one larger board):
 
 - **Material library**: XML, `<Vendor_Material_Lib>`
 - **SPICE models**: S-expression format, `("sourceLibrary ...")`, for components like FILTER, FILTER_ARRAY
@@ -1083,13 +1103,13 @@ Several XML and text sections are embedded near the end of the file (offsets > 0
 
 1. **Decode the pin-to-net records**: Find the record type that associates a pad (within a component) with a net ID from the string table. The data is there (both net IDs and component refs exist as strings), but the linking records have not been decoded.
 
-2. **Handle format versions**: The EVK board (header `02 05 14 00`) and sub-boards (header `04 15 13 00`) use different internal formats. At minimum, the string table encoding differs.
+2. **Handle format versions**: The one larger board (header `02 05 14 00`) and smaller boards (header `04 15 13 00`) use different internal formats. At minimum, the string table encoding differs.
 
 3. **Cross-validate**: The KiCad PCB import provides ground truth for all 908 nets. Any BRD parser output can be validated against it.
 
 ### Alternative: extract netlist from KiCad PCB
 
-The KiCad PCB file (`kicad_import/CPU_Evaluation_Board.kicad_pcb`) contains the complete netlist in a parseable S-expression format:
+A KiCad PCB import file contains the complete netlist in a parseable S-expression format:
 
 - Net definitions: `(net N "net_name")` at the top level (909 entries including net 0 = unconnected)
 - Component footprints: `(footprint ...)` blocks with `(property "Reference" "C572")` and pad-to-net assignments `(pad "1" ... (net 241 "LDO3_1P2"))`

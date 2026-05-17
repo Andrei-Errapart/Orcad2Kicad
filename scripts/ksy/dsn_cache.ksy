@@ -110,7 +110,7 @@ types:
       The third coordinate pair —
       a near-duplicate of the first — is actually the text anchor and
       is what gives the giveaway. The trailing bytes carry the embedded
-      ASCII character. See doc/ORCAD_DSN_FILES.md for the corrected
+      ASCII character. See ORCAD_FILE_FORMAT.md for the corrected
       interpretation.
     seq:
       - id: marker

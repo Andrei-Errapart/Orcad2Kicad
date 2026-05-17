@@ -23,7 +23,7 @@ doc: |
 
   This sketch covers the font/style record structure. The title-block
   field run is parsed by `scripts/dsn2kicad`'s `parse_title_block` using
-  a `SCHEMATIC1`-anchor heuristic; see doc/ORCAD_DSN_FILES.md.
+  a `SCHEMATIC1`-anchor heuristic; see ORCAD_FILE_FORMAT.md.
 
 seq:
   - id: program_name
@@ -95,7 +95,7 @@ types:
 
       Page-stream text records reference these by `style_id` (1-based,
       so `style_records[style_id - 1]` is the entry for a given text).
-      Confirmed on the microSD cover page: every distinct `style_id`
+      Confirmed on one cover page: every distinct `style_id`
       maps to a Library record whose weight/italic match the visible
       rendering (Bold for `INDEX`, Bold+Italic for the green title,
       Bold for the CAUTION body paragraphs).
@@ -171,7 +171,7 @@ enums:
     -48: font_binding_extra1
     -64: font_binding_extra2
     doc: |
-      Tag values observed in microSD/eMMC/CPU-board DSNs. The exact
+      Tag values observed in the current larger and smaller board DSNs. The exact
       semantic of each tag is not fully decoded; names here are
       placeholders. -12 and -27 records carry filesystem paths in
       their `rest` payload, not font face names — these likely

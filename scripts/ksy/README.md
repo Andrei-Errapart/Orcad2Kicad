@@ -20,7 +20,7 @@ needed.
 | `dsn_cache.ksy` | `Cache` | `parse_cache_cells`, `_parse_cache_graphics` |
 | `dsn_library.ksy` | `Library` | `parse_title_block` (heuristic) and 60-byte style records |
 | `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `parse_hierarchy_nets` |
-| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, `Packages Directory`, `Symbols Directory`, `Views Directory`, `ExportBlocks Directory`, `Graphics Directory` | all 104 Cells/Parts entries consumed exactly on the example of the CPU board |
+| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, `Packages Directory`, `Symbols Directory`, `Views Directory`, `ExportBlocks Directory`, `Graphics Directory` | all 104 Cells/Parts entries consumed exactly on one larger-board example |
 
 Streams not modeled (no parser in `dsn2kicad`, format unknown):
 `AdminData`, `NetBundleMapData`, `Packages/*` (per-unit binary, not the

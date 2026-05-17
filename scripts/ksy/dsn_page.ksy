@@ -430,7 +430,7 @@ types:
           Varies; meaning not decoded. Observed values 0, 67, 2153,
           7424, 53569, etc. Tested as a possible font-color field —
           ruled out: it's zero for both the green title and 3 of the
-          4 red CAUTION paragraph lines on the microSD cover page,
+          4 red CAUTION paragraph lines on one cover page,
           while non-zero only for `Page` (black) and `CAUTION` (red).
           Possibly leftover bytes / noise rather than a real field.
       - id: text_len

@@ -6,12 +6,12 @@ meta:
 
 doc: |
   Shared envelope used by every "*Directory" stream in an OrCAD Capture
-  .DSN OLE compound document, including (observed on the CPU
+  .DSN OLE compound document, including (observed on one larger
   board, where these are non-empty):
 
-    - "Cells Directory"        — cell names    (e.g. "CPU_0M")
-    - "Parts Directory"        — part names    (e.g. "CPU_0E.Normal")
-    - "Packages Directory"     — package names (e.g. "CPU_0")
+    - "Cells Directory"        — cell names    (e.g. "<unit_0>M")
+    - "Parts Directory"        — part names    (e.g. "<unit_0>E.Normal")
+    - "Packages Directory"     — package names (e.g. "<unit_0>")
     - "Symbols Directory"      — symbol names  (e.g. "ERC")
     - "Views Directory"        — view names    (e.g. "SCHEMATIC1")
     - "ExportBlocks Directory" — empty (count = 0)
@@ -41,10 +41,10 @@ types:
       8-byte header.
 
       `timestamp` is a Unix `time_t` (seconds since 1970-01-01 UTC),
-      little-endian u32. Confirmed across CPU board and sub-board DSNs:
+      little-endian u32. Confirmed across larger and smaller board DSNs:
       values like `fb e4 13 69` (= 0x6913e4fb = 2025-11-12 01:38:03 UTC,
-      CPU board) and `8c 73 b4 67` (= 0x67b4738c = 2025-02-17 15:53:48
-      UTC, microSD sub-board).
+      one larger board) and `8c 73 b4 67` (= 0x67b4738c = 2025-02-17
+      15:53:48 UTC, one smaller board).
 
       `count` is the number of `dir_entry` records that follow. Empty
       directories have `count == 0`, giving a 6-byte stream.
@@ -61,7 +61,7 @@ types:
         2 + name_len + 1 + 2 + 8 + 8 + 4 = 21 + name_len bytes.
 
       Empirically, 104 entries × 34 bytes (for 9-char names like
-      "CPU_0M") + 6-byte header = 3542 bytes of "Cells Directory",
+      "<unit_0>M") + 6-byte header = 3542 bytes of "Cells Directory",
       matching exactly.
     seq:
       - id: name_len
@@ -78,12 +78,11 @@ types:
           Per-entry kind/flags word. Stream-dependent:
             0x0006 — "Cells Directory"    (cell)
             0x0018 — "Parts Directory"    (part, '.Normal' suffix)
-            0x001f — "Packages Directory" (package, CPU_0..3)
+            0x001f — "Packages Directory" (per-unit package)
             0x004b — "Symbols Directory"  (single entry "ERC")
             0x0009 — "Views Directory"    (single entry "SCHEMATIC1")
-          Confirmed identical across CPU board, eMMC sub-board, and
-          microSD sub-board DSNs. Bit-meanings within this u16 are not
-          fully decoded.
+          Confirmed identical across the observed larger and smaller
+          board DSNs. Bit-meanings within this u16 are not fully decoded.
       - id: filetime_created
         type: u8
         doc: |
@@ -94,8 +93,8 @@ types:
         type: u8
         doc: |
           Second FILETIME, suspected modification timestamp. For the
-          four CPU_xN cells of the CPU board this field is the same
-          across the four sibling units, while `filetime_created`
+          four per-unit package cells on one larger board this field is
+          the same across the four sibling units, while `filetime_created`
           differs — consistent with "modified together, created
           separately".
       - id: trailer

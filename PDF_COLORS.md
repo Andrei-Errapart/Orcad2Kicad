@@ -33,10 +33,10 @@ Colors used in OrCAD Capture schematic PDF exports. Verified across 3 PDF files 
 | Warnings, cross-refs | `#ff0000` | "AGND and PGND are separated..." |
 | Block titles | `#0000ff` | "CPU EtherMAC", "SLEEP#" |
 | Symbol internal labels | `#cc8006` | "A", "B", "G", "IPU", "IPD" |
-| Config/table text | `#400040` | "eMMC(1.8V)", "L" |
+| Config/table text | `#400040` | board configuration labels, "L" |
 | Component color codes | `#000080` | "GREEN" |
 | Component specs | `#000040` | "1mohm 1% 1/2W" |
 
 ## Line Width Variations
 
-The sub-board PDFs use 0.169mm for most elements; the CPU board PDF uses 0.127mm. Pin-end markers consistently use 0.132mm across all files.
+Smaller board PDFs use 0.169mm for most elements; the larger board PDF uses 0.127mm. Pin-end markers consistently use 0.132mm across all files.

@@ -20,8 +20,8 @@ doc: |
        JSON payload of `record_length - 12` bytes.
 
   Total stream sizes observed:
-    - 157 bytes (CPU board, 117-byte JSON)
-    - 146 bytes (sub-boards, 106-byte JSON)
+    - 157 bytes (one larger board, 117-byte JSON)
+    - 146 bytes (smaller boards, 106-byte JSON)
 
   No trailing slack: `40 + json_len == total stream size` exactly.
 
@@ -48,8 +48,8 @@ types:
         doc: |
           Low byte = `0x04` (record-type tag — same value across all
           three DSNs). Byte 1 tracks the stream size:
-            - CPU board (157-byte stream):     byte1 = 0x94 = 148  (157 - 9)
-            - sub-boards (146-byte stream):    byte1 = 0x89 = 137  (146 - 9)
+            - one larger board (157-byte stream): byte1 = 0x94 = 148  (157 - 9)
+            - smaller boards (146-byte stream):   byte1 = 0x89 = 137  (146 - 9)
           Consistent with `byte1 == stream_size - 9` across all observed
           DSNs. Upper two bytes are zero.
       - id: zero_a
@@ -68,9 +68,9 @@ types:
         type: u4
         doc: |
           The one prefix field that differs between DSNs. Observed:
-            0x00000ddd (CPU board)
-            0x000000bb (eMMC sub-board)
-            0x0000015c (microSD sub-board)
+            0x00000ddd (one larger board)
+            0x000000bb (one smaller board)
+            0x0000015c (another smaller board)
           Likely an identifier (UID/serial/CRC) — no obvious correlation
           with size, JSON length, or board content.
 
@@ -85,7 +85,8 @@ types:
           Length of the record from immediately after this field through
           end-of-stream. Equivalent to: total_stream_size - 28. Covers
           `rec_len_dup`, the two `const_*` words, the JSON, and any
-          trailing nul padding. Observed: 129 (CPU), 118 (sub-boards).
+          trailing nul padding. Observed: 129 (one larger board),
+          118 (smaller boards).
           Verified: offset(rec_len) + 4 + rec_len == stream size exactly
           across all three observed DSNs.
       - id: rec_len_dup
@@ -112,11 +113,11 @@ types:
 
           Example payloads (after stripping trailing 0x00):
 
-          CPU board (Concept HDL Studio export):
+          one larger board (Concept HDL Studio export):
             {"InstallMode":"0","License":"Concept_HDL_studio",
              "InstalledVersionBase":"17.4-2019","InstalledVersionISR":"S014"}
 
-          Sub-boards (Capture export):
+          smaller boards (Capture export):
             {"InstallMode":"0","License":"Capture",
              "InstalledVersionBase":"17.4-2019","InstalledVersionISR":"S005"}
 
@@ -124,6 +125,6 @@ types:
           (Concept_HDL_studio vs Capture) but the version base is
           identical.
 
-          Observed padding lengths: 4 bytes (CPU) and 4 bytes
-          (sub-boards) — the slack inside the record itself, not OLE
+          Observed padding lengths: 4 bytes on the larger-board fixture
+          and 4 bytes on the smaller-board fixtures — the slack inside the record itself, not OLE
           sector slack.

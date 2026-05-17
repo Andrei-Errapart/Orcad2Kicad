@@ -11,7 +11,7 @@ doc: |
   cell/symbol definitions imported from .OLB libraries, including:
     - body rectangle
     - graphic primitives (text annotations, bounding box)
-    - pin records (name, body endpoint, hotpoint endpoint)
+    - pin records (name, body endpoint, hotpoint endpoint, label flags)
 
   Cell organisation: each cell name appears three times as
   `CellName.Normal\0` (or `.Convert\0`). The second occurrence carries
@@ -346,9 +346,16 @@ types:
         body_y(4 signed)   Y where pin meets body
         hot_x(4 signed)    X wire connection point (hotspot)
         hot_y(4 signed)    Y wire connection point (hotspot)
+        pin_flags(1)       observed pin label visibility bits
 
       Pin direction is derived from the hotpoint→body vector. Pin length
       is the distance between the two points.
+
+      Observed `pin_flags` values:
+        0x21  pin number shown
+        0x20  pin number hidden
+      `dsn2kicad` preserves this byte and uses bit 0 when choosing KiCad
+      symbol-level `(pin_numbers hide)` defaults.
     seq:
       - id: marker
         type: dsn_common::record_marker
@@ -370,6 +377,12 @@ types:
         type: s4
       - id: hot_y
         type: s4
+      - id: pin_flags
+        type: u1
+        doc: |
+          Observed pin-label visibility byte. Bit 0 appears to control
+          pin-number display: set (`0x21`) means shown, clear (`0x20`)
+          means hidden.
 
   # -------------------------------------------------------------------------
   # Cell-name occurrence locator

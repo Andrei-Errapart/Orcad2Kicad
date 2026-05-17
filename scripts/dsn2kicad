@@ -1633,6 +1633,35 @@ def _direction_from_vector(hx, hy, bx, by):
     return 270 if dy < 0 else 90
 
 
+def _all_pin_names_match_numbers(classified):
+    if not classified:
+        return False
+    for pn, _hx, _hy, _d, _et, orig, _plen, _pin_flags in classified:
+        pn_s = str(pn)
+        orig_s = str(orig)
+        if pn_s != orig_s:
+            return False
+    return True
+
+
+def _pin_record_hides_number(pin_flags):
+    """OrCAD Cache pin byte 0x20 hides pin numbers; 0x21 shows them."""
+    if pin_flags is None:
+        return False
+    return (pin_flags & 0x01) == 0
+
+
+def _symbol_pin_visibility(classified):
+    """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
+    pin_flags = [p[7] for p in classified if p[7] is not None]
+    if (len(classified) == 2 and pin_flags
+            and any(_pin_record_hides_number(flags) for flags in pin_flags)):
+        return True, True
+    if _all_pin_names_match_numbers(classified):
+        return True, False
+    return False, False
+
+
 def _arc_midpoint(cx, cy, rx, ry, sx, sy, ex, ey):
     """Compute the midpoint of a counterclockwise arc (in KiCad Y-up coords).
 
@@ -1734,6 +1763,8 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
       (pin_num, hot_x, hot_y)                              — 3 elements
       (pin_num, hot_x, hot_y, orig_name)                   — 4 elements
       (pin_num, hot_x, hot_y, orig_name, body_x, body_y)   — 6 elements
+      (pin_num, hot_x, hot_y, orig_name, body_x, body_y,
+       pin_flags)                                          — 7 elements
 
     body_rects: optional list of (x1, y1, x2, y2) in mm. One rect for
     most cells; two for cells with composite bodies (e.g. SD-card
@@ -1770,12 +1801,14 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             hx, hy = p[1], p[2]
             orig = p[3] if len(p) > 3 else str(pn)
             bx, by = p[4], p[5]
+            pin_flags = p[6] if len(p) > 6 else None
             direction = _direction_from_vector(hx, hy, bx, by)
             pin_len = round(math.hypot(bx - hx, by - hy), 2)
             if pin_len < 0.01:
                 pin_len = PIN_LENGTH
             etype = "no_connect" if orig.upper() == "NC" else "passive"
-            classified.append((pn, hx, hy, direction, etype, orig, pin_len))
+            classified.append((pn, hx, hy, direction, etype, orig, pin_len,
+                               pin_flags))
             body_xs.append(bx)
             body_ys.append(by)
     elif pin_positions:
@@ -1787,6 +1820,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             pn = p[0]
             hx, hy = p[1], p[2]
             orig = p[3] if len(p) > 3 else str(pn)
+            pin_flags = p[6] if len(p) > 6 else None
             dx, dy = hx - x_mid, hy - y_mid
             if abs(dx) >= abs(dy):
                 direction = 0 if dx < 0 else 180
@@ -1794,7 +1828,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
                 direction = 270 if dy > 0 else 90
             etype = "no_connect" if orig.upper() == "NC" else "passive"
             classified.append((pn, hx, hy, direction, etype, orig,
-                               PIN_LENGTH))
+                               PIN_LENGTH, pin_flags))
             if direction == 0:
                 body_xs.append(hx + PIN_LENGTH)
             elif direction == 180:
@@ -1834,11 +1868,19 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     ref_y = by2 + 2.54
     val_y = by1 - 2.54
 
+    hide_pin_names, hide_pin_numbers = _symbol_pin_visibility(classified)
+
     parts = []
     parts.append(f'\t\t(symbol "{name}"\n')
     parts.append('\t\t\t(exclude_from_sim no)\n')
     parts.append('\t\t\t(in_bom yes)\n')
     parts.append('\t\t\t(on_board yes)\n')
+    if hide_pin_numbers:
+        parts.append('\t\t\t(pin_numbers hide)\n')
+    if hide_pin_names:
+        parts.append('\t\t\t(pin_names\n')
+        parts.append('\t\t\t\t(offset 1.016)\n')
+        parts.append('\t\t\t\thide)\n')
     parts.append(f'\t\t\t(property "Reference" "U"\n')
     parts.append(f'\t\t\t\t(at 0 {ref_y:.2f} 0)\n')
     parts.append('\t\t\t\t(effects\n')
@@ -1915,7 +1957,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     parts.append('\t\t\t)\n')
 
     parts.append(f'\t\t\t(symbol "{name}_1_1"\n')
-    for pn, hx, hy, d, et, orig, plen in classified:
+    for pn, hx, hy, d, et, orig, plen, _pin_flags in classified:
         parts.append(_sch_pin(pn, hx, hy, d, name=orig,
                               electrical_type=et, length=plen))
     parts.append('\t\t\t)\n')
@@ -1950,6 +1992,7 @@ def _build_unit_pin_data(cell_name):
     for p in pin_positions:
         pn, hx, hy = p[0], p[1], p[2]
         orig = p[3] if len(p) > 3 else str(pn)
+        pin_flags = p[6] if len(p) > 6 else None
         etype = "no_connect" if orig.upper() == "NC" else "passive"
         if has_body:
             bx, by = p[4], p[5]
@@ -1982,7 +2025,8 @@ def _build_unit_pin_data(cell_name):
                 body_ys.append(hy + PIN_LENGTH)
             else:
                 body_ys.append(hy)
-        classified.append((pn, hx, hy, direction, etype, orig, pin_len))
+        classified.append((pn, hx, hy, direction, etype, orig, pin_len,
+                           pin_flags))
 
     rects = _cell_body_rects.get(cell_name)
     ann = _cell_text_annotations.get(cell_name)
@@ -2119,7 +2163,7 @@ def lib_symbol_multi_unit(base_name, unit_map):
 
         # Unit pins: {base}_{unit}_1
         parts.append(f'\t\t\t(symbol "{base_name}_{unit_num}_1"\n')
-        for pn, hx, hy, d, et, orig, plen in classified:
+        for pn, hx, hy, d, et, orig, plen, _pin_flags in classified:
             parts.append(_sch_pin(pn, hx, hy, d, name=orig,
                                   electrical_type=et, length=plen))
         parts.append('\t\t\t)\n')
@@ -2317,7 +2361,8 @@ def _rename_multi_unit_pins(cache_cells):
         # Convert Cache to page-equivalent symbol mm coords:
         # X same direction, Y flipped (Cache Y-up → page/KiCad Y-down)
         cache_syms = []
-        for pin_name, hx, hy, bx, by in raw_cache:
+        for raw_pin in raw_cache:
+            pin_name, hx, hy = raw_pin[:3]
             sx = round((hx - cx) * UNIT_TO_MM, 2)
             sy = round((cy - hy) * UNIT_TO_MM, 2)
             cache_syms.append((pin_name, sx, sy))
@@ -2359,7 +2404,9 @@ def _rename_multi_unit_pins(cache_cells):
                     unique = f"{cname}_{idx}"
                 else:
                     unique = cname
-                new_pins.append((unique, p[1], p[2], cname, p[4], p[5]))
+                pin_flags = p[6] if len(p) > 6 else None
+                new_pins.append((unique, p[1], p[2], cname, p[4], p[5],
+                                 pin_flags))
             else:
                 new_pins.append(p)
         _cell_pin_defs[cell_name] = new_pins
@@ -3418,7 +3465,8 @@ def parse_cache_cells(ole):
 
     Returns (cells, body_rects, body_lines, pin_numbers,
              cell_text_annotations, body_ellipses) where:
-      cells = {cell_name: [(pin_name, hot_x, hot_y, body_x, body_y), ...]}
+      cells = {cell_name: [(pin_name, hot_x, hot_y, body_x, body_y,
+                            pin_flags), ...]}
       body_rects = {cell_name: [(x1, y1, x2, y2), ...]}   rectangles in OrCAD units
       body_lines = {cell_name: [(x1, y1, x2, y2), ...]}   line segments in OrCAD units
       body_ellipses = {cell_name: [(x1, y1, x2, y2), ...]} bounding boxes in OrCAD units
@@ -3492,7 +3540,9 @@ def parse_cache_cells(ole):
                                 '<iiii', data, coord_off)
                             if (abs(bx) < 5000 and abs(by) < 5000
                                     and abs(hx) < 5000 and abs(hy) < 5000):
-                                pins.append((pin_name, hx, hy, bx, by))
+                                pin_flags = data[coord_off + 16]
+                                pins.append((pin_name, hx, hy, bx, by,
+                                             pin_flags))
             pos = idx + 4
 
         if pins and (cell_name not in cells
@@ -3516,7 +3566,7 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
     _cell_text_annotations from Cache data.
 
     Each pin entry is (unique_name, hot_x_mm, hot_y_mm, orig_name,
-                       body_x_mm, body_y_mm).
+                       body_x_mm, body_y_mm, pin_flags).
     Each text annotation is (cx_mm, cy_mm, text) — center of the
     bounding box in symbol-local mm and the annotation text.
     """
@@ -3544,7 +3594,9 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
 
         num_list = cache_pin_numbers.get(cell_name)
         pin_positions = []
-        for pin_idx, (pin_name, hx, hy, bx, by) in enumerate(pins, 1):
+        for pin_idx, pin in enumerate(pins, 1):
+            pin_name, hx, hy, bx, by = pin[:5]
+            pin_flags = pin[5] if len(pin) > 5 else None
             if num_list and pin_idx <= len(num_list):
                 pin_num = num_list[pin_idx - 1]
             else:
@@ -3554,10 +3606,10 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
             sym_bx = round((bx - cx) * UNIT_TO_MM, 2)
             sym_by = round(-(by - cy) * UNIT_TO_MM, 2)
             pin_positions.append((pin_num, sym_hx, sym_hy, pin_name,
-                                  sym_bx, sym_by))
+                                  sym_bx, sym_by, pin_flags))
         _cell_pin_defs[cell_name] = pin_positions
         _cell_centers[cell_name] = (cx, cy)
-        _cell_pin_lists[cell_name] = [(hx, hy) for _, hx, hy, _, _ in pins]
+        _cell_pin_lists[cell_name] = [(p[1], p[2]) for p in pins]
 
         if cell_name in cache_body_rects:
             sym_rects = []

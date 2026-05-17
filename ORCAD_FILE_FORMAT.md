@@ -369,6 +369,7 @@ body_x(4, LE signed)     X where pin meets body
 body_y(4, LE signed)     Y where pin meets body
 hot_x(4, LE signed)      X wire connection point (hotspot)
 hot_y(4, LE signed)      Y wire connection point (hotspot)
+pin_flags(1)             observed pin label visibility bits
 ```
 
 Pin name validation: all bytes must be printable ASCII (32–126). Coordinate validation: all four values must be within ±5000 units. Pin names can be up to 40 characters (e.g., `SEL_DFC/SCL_DFC1` at 16 chars).
@@ -378,6 +379,8 @@ The **body point** is where the pin stub meets the symbol body rectangle. The **
 **Pin numbering**: Physical pin numbers are stored in a separate **0x7f-separated pin number list** (see below). The N-th entry in that list is the physical pin number for the N-th pin in the IC-style Cache pin list. For most ICs and connectors the list is simply sequential (1, 2, 3, ...), but for components like DIP switches the ordering differs from the Cache storage order — e.g., DIP-6 maps cache positions to physical pins [1, 2, 3, 8, 7, 6, 4, 5, 9, 10, 11, 12] following the standard DIP convention (down the left side, up the right side). Page-stream `pin_num = N` references the N-th pin in the Cache list for that cell. The pin *name* (e.g., "Vdda", "AD20") is distinct from the pin *number*.
 
 **Pin names**: For simple components (R, C), pin names are just numbers ("1", "2"). For ICs and connectors, names may be signal names ("DAT0", "CLK") or "NC" for unconnected pins. BGA pins use ball designators as names. Multi-pin components may have duplicate names, for example many repeated "NC" pins on a large BGA component.
+
+**Pin label visibility**: The byte immediately after the four pin coordinates is preserved as `pin_flags`. In observed Cache records, bit 0 controls pin-number display: `0x21` means the number is shown and `0x20` means it is hidden. `scripts/dsn2kicad` uses this byte for generated KiCad symbol defaults. For two-pin symbols, any pin with bit 0 clear causes both `(pin_numbers hide)` and `(pin_names ... hide)` to be emitted. Independently, if every parsed pin name exactly matches the physical pin number, the generated symbol hides pin names only; this covers connector-style symbols where OrCAD stores only numeric pin names and the converter promotes them to KiCad pin numbers.
 
 **Empirical examples**:
 

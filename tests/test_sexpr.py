@@ -128,6 +128,58 @@ def test_lib_symbol_C(dsn2kicad):
     assert '(number "2"' in c
 
 
+def test_lib_symbol_hides_redundant_pin_names(dsn2kicad):
+    sym = dsn2kicad.lib_symbol_from_pins(
+        "BOARD_CONNECTOR",
+        [
+            ("1", -2.54, 0, "1", 0, 0),
+            ("2", 2.54, 0, "2", 0, 0),
+            ("3", -2.54, -2.54, "3", 0, -2.54),
+        ],
+    )
+    assert "(pin_names\n\t\t\t\t(offset 1.016)\n\t\t\t\thide)" in sym
+    assert "(pin_numbers hide)" not in sym
+
+
+def test_lib_symbol_keeps_pin_names_when_not_redundant(dsn2kicad):
+    sym = dsn2kicad.lib_symbol_from_pins(
+        "CARD_SOCKET",
+        [
+            ("1", -2.54, 0, "DAT2", 0, 0),
+            ("2", 2.54, 0, "CD/DAT3", 0, 0),
+            ("3", -2.54, -2.54, "CMD", 0, -2.54),
+        ],
+    )
+    assert "(pin_names" not in sym
+    assert "(pin_numbers hide)" not in sym
+
+
+def test_lib_symbol_hides_two_terminal_pin_labels_from_contents(dsn2kicad):
+    sym = dsn2kicad.lib_symbol_from_pins(
+        "LED",
+        [
+            ("A", -7.62, 0, "ANODE", -5.08, 0, 0x20),
+            ("K", 7.62, 0, "CATHODE", 5.08, 0, 0x20),
+        ],
+        body_lines=[(-5.08, 0, -2.54, 0), (0, 0, 5.08, 0)],
+    )
+    assert "(pin_names\n\t\t\t\t(offset 1.016)\n\t\t\t\thide)" in sym
+    assert "(pin_numbers hide)" in sym
+
+
+def test_lib_symbol_keeps_two_pin_switch_numbers_from_pin_flags(dsn2kicad):
+    sym = dsn2kicad.lib_symbol_from_pins(
+        "SWITCH",
+        [
+            ("1", -7.62, 0, "1", -5.08, 0, 0x21),
+            ("2", 7.62, 0, "2", 5.08, 0, 0x21),
+        ],
+        body_lines=[(-5.08, 0, -2.54, 0), (2.54, 0, 5.08, 0)],
+    )
+    assert "(pin_names\n\t\t\t\t(offset 1.016)\n\t\t\t\thide)" in sym
+    assert "(pin_numbers hide)" not in sym
+
+
 def test_lib_symbol_power_gnd(dsn2kicad):
     g = dsn2kicad.lib_symbol_power_gnd()
     assert "power:GND" in g

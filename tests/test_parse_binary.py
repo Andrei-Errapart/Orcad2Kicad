@@ -92,6 +92,22 @@ class TestGetPageStreams:
 
 
 class TestCacheGraphics:
+    def test_parse_cache_pin_visibility_flag(self, dsn2kicad):
+        marker = bytes([0xFF, 0xE4, 0x5C, 0x39])
+        record = bytearray()
+        record += marker
+        record += struct.pack('<I', 0)
+        record += struct.pack('<H', 1)
+        record += b"1\x00"
+        record += struct.pack('<iiii', 0, 10, -10, 10)
+        record += bytes([0x20])
+        record += bytes(24)
+        data = b"PINFLAG.Normal\x00" + bytes(record)
+
+        cells, *_ = dsn2kicad.parse_cache_cells(MockOle({"Cache": data}))
+
+        assert cells["PINFLAG"][0] == ("1", -10, 10, 0, 10, 0x20)
+
     def test_filled_polygon_record(self, dsn2kicad):
         record = bytearray(28 + 4 * 3)
         struct.pack_into('<H', record, 0, 0x2c2c)

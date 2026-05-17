@@ -995,7 +995,7 @@ def sch_label(name, x, y, angle=0):
     )
 
 
-def sch_global_label(name, x, y, angle=0, shape="passive"):
+def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
     return (
@@ -2359,7 +2359,7 @@ def orient_to_angle(orient_byte, cell_name):
 def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
                   ref_pos=None, val_pos=None,
                   ref_text_angle=None, val_text_angle=None,
-                  unit=1, mirror_x=False):
+                  unit=1, mirror_x=False, dnp=False):
     """Generate a KiCad component instance (symbol placement).
 
     ref_pos/val_pos: absolute KiCad mm positions for Reference/Value text.
@@ -2403,9 +2403,9 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         f"{mirror_line}"
         f"\t\t(unit {unit})\n"
         f"\t\t(exclude_from_sim no)\n"
-        f"\t\t(in_bom yes)\n"
+        f"\t\t(in_bom {'no' if dnp else 'yes'})\n"
         f"\t\t(on_board yes)\n"
-        f"\t\t(dnp no)\n"
+        f"\t\t(dnp {'yes' if dnp else 'no'})\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t\t(property \"Reference\" \"{ref_esc}\"\n"
         f"\t\t\t(at {ref_x:.2f} {ref_y:.2f} {ref_angle})\n"
@@ -2691,6 +2691,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             resolved = lookup_component_value(comp['value_idx'])
             if resolved:
                 comp_value = resolved
+        comp_dnp = comp_value.endswith(' *DNP')
+        if comp_dnp:
+            comp_value = comp_value[:-5]
         comp_unit = 1
         if comp['cell'] in _multi_unit_cell_map:
             _, comp_unit = _multi_unit_cell_map[comp['cell']]
@@ -2702,7 +2705,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                                    ref_text_angle=comp.get('ref_text_angle'),
                                    val_text_angle=comp.get('val_text_angle'),
                                    unit=comp_unit,
-                                   mirror_x=mirror_x))
+                                   mirror_x=mirror_x,
+                                   dnp=comp_dnp))
 
     # Power-symbol glyphs are emitted at wire endpoints that lie on a
     # power net AND are not stuck on a component pin (otherwise every

@@ -3895,7 +3895,7 @@ def main():
 
         safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', page_key)
         safe_name = re.sub(r'_+', '_', safe_name).strip('_')
-        filename = f"{i + 1:02d}_{safe_name}.kicad_sch"
+        filename = f"{safe_name}.kicad_sch"
 
         print(f"  [{i + 1:2d}/{len(page_streams)}] {page_name} ({paper})...",
               end=" ", flush=True)

@@ -981,6 +981,7 @@ def sch_junction(x, y):
 def sch_label(name, x, y, angle=0):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
+    justify = "right" if angle == 180 else "left"
     return (
         f"\t(label \"{name_esc}\"\n"
         f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
@@ -988,7 +989,7 @@ def sch_label(name, x, y, angle=0):
         f"\t\t\t(font\n"
         f"\t\t\t\t(size 1.27 1.27)\n"
         f"\t\t\t)\n"
-        f"\t\t\t(justify left top)\n"
+        f"\t\t\t(justify {justify})\n"
         f"\t\t)\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
@@ -998,6 +999,7 @@ def sch_label(name, x, y, angle=0):
 def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
+    justify = "right" if angle == 180 else "left"
     return (
         f"\t(global_label \"{name_esc}\"\n"
         f"\t\t(shape {shape})\n"
@@ -1006,7 +1008,7 @@ def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
         f"\t\t\t(font\n"
         f"\t\t\t\t(size 1.27 1.27)\n"
         f"\t\t\t)\n"
-        f"\t\t\t(justify left)\n"
+        f"\t\t\t(justify {justify})\n"
         f"\t\t)\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t\t(property \"Intersheetrefs\" \"${{INTERSHEET_REFS}}\"\n"
@@ -1104,7 +1106,6 @@ def lib_symbol_power_rail(name):
     (-1.27, 1.27) to (1.27, 1.27); Value text centered above the bar.
     """
     name_esc = _esc_kicad_str(name)
-    safe_id = re.sub(r'[^A-Za-z0-9_+\-.]', '_', name)
     return (
         f'\t\t(symbol "power:{name_esc}"\n'
         f'\t\t\t(power)\n'
@@ -1132,7 +1133,7 @@ def lib_symbol_power_rail(name):
         f'\t\t\t\t\t)\n'
         f'\t\t\t\t)\n'
         f'\t\t\t)\n'
-        f'\t\t\t(symbol "{safe_id}_0_1"\n'
+        f'\t\t\t(symbol "{name_esc}_0_1"\n'
         f'\t\t\t\t(polyline\n'
         f'\t\t\t\t\t(pts\n'
         f'\t\t\t\t\t\t(xy 0 0) (xy 0 1.27)\n'
@@ -1158,7 +1159,7 @@ def lib_symbol_power_rail(name):
         f'\t\t\t\t\t)\n'
         f'\t\t\t\t)\n'
         f'\t\t\t)\n'
-        f'\t\t\t(symbol "{safe_id}_1_1"\n'
+        f'\t\t\t(symbol "{name_esc}_1_1"\n'
         f'\t\t\t\t(pin power_in line\n'
         f'\t\t\t\t\t(at 0 0 90)\n'
         f'\t\t\t\t\t(length 0)\n'
@@ -2480,7 +2481,7 @@ def is_power_net(name):
                     'VIO', 'VCC', 'VBUS', 'VSS', '+', '-'):
         if upper.startswith(prefix):
             return True
-    if any(kw in upper for kw in ('VDD', 'VCC', 'VSS', 'GND')):
+    if any(kw in upper for kw in ('VDD', 'VCC', 'VSS', 'GND', 'VBUS')):
         return True
     if re.search(r'\d[\d.]*V\d*$', name):
         return True
@@ -2522,6 +2523,36 @@ def compute_junctions(wires):
     return {p for p, c in point_count.items() if c >= 3}
 
 
+def _label_angle_from_wire(endpoint, wires):
+    """Determine label angle so the label extends away from the wire.
+
+    KiCad label angle = direction the wire connects FROM:
+      0 = wire connects on the right  → label body extends left
+      180 = wire connects on the left  → label body extends right
+      90 = wire connects below         → label body extends up
+      270 = wire connects above        → label body extends down
+
+    We compute the vector from the label endpoint toward the wire's
+    other end, then pick the angle matching that direction so the
+    connection faces the wire and the label body goes the other way.
+    """
+    ex, ey = endpoint
+    for w in wires:
+        p1 = (w['x1'], w['y1'])
+        p2 = (w['x2'], w['y2'])
+        if p1 == (ex, ey):
+            dx, dy = ex - w['x2'], ey - w['y2']
+        elif p2 == (ex, ey):
+            dx, dy = ex - w['x1'], ey - w['y1']
+        else:
+            continue
+        if abs(dx) >= abs(dy):
+            return 0 if dx > 0 else 180
+        else:
+            return 270 if dy > 0 else 90
+    return 0
+
+
 def place_net_labels(wires, net_table, endpoints):
     """Determine where to place net labels.
 
@@ -2550,6 +2581,7 @@ def place_net_labels(wires, net_table, endpoints):
                 'name': net_name,
                 'x': p[0],
                 'y': p[1],
+                'angle': _label_angle_from_wire(p, wires),
             })
 
     return labels
@@ -2755,9 +2787,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd))
             power_positions.add((lbl['x'], lbl['y']))
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
-            parts.append(sch_global_label(lbl['name'], x, y))
+            parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
         else:
-            parts.append(sch_label(lbl['name'], x, y))
+            parts.append(sch_label(lbl['name'], x, y, angle=lbl['angle']))
 
     # Bus labels — placed at the true free endpoints of the bus
     # (using all bus segments including diagonals so intermediate
@@ -2771,7 +2803,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             continue
         x = dsn_to_mm(lbl['x'])
         y = dsn_to_mm(lbl['y'])
-        parts.append(sch_global_label(lbl['name'], x, y))
+        parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
 
     # Decorative rectangles (e.g. INDEX table outline, CAUTION block).
     # OrCAD doesn't store an explicit stroke width; red borders render

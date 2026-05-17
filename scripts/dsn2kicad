@@ -3309,7 +3309,7 @@ def parse_cache_cells(ole):
                 if zeros == 0:
                     name_len = struct.unpack_from('<H', data, idx + 8)[0]
                     name_end = idx + 10 + name_len
-                    if (1 <= name_len <= 40 and name_end + 17 <= len(data)
+                    if (1 <= name_len <= 200 and name_end + 17 <= len(data)
                             and data[name_end] == 0):
                         name_bytes = data[idx + 10:name_end]
                         if all(32 <= b < 127 for b in name_bytes):

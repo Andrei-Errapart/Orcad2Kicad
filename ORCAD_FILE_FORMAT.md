@@ -857,18 +857,19 @@ bbox and a thin green `(rectangle ...)` around every page-rectangle
 record, which is useful for spotting position/size mismatches in
 KiCad.
 
-#### Decorative rectangle and line records
+#### Decorative rectangle, line, and ellipse records
 
 Decorative graphics on schematic pages (table outlines, callout
-borders, separator lines) are stored as marker-framed records with
-**type words**:
+borders, separator lines, length-matching ovals) are stored as
+marker-framed records with **type words**:
 
 ```
 01 00 28 28 28 00   rectangle          (62 bytes per record)
 01 00 29 29 20 00   line / polyline    (54 bytes per record)
+01 00 2b 2b 28 00   ellipse / circle   (62 bytes per record)
 ```
 
-Both records share the same layout from the marker:
+All three records share the same layout from the marker:
 
 ```
 +0   4B   RECORD_MARKER = FF E4 5C 39
@@ -905,14 +906,23 @@ for index 0 and 0.30 mm for index 1, with explicit `(color R G B A)`
 values (`0 0 0 1` for black, `200 0 0 1` for red).
 
 **Line records**: the +50 offset is reliable for the 62-byte rectangle
-records. For the 54-byte `0x292920` line records, +50 overlaps the
-next record's marker bytes, so `parse_page_graphics` currently treats
-all lines as style 0 (black, thin). Cover-page samples are consistent
-with this — only the CAUTION rectangle uses style 1, not any line.
+and ellipse records. For the 54-byte `0x292920` line records, +50
+overlaps the next record's marker bytes, so `parse_page_graphics`
+currently treats all lines as style 0 (black, thin). Cover-page samples
+are consistent with this — only the CAUTION rectangle uses style 1, not
+any line.
 
-**Title-block keep-out**: rectangle and line records whose **both**
-endpoints fall inside the bottom-right title-block region are filtered
-out, like free-text records.
+**Ellipse records**: 62 bytes, same as rectangles. The bounding box at
++30 defines the axis-aligned rectangle circumscribing the ellipse. The
+style index at +50 is always 0 in observed data. OrCAD renders these
+ellipses in green (e.g., length-matching bus ovals on page 6), but the
+green color is not stored in the DSN — it comes from OrCAD's implicit
+rendering palette. `scripts/dsn2kicad` emits KiCad `(circle ...)` for
+equal-axis ellipses and a 32-segment `(polyline ...)` for true ellipses.
+
+**Title-block keep-out**: rectangle, line, and ellipse records whose
+**both** endpoints fall inside the bottom-right title-block region are
+filtered out, like free-text records.
 
 **Sample (microSD cover page, `01_NOTE`)**:
 

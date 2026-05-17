@@ -448,6 +448,7 @@ TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
 # type tag at marker+18.
 PAGE_RECT_TYPE_WORD = b'\x01\x00\x28\x28\x28\x00'    # "decorative rectangle"
 PAGE_LINE_TYPE_WORD = b'\x01\x00\x29\x29\x20\x00'    # "line segment"
+PAGE_ELLIPSE_TYPE_WORD = b'\x01\x00\x2b\x2b\x28\x00' # "ellipse / circle"
 
 
 def parse_page_graphics(data, paper='A3'):
@@ -487,7 +488,9 @@ def parse_page_graphics(data, paper='A3'):
 
     rects = []
     lines = []
+    ellipses = []
     pos = 0
+    known_tags = (PAGE_RECT_TYPE_WORD, PAGE_LINE_TYPE_WORD, PAGE_ELLIPSE_TYPE_WORD)
     while True:
         m = data.find(b'\xff\xe4\x5c\x39', pos)
         if m < 0:
@@ -496,18 +499,13 @@ def parse_page_graphics(data, paper='A3'):
         if m + 54 > len(data):
             continue
         tag = data[m + 18:m + 24]
-        if tag not in (PAGE_RECT_TYPE_WORD, PAGE_LINE_TYPE_WORD):
+        if tag not in known_tags:
             continue
         x1, y1, x2, y2 = struct.unpack_from('<iiii', data, m + 30)
         if any(abs(v) > 30000 for v in (x1, y1, x2, y2)):
             continue
-        # Skip if both endpoints sit inside the title-block keep-out.
         if in_tb(x1, y1) and in_tb(x2, y2):
             continue
-        # Color flag — for rectangles, the u16 at +50 distinguishes
-        # black (0) from red (1). Lines are short enough that this
-        # offset overlaps the next record's marker, so we treat all
-        # lines as black for now.
         color = 'black'
         if tag == PAGE_RECT_TYPE_WORD and m + 52 <= len(data):
             flag = struct.unpack_from('<H', data, m + 50)[0]
@@ -516,9 +514,11 @@ def parse_page_graphics(data, paper='A3'):
         entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color}
         if tag == PAGE_RECT_TYPE_WORD:
             rects.append(entry)
+        elif tag == PAGE_ELLIPSE_TYPE_WORD:
+            ellipses.append(entry)
         else:
             lines.append(entry)
-    return rects, lines
+    return rects, lines, ellipses
 
 
 # OrCAD page sizes in 10-mil units (paper-name → (width, height)).
@@ -871,6 +871,35 @@ def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15):
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
     )
+
+
+def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32):
+    """KiCad ellipse as a circle or polyline approximation on a schematic page."""
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    rx = abs(x2 - x1) / 2
+    ry = abs(y2 - y1) / 2
+    if abs(rx - ry) < 0.01:
+        uid = new_uuid()
+        rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
+        return (
+            f"\t(circle\n"
+            f"\t\t(center {cx:.2f} {cy:.2f})\n"
+            f"\t\t(radius {rx:.2f})\n"
+            f"\t\t(stroke\n"
+            f"\t\t\t(width {width})\n"
+            f"\t\t\t(type default)\n"
+            f"\t\t\t(color {rgba})\n"
+            f"\t\t)\n"
+            f"\t\t(fill (type none))\n"
+            f"\t\t(uuid \"{uid}\")\n"
+            f"\t)\n"
+        )
+    pts = []
+    for i in range(n + 1):
+        angle = 2 * math.pi * i / n
+        pts.append((cx + rx * math.cos(angle), cy + ry * math.sin(angle)))
+    return sch_polyline(pts, color=color, width=width)
 
 
 def sch_junction(x, y):
@@ -2321,7 +2350,7 @@ def place_net_labels(wires, net_table, endpoints):
 def generate_page_sch(page_name, paper, wires, components, power_syms,
                       net_table, global_nets, texts=None, title_block=None,
                       sheet_number=None, total_sheets=None,
-                      page_rects=None, page_lines=None,
+                      page_rects=None, page_lines=None, page_ellipses=None,
                       library_styles=None, debug_bbox=False):
     """Generate a complete KiCad schematic page from parsed DSN data."""
     parts = []
@@ -2467,10 +2496,15 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             color=col, width=width,
         ))
 
-    # Free-text annotations. Each text record carries a `style_id`
-    # (1-based index) into the Library style table. We use the style's
-    # weight/italic/face attributes; size comes from the record's
-    # bbox height (which scales with the font).
+    for el in page_ellipses or []:
+        col = el.get('color', 'black')
+        width = 0.30 if col == 'red' else 0.15
+        parts.append(sch_ellipse(
+            dsn_to_mm(el['x1']), dsn_to_mm(el['y1']),
+            dsn_to_mm(el['x2']), dsn_to_mm(el['y2']),
+            color=col, width=width,
+        ))
+
     styles = library_styles or []
     for t in texts or []:
         x = dsn_to_mm(t['x'])
@@ -3451,7 +3485,7 @@ def main():
         components = parse_components(data)
         power_syms = parse_power_symbols(data, net_table)
         texts = parse_text_annotations(data, paper)
-        page_rects, page_lines = parse_page_graphics(data, paper)
+        page_rects, page_lines, page_ellipses = parse_page_graphics(data, paper)
 
         content = generate_page_sch(
             page_name, paper, wires, components, power_syms,
@@ -3461,6 +3495,7 @@ def main():
             total_sheets=len(page_streams),
             page_rects=page_rects,
             page_lines=page_lines,
+            page_ellipses=page_ellipses,
             library_styles=library_styles,
             debug_bbox=debug_bbox,
         )

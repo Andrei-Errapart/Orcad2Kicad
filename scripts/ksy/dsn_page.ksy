@@ -37,6 +37,7 @@ doc: |
                                  paragraphs, table cell text)
     - page_rect_record          (decorative rectangle outlines)
     - page_line_record          (decorative line segments)
+    - page_ellipse_record       (decorative ellipses / circles)
 
   Not yet modeled: hierarchical block references, off-page connectors,
   the TitleBlock cell instance, attribute properties.
@@ -525,6 +526,54 @@ types:
         type: u4
       - id: trailer
         size: 4
+
+  # -------------------------------------------------------------------------
+  # Page-stream decorative ellipse (parse_page_graphics in dsn2kicad)
+  # -------------------------------------------------------------------------
+
+  page_ellipse_record:
+    doc: |
+      Decorative ellipse or circle on a schematic page (e.g. length-matching
+      bus ovals). 62-byte marker-framed record, same size as
+      `page_rect_record`. The bounding box at +30 defines the axis-aligned
+      rectangle circumscribing the ellipse.
+
+      OrCAD renders these in green, but the color is not stored in the
+      DSN — it comes from OrCAD's implicit rendering palette.
+      `scripts/dsn2kicad` emits KiCad `(circle ...)` for equal-axis
+      ellipses and a 32-segment `(polyline ...)` for true ellipses.
+    seq:
+      - id: marker
+        type: dsn_common::record_marker
+      - id: zeros1
+        size: 8
+      - id: subtype
+        contents: [0x30, 0x00]
+      - id: zeros2
+        size: 2
+      - id: type_word
+        contents: [0x01, 0x00, 0x2b, 0x2b, 0x28, 0x00]
+        doc: '"01 00 2b 2b 28 00" — page-stream ellipse.'
+      - id: zeros3
+        size: 6
+      - id: x1
+        type: u4
+      - id: y1
+        type: u4
+      - id: x2
+        type: u4
+      - id: y2
+        type: u4
+      - id: zeros4
+        size: 4
+      - id: style_index
+        type: u2
+        enum: page_graphic_style
+        doc: |
+          Style index, same encoding as `page_rect_record.style_index`.
+          Always 0 in observed data.
+      - id: trailer
+        size: 8
 
 enums:
   page_graphic_style:

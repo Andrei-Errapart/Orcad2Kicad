@@ -234,24 +234,32 @@ def parse_wires(data, net_table):
 def _parse_pin_records(data, cell_end, search_end):
     """Parse pin placement records after a component instance.
 
-    Pin records start at ~cell_end+151, spaced exactly 45 bytes apart.
-    Format: marker(4) + zeros(4) + pin_num(2) + pin_x(2) + pin_y(2).
+    The component header at cell_end+20 contains a u16 LE count of
+    non-pin marker records (ref/val position records and extra metadata)
+    that precede the contiguous pin-record cluster. We skip that many
+    markers, then collect pins.
+
+    Pin record format: marker(4) + zeros(4) + pin_num(2) + pin_x(2) + pin_y(2).
     Pin numbers are 1-based indices into the Cache pin list for the cell.
 
     Once we've accepted at least one pin, stop as soon as the next marker
     is more than `PIN_STRIDE_MAX` bytes past the previous one — beyond
-    that, we've left the contiguous pin-record cluster and are matching
-    unrelated record types whose layout coincidentally satisfies the
-    pin-shape filter.
+    that, we've left the contiguous pin-record cluster.
     """
     PIN_STRIDE_MAX = 50
+    skip = struct.unpack_from('<H', data, cell_end + 20)[0] if cell_end + 22 <= len(data) else 0
     pins = []
     last_accepted = None
-    pos = cell_end + 100
+    skipped = 0
+    pos = cell_end
     while pos < search_end - 14:
         idx = data.find(RECORD_MARKER, pos, search_end)
         if idx < 0:
             break
+        if skipped < skip:
+            skipped += 1
+            pos = idx + 4
+            continue
         if last_accepted is not None and idx - last_accepted > PIN_STRIDE_MAX:
             break
         if idx + 14 <= len(data):
@@ -259,7 +267,7 @@ def _parse_pin_records(data, cell_end, search_end):
             pin_num = struct.unpack_from('<H', data, idx + 8)[0]
             px = struct.unpack_from('<h', data, idx + 10)[0]
             py = struct.unpack_from('<h', data, idx + 12)[0]
-            if zeros == 0 and 1 <= pin_num <= 500:
+            if zeros == 0 and 1 <= pin_num <= 500 and (px or py):
                 pins.append((pin_num, px, py))
                 last_accepted = idx
         pos = idx + 4
@@ -345,13 +353,15 @@ def parse_components(data):
             for pnum, px, py in pins:
                 if 1 <= pnum <= len(cache_pl):
                     chx, chy = cache_pl[pnum - 1]
-                    origins.append((px - chx, py - chy))
+                    rhx, rhy = _forward_rotate(chx, chy, orient_byte)
+                    origins.append((px - rhx, py - rhy))
             if origins:
                 origin_x = sum(o[0] for o in origins) / len(origins)
                 origin_y = sum(o[1] for o in origins) / len(origins)
                 cc = _cell_centers[cell_name]
-                x = round(origin_x + cc[0])
-                y = round(origin_y + cc[1])
+                rcc_x, rcc_y = _forward_rotate(cc[0], cc[1], orient_byte)
+                x = round(origin_x + rcc_x)
+                y = round(origin_y + rcc_y)
             else:
                 if len(pins) >= 2:
                     x = round(sum(p[1] for p in pins) / len(pins))

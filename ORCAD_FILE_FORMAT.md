@@ -629,6 +629,10 @@ cell_end + 8:   y(2, LE signed)     component Y position
 cell_end + 10:  unknown(6)
 cell_end + 16:  0x30 marker byte     (if present)
 cell_end + 17:  orient_byte          orientation encoding
+cell_end + 18:  unknown(2)
+cell_end + 20:  pre_pin_count(2, LE) number of RECORD_MARKER-delimited
+                                     records before the pin placement cluster
+                                     (ref/val position records + extra metadata)
 ```
 
 **Orientation encoding**:
@@ -715,7 +719,9 @@ used by `scripts/dsn2kicad` to detect 90° rotated reference/value text
 
 #### Pin placement records
 
-After each component instance, pin placement records appear starting at approximately `cell_end + 100`. Each pin record:
+After each component instance, pin placement records follow the
+`pre_pin_count` non-pin marker records (ref/val position records and
+extra metadata — see `cell_end + 20` above). Each pin record:
 
 ```
 ff e4 5c 39          record marker
@@ -729,19 +735,21 @@ The `pin_num` is a 1-based index into the Cache pin list for the cell, NOT a nam
 
 **Computing component origin from pin records**:
 
-Given a page-stream pin with `pin_num=N` at page position `(px, py)`, and the N-th Cache pin having hotpoint `(hx, hy)`:
+Given a page-stream pin with `pin_num=N` at page position `(px, py)`, and the N-th Cache pin having hotpoint `(hx, hy)`, the Cache hotpoint must first be transformed by the component's orientation (rotation + mirror) before subtracting:
 
 ```
-component_origin = (px - hx, py - hy)
+(rhx, rhy) = forward_rotate(hx, hy, orient_byte)
+component_origin = (px - rhx, py - rhy)
 ```
 
 All pins from the same component instance yield the same origin (verified: zero spread across all tested components). The component center for KiCad placement is then:
 
 ```
-kicad_center = origin + all_pin_hotpoint_midpoint
+(rcx, rcy) = forward_rotate(center_x, center_y, orient_byte)
+kicad_center = origin + (rcx, rcy)
 ```
 
-Where `all_pin_hotpoint_midpoint` is `((min_hx + max_hx)/2, (min_hy + max_hy)/2)` computed from the Cache pin list.
+Where `(center_x, center_y)` is `((min_hx + max_hx)/2, (min_hy + max_hy)/2)` computed from the Cache pin list (also in symbol-local coordinates, so also rotated).
 
 **Empirical verification** (one small board):
 

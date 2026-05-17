@@ -55,7 +55,7 @@ RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
 CELL_RE = re.compile(rb'([A-Za-z0-9_./+\-()]+)\.(Normal|Convert)\x00')
 
 # Reference designator pattern
-REF_RE = re.compile(r'^[A-Z]{1,3}\d+[A-Z]?$')
+REF_RE = re.compile(r'^[A-Z]{1,8}\d+[A-Z]?$')
 GUID_RE = re.compile(r'^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-'
                      r'[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-'
                      r'[0-9A-Fa-f]{12}\}$')

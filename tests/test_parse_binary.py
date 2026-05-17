@@ -91,6 +91,20 @@ class TestGetPageStreams:
         assert names == sorted(names)
 
 
+class TestParseComponents:
+    def test_four_letter_reference_designator(self, dsn2kicad):
+        data = bytearray(b"CN-PCIe_64p.Normal\x00" + bytes(16))
+        data += bytes([0x18])
+        data += struct.pack('<H', 5)
+        data += b"PCIE1\x00"
+        data += struct.pack('<H', 1641)
+
+        comps = dsn2kicad.parse_components(bytes(data))
+
+        assert comps[0]["ref"] == "PCIE1"
+        assert comps[0]["value_idx"] == 1641
+
+
 class TestCacheGraphics:
     def test_parse_cache_pin_visibility_flag(self, dsn2kicad):
         marker = bytes([0xFF, 0xE4, 0x5C, 0x39])

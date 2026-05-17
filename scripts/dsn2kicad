@@ -206,6 +206,9 @@ def parse_wires(data, net_table):
 
     Wire records have the marker followed by:
       zeros(4) + record_id(4) + net_id(4) + 0x30(4) + x1(4) + y1(4) + x2(4) + y2(4)
+
+    Segments whose net name uses bus vector notation (e.g. DDR0_CAA[5..0])
+    are tagged with 'bus': True.
     """
     wires = []
     pos = 0
@@ -226,6 +229,7 @@ def parse_wires(data, net_table):
                     wires.append({
                         'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
                         'net_id': net_id, 'net': net_name,
+                        'bus': is_bus_net(net_name),
                     })
         pos = idx + 4
     return wires
@@ -364,11 +368,15 @@ def parse_components(data):
                 y = round(origin_y + rcc_y)
             else:
                 if len(pins) >= 2:
-                    x = round(sum(p[1] for p in pins) / len(pins))
-                    y = round(sum(p[2] for p in pins) / len(pins))
+                    origin_x = sum(p[1] for p in pins) / len(pins)
+                    origin_y = sum(p[2] for p in pins) / len(pins)
+                    x = round(origin_x)
+                    y = round(origin_y)
         elif len(pins) >= 2:
-            x = round(sum(p[1] for p in pins) / len(pins))
-            y = round(sum(p[2] for p in pins) / len(pins))
+            origin_x = sum(p[1] for p in pins) / len(pins)
+            origin_y = sum(p[2] for p in pins) / len(pins)
+            x = round(origin_x)
+            y = round(origin_y)
 
         # Convert offsets to absolute page positions using the component origin.
         # For Cache-defined cells, origin comes from pin matching.
@@ -710,6 +718,38 @@ def sch_wire(x1, y1, x2, y2):
         f"\t\t(pts\n"
         f"\t\t\t(xy {x1:.2f} {y1:.2f}) (xy {x2:.2f} {y2:.2f})\n"
         f"\t\t)\n"
+        f"\t\t(stroke\n"
+        f"\t\t\t(width 0)\n"
+        f"\t\t\t(type default)\n"
+        f"\t\t)\n"
+        f"\t\t(uuid \"{uid}\")\n"
+        f"\t)\n"
+    )
+
+
+def sch_bus(x1, y1, x2, y2):
+    uid = new_uuid()
+    return (
+        f"\t(bus\n"
+        f"\t\t(pts\n"
+        f"\t\t\t(xy {x1:.2f} {y1:.2f}) (xy {x2:.2f} {y2:.2f})\n"
+        f"\t\t)\n"
+        f"\t\t(stroke\n"
+        f"\t\t\t(width 0)\n"
+        f"\t\t\t(type default)\n"
+        f"\t\t)\n"
+        f"\t\t(uuid \"{uid}\")\n"
+        f"\t)\n"
+    )
+
+
+def sch_bus_entry(x, y, sx, sy):
+    """Bus entry diagonal. (x, y) is the bus-side point; (sx, sy) is the size offset."""
+    uid = new_uuid()
+    return (
+        f"\t(bus_entry\n"
+        f"\t\t(at {x:.2f} {y:.2f})\n"
+        f"\t\t(size {sx:.2f} {sy:.2f})\n"
         f"\t\t(stroke\n"
         f"\t\t\t(width 0)\n"
         f"\t\t\t(type default)\n"
@@ -2332,8 +2372,14 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         if angle == 90 or angle == 270:
             val_x, val_y = x, y - 2.54
 
-    ref_angle = ref_text_angle if ref_text_angle is not None else angle
-    val_angle = val_text_angle if val_text_angle is not None else angle
+    if ref_text_angle is not None:
+        ref_angle = (ref_text_angle - angle) % 360
+    else:
+        ref_angle = 0
+    if val_text_angle is not None:
+        val_angle = (val_text_angle - angle) % 360
+    else:
+        val_angle = 0
 
     mirror_line = "\t\t(mirror y)\n" if mirror_x else ""
     parts = [
@@ -2398,6 +2444,11 @@ def sch_footer():
 # ---------------------------------------------------------------------------
 # Net label placement
 # ---------------------------------------------------------------------------
+
+def is_bus_net(name):
+    """Return True if the net name uses bus vector notation, e.g. DDR0_CAA[5..0]."""
+    return bool(re.search(r'\[\d+\.\.\d+\]', name))
+
 
 def is_power_net(name):
     if len(name) < 3:
@@ -2525,16 +2576,61 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
 
     parts.append(sch_lib_symbols(symbols_needed))
 
-    # Wires
+    # Wires and bus segments
+    regular_wires = []
+    bus_points = defaultdict(set)
     for w in wires:
         x1 = dsn_to_mm(w['x1'])
         y1 = dsn_to_mm(w['y1'])
         x2 = dsn_to_mm(w['x2'])
         y2 = dsn_to_mm(w['y2'])
-        parts.append(sch_wire(x1, y1, x2, y2))
+        if w.get('bus'):
+            parts.append(sch_bus(x1, y1, x2, y2))
+            bus_points[w['net']].add((w['x1'], w['y1']))
+            bus_points[w['net']].add((w['x2'], w['y2']))
+        else:
+            parts.append(sch_wire(x1, y1, x2, y2))
+            regular_wires.append(w)
 
-    # Junctions
-    junctions = compute_junctions(wires)
+    # Synthesize bus entries: for each individual wire whose net is a
+    # member of a bus, create a diagonal bus_entry connecting the wire
+    # endpoint to the nearest bus point.
+    bus_member_prefixes = {}
+    for bus_name in bus_points:
+        m = re.match(r'^(.+)\[\d+\.\.\d+\]$', bus_name)
+        if m:
+            bus_member_prefixes[m.group(1)] = bus_name
+    bus_entry_landings = set()
+    for w in regular_wires:
+        if not w['net']:
+            continue
+        matched_bus = None
+        for prefix, bus_name in bus_member_prefixes.items():
+            if w['net'].startswith(prefix) and w['net'][len(prefix):].isdigit():
+                matched_bus = bus_name
+                break
+        if not matched_bus:
+            continue
+        bp = bus_points[matched_bus]
+        for wx, wy in [(w['x1'], w['y1']), (w['x2'], w['y2'])]:
+            candidates = []
+            for bx, by in bp:
+                dx = bx - wx
+                dy = by - wy
+                if abs(dx) == 10 and abs(dy) == 10:
+                    candidates.append((dx, dy))
+            if not candidates:
+                continue
+            candidates.sort(key=lambda d: d[1])
+            dx, dy = candidates[0]
+            parts.append(sch_bus_entry(
+                dsn_to_mm(wx), dsn_to_mm(wy),
+                dsn_to_mm(dx), dsn_to_mm(dy)))
+            bus_entry_landings.add((wx + dx, wy + dy))
+            break
+
+    # Junctions (only for regular wires, not bus segments)
+    junctions = compute_junctions(regular_wires)
     for p in junctions:
         parts.append(sch_junction(dsn_to_mm(p[0]), dsn_to_mm(p[1])))
 
@@ -2581,8 +2677,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     pin_positions = collect_pin_positions(components)
     power_positions = set()
 
-    endpoints = compute_wire_endpoints(wires)
-    labels = place_net_labels(wires, net_table, endpoints)
+    # Labels for regular (non-bus) wires
+    endpoints = compute_wire_endpoints(regular_wires)
+    labels = place_net_labels(regular_wires, net_table, endpoints)
     for lbl in labels:
         if (lbl['x'], lbl['y']) in power_positions:
             continue
@@ -2598,6 +2695,20 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             parts.append(sch_global_label(lbl['name'], x, y))
         else:
             parts.append(sch_label(lbl['name'], x, y))
+
+    # Bus labels — placed at the true free endpoints of the bus
+    # (using all bus segments including diagonals so intermediate
+    # junction points cancel out). Always use global_label for
+    # cross-sheet connectivity. Skip endpoints where bus entries land.
+    bus_wires = [w for w in wires if w.get('bus')]
+    bus_endpoints = compute_wire_endpoints(bus_wires)
+    bus_labels = place_net_labels(bus_wires, net_table, bus_endpoints)
+    for lbl in bus_labels:
+        if (lbl['x'], lbl['y']) in bus_entry_landings:
+            continue
+        x = dsn_to_mm(lbl['x'])
+        y = dsn_to_mm(lbl['y'])
+        parts.append(sch_global_label(lbl['name'], x, y))
 
     # Decorative rectangles (e.g. INDEX table outline, CAUTION block).
     # OrCAD doesn't store an explicit stroke width; red borders render

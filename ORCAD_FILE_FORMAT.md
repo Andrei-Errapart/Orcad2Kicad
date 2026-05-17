@@ -616,6 +616,26 @@ y2(4, LE signed)     end Y
 
 Total: 36 bytes from marker start. Wire segments connect at shared endpoints. Three or more segments meeting at a point form a junction.
 
+#### Bus wires
+
+Bus wires use the **identical** record format as regular wires (same marker
+`FF E4 5C 39`, same subtype `0x30`, same 36-byte layout). There is no binary
+distinction between a bus segment and a regular wire segment.
+
+The only way to identify a bus wire is by resolving its `net_id` against the
+net name table: bus nets use vector bracket notation in their name, e.g.
+`DDR0_CAA[5..0]` or `P[3..0]`. The regex `\[\d+\.\.\d+\]` identifies them.
+
+**Bus entries are implicit.** OrCAD does not store the 45-degree diagonal
+connectors between individual wires and the bus line. There is a 10-unit gap
+(one grid step) between member wire endpoints and the bus segment endpoints.
+Bus entries must be synthesized during conversion by finding wire endpoints
+that are exactly ±10 units away in both X and Y from a bus point on the
+matching bus net.
+
+Member wires of a bus (e.g. `DDR0_CAA3` is a member of `DDR0_CAA[5..0]`) share
+the prefix and have a numeric suffix matching one of the vector indices.
+
 #### Component instance records
 
 Found by regex-matching `CellName.Normal\0` or `CellName.Convert\0` in the binary stream. After the null terminator (position = `cell_end`):

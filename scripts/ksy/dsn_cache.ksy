@@ -262,6 +262,67 @@ types:
         type: s4
 
   # -------------------------------------------------------------------------
+  # Arc record (graphic primitive)
+  # -------------------------------------------------------------------------
+
+  arc_record:
+    doc: |
+      Arc segment on the ellipse described by its bounding box. Type word
+      `0x2a2a`. The arc runs counterclockwise (in OrCAD screen space,
+      Y-down) from start to end. Can appear standalone (after marker) or
+      wrapped inside the `body_rect_record` container (subtype 0x30) with
+      inner_type 0x2a2a at offset +6.
+
+      Layout from marker (standalone form, 42 bytes from marker start):
+        marker(4)              FF E4 5C 39
+        zeros(4)
+        type_word(2)           == 0x2a2a
+        unknown(8)
+        bbox_x1(4 signed)      bounding box of full ellipse, corner 1
+        bbox_y1(4 signed)
+        bbox_x2(4 signed)      corner 2
+        bbox_y2(4 signed)
+        start_x(4 signed)      arc start point (on the ellipse)
+        start_y(4 signed)
+        end_x(4 signed)        arc end point (on the ellipse)
+        end_y(4 signed)
+
+      Wrapped form (inside 0x30, 56 bytes from subtype):
+        subtype(4)             == 0x30
+        unknown(2)
+        type_word(2)           == 0x2a2a
+        unknown(8)
+        bbox + start + end as above (8 × i32 = 32 bytes)
+
+      `dsn2kicad` emits KiCad `(arc ...)` for circular arcs or a
+      32-segment `(polyline ...)` for elliptical arcs.
+    seq:
+      - id: marker
+        type: dsn_common::record_marker
+      - id: zeros
+        contents: [0x00, 0x00, 0x00, 0x00]
+      - id: type_word
+        contents: [0x2a, 0x2a]
+      - id: unknown
+        size: 8
+      - id: bbox_x1
+        type: s4
+      - id: bbox_y1
+        type: s4
+      - id: bbox_x2
+        type: s4
+      - id: bbox_y2
+        type: s4
+      - id: start_x
+        type: s4
+      - id: start_y
+        type: s4
+      - id: end_x
+        type: s4
+      - id: end_y
+        type: s4
+
+  # -------------------------------------------------------------------------
   # Pin record (the main payload of a Cache cell's second occurrence)
   # -------------------------------------------------------------------------
 

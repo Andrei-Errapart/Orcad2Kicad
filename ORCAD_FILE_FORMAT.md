@@ -268,6 +268,35 @@ wrapper.
 for equal-axis ellipses and a 32-segment `(polyline ...)` approximation
 for true ellipses.
 
+**Arc** (type `0x2a2a`):
+
+```
+FF E4 5C 39              record marker
+00 00 00 00              zeros
+2a 2a                    type = 0x2a2a (arc)
+xx xx xx xx xx xx xx xx  unknown (8 bytes)
+xx xx xx xx              bbox_x1 (i32 LE) — bounding box of full ellipse
+xx xx xx xx              bbox_y1
+xx xx xx xx              bbox_x2
+xx xx xx xx              bbox_y2
+xx xx xx xx              start_x (i32 LE) — arc start point on ellipse
+xx xx xx xx              start_y
+xx xx xx xx              end_x (i32 LE) — arc end point on ellipse
+xx xx xx xx              end_y
+```
+
+Total: 42 bytes from marker start. The bounding box describes the full
+ellipse; `start` and `end` are points on that ellipse. The arc sweeps
+counterclockwise in OrCAD screen space (Y-down) from start to end.
+
+Can also appear wrapped inside a `0x0030` container (inner type
+`0x2a2a` at +6, bbox + start + end at +16, total wrapper: 48 bytes).
+
+Used for screw-head domes, common-mode choke bumps, inductor bumps,
+ferrite bead bumps, etc. `scripts/dsn2kicad` emits KiCad
+`(arc (start X Y) (mid X Y) (end X Y) ...)` for circular arcs and a
+32-segment `(polyline ...)` for elliptical arcs.
+
 **Container wrapper** (subtype `0x0030`):
 
 The body rectangle record described above (in "Body rectangle") uses
@@ -277,19 +306,22 @@ The wrapper layout:
 ```
 +0   u32  subtype = 0x00000030
 +4   2B   unknown
-+6   u16  inner_type         0x2828 = rectangle, 0x2b2b = ellipse
++6   u16  inner_type         0x2828 = rectangle, 0x2b2b = ellipse,
+                             0x2a2a = arc
 +8   8B   unknown
 +16  i32  x1                 inner primitive bounding box
 +20  i32  y1
 +24  i32  x2
 +28  i32  y2
+     (for 0x2a2a arcs, 4 more i32 follow: start_x, start_y, end_x, end_y)
 ```
 
-Total: 32 bytes. The inner type at +6 determines interpretation. This
-is the first body graphic encountered per cell (the "inner" body
-rectangle or ellipse). Additional standalone graphics (`0x282828` outer
-rect, `0x2b2b` standalone ellipse, `0x2929` lines) follow as separate
-`RECORD_MARKER`-delimited records.
+Total: 32 bytes for rectangle/ellipse, 48 bytes for arc. The inner
+type at +6 determines interpretation. This is the first body graphic
+encountered per cell (the "inner" body rectangle, ellipse, or arc).
+Additional standalone graphics (`0x282828` outer rect, `0x2b2b`
+standalone ellipse, `0x2a2a` standalone arc, `0x2929` lines) follow as
+separate `RECORD_MARKER`-delimited records.
 
 **Outer body rectangle** (type `0x282828`):
 

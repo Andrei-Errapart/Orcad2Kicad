@@ -852,7 +852,10 @@ x(2, LE signed)      X position
 y(2, LE signed)      Y position
 ```
 
-The `header` field varies widely between DSN files and is NOT a reliable filter. To identify power symbols, first exclude records containing `.Normal`, `.Convert`, `TitleBlock`, `Border`, or `OFFPAGE` in the name, then apply a positive filter matching known power net name prefixes (GND, VCC, VDD, VSS, AGND, PGND, AVDD, DVDD, VIO, VBUS).
+The `header` field varies widely between DSN files and is NOT a reliable filter.
+Observed records that survive the structural filters are mostly power-port glyph
+names such as `GND` and `VCC_BAR`, plus junk candidates such as `0` and `AG`.
+`scripts/dsn2kicad` only treats known glyph record names as power-symbol records.
 
 ##### Caveat: these are *not* glyph-placement records
 
@@ -872,8 +875,9 @@ of glyph positions. Instead it synthesizes power-symbol glyphs at
 every wire endpoint that:
 
 1. is on a recognized power net (per `is_power_net` — GND, VCC*,
-   VDD*, VSS*, VBUS, VIO, AGND, PGND, AVDD, DVDD, names ending in
-   `<digits>V`, etc.),
+   VDD*, VSS*, VBUS*, VIO*, AGND, PGND, AVDD, DVDD, names ending in
+   `<digits>V`, etc.; broad substring matches are avoided so signal names
+   such as `USB20_VBUSEN` do not become power ports),
 2. is a "free" wire endpoint (count == 1 in the segment graph), and
 3. does **not** coincide with a component pin position.
 

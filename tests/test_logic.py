@@ -13,6 +13,11 @@ def test_is_power_net_vcc(dsn2kicad):
     assert dsn2kicad.is_power_net("VCC") is True
 
 
+def test_is_power_net_adavdd_adavss(dsn2kicad):
+    assert dsn2kicad.is_power_net("ADAVDD_18_SOC") is True
+    assert dsn2kicad.is_power_net("ADAVSS") is True
+
+
 def test_is_power_net_voltage_suffix(dsn2kicad):
     assert dsn2kicad.is_power_net("3.3V") is True
 
@@ -31,6 +36,15 @@ def test_is_power_net_vbus(dsn2kicad):
 
 def test_is_power_net_contains_vdd(dsn2kicad):
     assert dsn2kicad.is_power_net("CORE_VDD") is True
+
+
+def test_is_power_net_vbus_enable_signal(dsn2kicad):
+    assert dsn2kicad.is_power_net("USB20_VBUSEN") is False
+    assert dsn2kicad.is_power_net("USB30_VBUSEN") is False
+
+
+def test_is_power_net_prefixed_vbus(dsn2kicad):
+    assert dsn2kicad.is_power_net("VBUS_USB") is True
 
 
 def test_is_gnd_power_name_gnd(dsn2kicad):

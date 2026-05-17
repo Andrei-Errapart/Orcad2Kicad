@@ -470,7 +470,7 @@ def parse_power_symbols(data, net_table):
                                     or 'OFFPAGE' in name):
                                 pos = idx + 4
                                 continue
-                            if not is_power_net(name):
+                            if not is_power_symbol_record_name(name):
                                 pos = idx + 4
                                 continue
                             after_null = name_end + 1
@@ -1042,6 +1042,16 @@ def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
 def _is_gnd_power_name(name):
     """Return True for names that should use the GND triangle glyph."""
     return name.upper() in ('GND', 'AGND', 'PGND', 'VSS', 'DGND', 'SGND')
+
+
+def is_power_symbol_record_name(name):
+    """Return True for OrCAD power-port symbol record names.
+
+    These are symbol glyph names in the page stream, not resolved net names.
+    VCC_BAR-style records can connect to arbitrary positive supply nets such
+    as D5.0V1 or PCIE_3V3.
+    """
+    return name.upper() in ('GND', 'VCC_BAR')
 
 
 def lib_symbol_power_gnd():
@@ -2549,10 +2559,11 @@ def is_power_net(name):
         return False
     upper = name.upper()
     for prefix in ('VDD', 'GND', 'AGND', 'PGND', 'AVDD', 'DVDD',
-                    'VIO', 'VCC', 'VBUS', 'VSS', '+', '-'):
+                    'ADAVDD', 'ADAVSS', 'VIO', 'VCC', 'VBUS', 'VSS',
+                    '+', '-'):
         if upper.startswith(prefix):
             return True
-    if any(kw in upper for kw in ('VDD', 'VCC', 'VSS', 'GND', 'VBUS')):
+    if upper.endswith(('_VDD', '_VCC', '_VSS', '_GND')):
         return True
     if re.search(r'\d[\d.]*V\d*$', name):
         return True

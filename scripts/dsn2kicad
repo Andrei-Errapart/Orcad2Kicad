@@ -1791,7 +1791,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t)\n')
     if body_rects:
         rects_to_emit = body_rects
-    elif classified:
+    elif classified and not (body_lines or body_ellipses or body_arcs):
         rects_to_emit = [(bx1, by1, bx2, by2)]
     else:
         rects_to_emit = []
@@ -1925,7 +1925,7 @@ def _build_unit_pin_data(cell_name):
     ellipses = _cell_body_ellipses.get(cell_name)
     arcs = _cell_body_arcs.get(cell_name)
 
-    if not rects and body_xs:
+    if not rects and not (ellipses or arcs) and body_xs:
         x1, y1 = min(body_xs), min(body_ys)
         x2, y2 = max(body_xs), max(body_ys)
         MIN_BODY = 5.08
@@ -2628,14 +2628,19 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         style_id = t.get('style_id', 0)
         bold = italic = False
         face = None
+        escapement = 0
         if styles and 1 <= style_id <= len(styles):
             s = styles[style_id - 1]
             bold = (s.get('weight') == 700)
             italic = bool(s.get('italic'))
             face = s.get('face') or None
+            escapement = s.get('escapement', 0)
+        rotated = (escapement / 10) in (90, 270)
         # Size the text so that the longest line's rendered width matches
         # the bbox width, and the per-line height matches bbox_h / n_lines.
         # Take the smaller of the two so the text never overflows the bbox.
+        # For rotated text (90°/270°), the bbox's physical width/height are
+        # swapped relative to the text's reading direction.
         #
         # KiCad's outline-font renderer (common/font/outline_font.cpp) applies
         # `m_outlineFontSizeCompensation = 1.4` when scaling glyphs — so a
@@ -2649,11 +2654,11 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         n_lines = max(1, len(lines))
         bbox = t.get('bbox')
         if bbox:
-            bbox_w_mm = abs(bbox[2] - bbox[0]) * UNIT_TO_MM
-            bbox_h_mm = abs(bbox[3] - bbox[1]) * UNIT_TO_MM
+            phys_w = abs(bbox[2] - bbox[0]) * UNIT_TO_MM
+            phys_h = abs(bbox[3] - bbox[1]) * UNIT_TO_MM
+            bbox_w_mm = phys_h if rotated else phys_w
+            bbox_h_mm = phys_w if rotated else phys_h
             per_line_mm = bbox_h_mm / n_lines
-            # Find the line whose measured width at 1 mm font-size is
-            # largest — that's the one constraining the size.
             widest = max(lines, key=len) if lines else ''
             width_at_1mm = measure_text_width(
                 widest, 1.0, face_name=face or 'Arial',
@@ -2663,25 +2668,22 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             else:
                 width_limited_size = per_line_mm
             target = min(per_line_mm, width_limited_size)
-            # Undo KiCad's 1.4× compensation so the rendered text matches
-            # `target` mm.
             size = max(0.5, min(target / KICAD_FONT_SIZE_COMPENSATION, 32.0))
-        # Per-line vertical advance.
-        line_h = (abs(bbox[3] - bbox[1]) * UNIT_TO_MM / n_lines) if bbox else (size * 1.2)
-        # Normalize CRLF/CR to LF, then split.
-        # Anchor each line on the baseline. KiCad's `(justify left
-        # bottom)` puts the anchor at the descender line (below the
-        # baseline by the font's descender depth), so we shift the
-        # anchor *down* by that descender offset so that the baseline
-        # (where most letters' bottoms sit) ends up on the OrCAD bbox
-        # bottom edge. Arial descender is ~21% of em-height; since KiCad
-        # renders at 1.4× the emitted size, the descender in document
-        # units is 0.21 × 1.4 × size = 0.30 × size mm.
+        line_h = (abs(bbox[3] - bbox[1]) * UNIT_TO_MM / n_lines) if bbox and not rotated else (
+                  (abs(bbox[2] - bbox[0]) * UNIT_TO_MM / n_lines) if bbox and rotated else (size * 1.2))
         descender_mm = 0.30 * size
         for j, line in enumerate(lines):
+            if rotated:
+                lx = x + (j + 1) * line_h + descender_mm
+                bbox_span = abs(bbox[3] - bbox[1]) * UNIT_TO_MM if bbox else 0
+                ly = y0 + bbox_span
+            else:
+                lx = x
+                ly = y0 + (j + 1) * line_h + descender_mm
             parts.append(sch_text(
-                line, x, y0 + (j + 1) * line_h + descender_mm,
-                size=size, bold=bold, italic=italic, face=face,
+                line, lx, ly,
+                size=size, angle=90.0 if rotated else 0.0,
+                bold=bold, italic=italic, face=face,
                 justify="left bottom",
             ))
 
@@ -2914,6 +2916,10 @@ def _parse_cache_graphics(data, aps, scan_end):
                 if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
                     if not (x1 == x2 == 0 and y1 == y2 == 0):
                         body_ellipses.append((x1, y1, x2, y2))
+            elif tw == 0x2929 and pos + 32 <= len(data):
+                x1, y1, x2, y2 = struct.unpack_from('<iiii', data, pos + 16)
+                if all(abs(v) < 5000 for v in (x1, y1, x2, y2)):
+                    body_lines.append((x1, y1, x2, y2))
             elif tw == 0x2a2a and pos + 48 <= len(data):
                 vals = struct.unpack_from('<iiiiiiii', data, pos + 16)
                 bx1, by1, bx2, by2, sx, sy, ex, ey = vals
@@ -3425,9 +3431,10 @@ def parse_library_styles(ole):
     `library_styles[text.style_id - 1]` is the style that should apply.
 
     Returns a list of dicts (0-indexed) with keys:
-      tag         (negative i32, kind of record)
+      tag         (negative i32, lfHeight from LOGFONT)
       weight      (Windows GDI lfWeight: 400 = Normal, 700 = Bold)
       italic      (True/False)
+      escapement  (lfEscapement: rotation in tenths of degrees, e.g. 2700 = 270°)
       face        (font face name string, possibly empty)
       ext_word    (u32 at offset +34 — encoded color/size, not yet decoded)
       flag_byte   (u8 at offset +56 — set when ext_word is meaningful)
@@ -3445,6 +3452,7 @@ def parse_library_styles(ole):
         if (data[i+1] == 0xff and data[i+2] == 0xff and data[i+3] == 0xff
                 and 0x80 <= data[i] <= 0xff and i not in seen):
             tag = struct.unpack_from('<i', data, i)[0]
+            escapement = struct.unpack_from('<i', data, i + 8)[0]
             weight = struct.unpack_from('<I', data, i + 16)[0]
             italic_byte = data[i + 20]
             face_bytes = bytearray()
@@ -3462,6 +3470,7 @@ def parse_library_styles(ole):
                 'tag':      tag,
                 'weight':   weight,
                 'italic':   italic_byte == 0xff,
+                'escapement': escapement,
                 'face':     face,
                 'ext_word': ext_word,
                 'flag_byte': flag_byte,

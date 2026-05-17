@@ -44,16 +44,20 @@ types:
       Layout:
         subtype(4)    == 0x30
         unknown(2)
-        type_word(2)  == 0x2828 (rectangle) or 0x2b2b (ellipse)
+        type_word(2)  == 0x2828 (rectangle), 0x2929 (line),
+                         0x2b2b (ellipse), or 0x2a2a (arc)
         unknown(8)
-        x1(4 signed)                   bounding box corner 1
+        x1(4 signed)                   bounding box corner 1 / line start
         y1(4 signed)
-        x2(4 signed)                   bounding box corner 2
+        x2(4 signed)                   bounding box corner 2 / line end
         y2(4 signed)
-      Total: 32 bytes from subtype start.
+        (for 0x2a2a arcs, 4 more i32: start_x, start_y, end_x, end_y)
+      Total: 32 bytes from subtype start (48 for arcs).
 
       When type_word is 0x2828, the bbox defines the body rectangle.
+      When type_word is 0x2929, x1,y1→x2,y2 defines a line segment.
       When type_word is 0x2b2b, it defines the inscribed ellipse/circle.
+      When type_word is 0x2a2a, it defines an arc (bbox + start + end).
     seq:
       - id: subtype
         contents: [0x30, 0x00, 0x00, 0x00]
@@ -62,7 +66,8 @@ types:
       - id: type_word
         type: u2
         doc: |
-          0x2828 = body rectangle, 0x2b2b = ellipse/circle.
+          0x2828 = rectangle, 0x2929 = line, 0x2b2b = ellipse/circle,
+          0x2a2a = arc.
       - id: unknown2
         size: 8
       - id: x1

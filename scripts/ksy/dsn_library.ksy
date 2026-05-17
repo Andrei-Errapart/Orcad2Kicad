@@ -61,7 +61,9 @@ types:
       Layout:
         +0   i32   tag           negative value (see `style_tag` enum)
         +4   u32   index         per-tag sub-index
-        +8   8B   reserved
+        +8   i32   escapement    LOGFONT lfEscapement (tenths of degrees)
+                                   0 = horizontal, 2700 = vertical
+        +12  4B   reserved
         +16  u32   weight        GDI LOGFONT lfWeight
                                    400 (0x190) = Normal
                                    700 (0x2BC) = Bold
@@ -105,8 +107,13 @@ types:
         enum: style_tag
       - id: index
         type: u4
+      - id: escapement
+        type: s4
+        doc: |
+          LOGFONT lfEscapement: text rotation in tenths of degrees,
+          counterclockwise. 0 = horizontal, 2700 = vertical (top-to-bottom).
       - id: reserved1
-        size: 8
+        size: 4
       - id: weight
         type: u4
         enum: gdi_weight

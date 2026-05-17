@@ -53,6 +53,9 @@ Walks the OLE compound document and prints all parseable records from every stre
   authoritative conversion data.
 - Component values/properties are still incomplete for many symbols.
 - Output UUIDs are currently random, so repeated conversions produce noisy diffs.
+- Vertical text annotations that read top-to-bottom in OrCAD are rendered
+  bottom-to-top in KiCad, because KiCad normalizes text to always read
+  left-to-right or bottom-to-top.
 
 ## Tests
 

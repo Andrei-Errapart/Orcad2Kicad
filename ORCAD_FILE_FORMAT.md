@@ -306,8 +306,8 @@ The wrapper layout:
 ```
 +0   u32  subtype = 0x00000030
 +4   2B   unknown
-+6   u16  inner_type         0x2828 = rectangle, 0x2b2b = ellipse,
-                             0x2a2a = arc
++6   u16  inner_type         0x2828 = rectangle, 0x2929 = line,
+                             0x2b2b = ellipse, 0x2a2a = arc
 +8   8B   unknown
 +16  i32  x1                 inner primitive bounding box
 +20  i32  y1
@@ -316,8 +316,8 @@ The wrapper layout:
      (for 0x2a2a arcs, 4 more i32 follow: start_x, start_y, end_x, end_y)
 ```
 
-Total: 32 bytes for rectangle/ellipse, 48 bytes for arc. The inner
-type at +6 determines interpretation. This is the first body graphic
+Total: 32 bytes for rectangle/ellipse/line, 48 bytes for arc. The
+inner type at +6 determines interpretation. This is the first body graphic
 encountered per cell (the "inner" body rectangle, ellipse, or arc).
 Additional standalone graphics (`0x282828` outer rect, `0x2b2b`
 standalone ellipse, `0x2a2a` standalone arc, `0x2929` lines) follow as
@@ -387,7 +387,11 @@ The `Library` stream is the project's **style table + title-block field storage*
                          -16, -20, -21, -24, -27, -29, -48, -64
                                     = extra/extended font binding slots
 +4   u32   index        per-tag index (0, 4, 5, 7, 8, …)
-+8   8B   reserved
++8   i32   escapement   LOGFONT lfEscapement: text rotation in tenths
+                          of degrees, counterclockwise.
+                          0    = horizontal (left-to-right)
+                          2700 = 270° = vertical (top-to-bottom)
++12  4B   reserved
 +16  u32   weight       Windows GDI LOGFONT lfWeight value:
                           0x190 = 400 = Normal
                           0x2BC = 700 = Bold

@@ -22,17 +22,31 @@ pip install olefile
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--debug-bbox] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
 references, a symbol library, and a KiCad project file. Output defaults to a
-directory named after the DSN file. Root schematic sheet symbols are placed
-top-to-bottom, then left-to-right, so KiCad's hierarchy navigator follows the
-original DSN page order. Symbol pin-name and pin-number visibility is derived
-from the DSN Cache symbol records: one-pin symbols hide both labels, redundant
-numeric pin names are hidden, and two-terminal symbols whose Cache pin flags hide
-numbers emit hidden KiCad pin names and pin numbers.
+directory named after the DSN file.
+
+Options:
+
+- `--kicad-power` — Use KiCad-native power symbol graphics (VCC chevron, GND
+  triangle) instead of OrCAD-style T-bar symbols. Power nets that exist in
+  KiCad's installed `power.kicad_sym` library use the native definition directly;
+  all others are derived from the VCC/GND template with the OrCAD net name.
+- `--debug-bbox` — Draw debug rectangles around component bounding boxes.
+
+Pin lengths are automatically extended so that pin numbers are readable: each
+pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the
+longest pin number in the symbol. Connecting wires are extended to match.
+
+Root schematic sheet symbols are placed top-to-bottom, then left-to-right, so
+KiCad's hierarchy navigator follows the original DSN page order. Symbol
+pin-name and pin-number visibility is derived from the DSN Cache symbol
+records: one-pin symbols hide both labels, redundant numeric pin names are
+hidden, and two-terminal symbols whose Cache pin flags hide numbers emit
+hidden KiCad pin names and pin numbers.
 
 ### dsn_dump
 
@@ -52,12 +66,9 @@ Walks the OLE compound document and prints all parseable records from every stre
 
 ## Current Limitations
 
-- Electrical equivalence is not yet proven automatically; there is no generated
-  KiCad-vs-OrCAD netlist diff.
 - Parsed hierarchy nets and explicit power-symbol records are not yet used as
   authoritative conversion data.
 - Component values/properties are still incomplete for many symbols.
-- Output UUIDs are currently random, so repeated conversions produce noisy diffs.
 - Vertical text annotations that read top-to-bottom in OrCAD are rendered
   bottom-to-top in KiCad, because KiCad normalizes text to always read
   left-to-right or bottom-to-top.

@@ -64,8 +64,11 @@ GUID_RE = re.compile(r'^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-'
 _uuid_rng = random.Random(0)
 
 
-def seed_uuid_rng(data: bytes):
-    _uuid_rng.seed(hashlib.sha256(data).digest())
+def seed_uuid_rng(data: bytes, filename: str = ''):
+    h = hashlib.sha256(data)
+    if filename:
+        h.update(filename.encode('utf-8'))
+    _uuid_rng.seed(h.digest())
 
 
 def new_uuid():
@@ -2568,7 +2571,9 @@ def is_power_net(name):
                     '+', '-'):
         if upper.startswith(prefix):
             return True
-    if upper.endswith(('_VDD', '_VCC', '_VSS', '_GND')):
+    if upper.endswith(('_VDD', '_VCC', '_VSS', '_GND', '_VBUS')):
+        return True
+    if re.search(r'_VBUS_(IN|OUT)\w*$', upper):
         return True
     if re.search(r'\d[\d.]*V\d*$', name):
         return True
@@ -4095,7 +4100,7 @@ def main():
               "ratio for text sizing; install `freetype-py` and ensure "
               "Arial TTF is available for exact measurements)")
     ole = olefile.OleFileIO(str(dsn_path))
-    seed_uuid_rng(dsn_path.read_bytes())
+    dsn_bytes = dsn_path.read_bytes()
 
     # Parse title-block fields (project-wide, applied to every page)
     title_block = parse_title_block(ole)
@@ -4216,6 +4221,7 @@ def main():
         texts = parse_text_annotations(data, paper)
         page_rects, page_lines, page_ellipses = parse_page_graphics(data, paper)
 
+        seed_uuid_rng(dsn_bytes, filename)
         content = generate_page_sch(
             page_name, paper, wires, components, power_syms,
             net_table, global_nets, texts=texts,
@@ -4265,6 +4271,7 @@ def main():
 
     # Root schematic
     print("  Generating root schematic...")
+    seed_uuid_rng(dsn_bytes, f"{safe_project}.kicad_sch")
     root_content = generate_root_sch(page_filenames, page_names, safe_project)
     (output_dir / f"{safe_project}.kicad_sch").write_text(root_content, encoding='utf-8')
 

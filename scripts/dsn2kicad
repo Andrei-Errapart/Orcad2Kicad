@@ -1667,6 +1667,16 @@ def _pin_record_hides_number(pin_flags):
     return (pin_flags & 0x01) == 0
 
 
+def _min_pin_length_for_numbers(classified):
+    """Return minimum pin length so pin numbers are readable.
+
+    Formula: max(PIN_LENGTH, (max_chars + 1) * 1.27), giving one
+    character-width of padding between the number and the body edge.
+    """
+    max_chars = max(len(str(p[0])) for p in classified)
+    return max(PIN_LENGTH, (max_chars + 1) * 1.27)
+
+
 def _symbol_pin_visibility(classified):
     """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
     if len(classified) == 1:
@@ -1888,6 +1898,32 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
 
     hide_pin_names, hide_pin_numbers = _symbol_pin_visibility(classified)
 
+    if classified and not hide_pin_numbers:
+        min_len = _min_pin_length_for_numbers(classified)
+        extended = []
+        deltas = {}
+        for pn, hx, hy, direction, etype, orig, pin_len, pflags in classified:
+            if pin_len < min_len:
+                delta = round(min_len - pin_len, 2)
+                dx, dy = 0.0, 0.0
+                if direction == 0:
+                    dx = -delta
+                elif direction == 180:
+                    dx = delta
+                elif direction == 90:
+                    dy = -delta
+                elif direction == 270:
+                    dy = delta
+                hx = round(hx + dx, 2)
+                hy = round(hy + dy, 2)
+                deltas[str(pn)] = (dx, dy)
+                pin_len = min_len
+            extended.append((pn, hx, hy, direction, etype, orig, pin_len,
+                             pflags))
+        classified = extended
+        if deltas:
+            _pin_extension_deltas[name] = deltas
+
     parts = []
     parts.append(f'\t\t(symbol "{name}"\n')
     parts.append('\t\t\t(exclude_from_sim no)\n')
@@ -2045,6 +2081,33 @@ def _build_unit_pin_data(cell_name):
                 body_ys.append(hy)
         classified.append((pn, hx, hy, direction, etype, orig, pin_len,
                            pin_flags))
+
+    _, hide_pin_numbers = _symbol_pin_visibility(classified)
+    if classified and not hide_pin_numbers:
+        min_len = _min_pin_length_for_numbers(classified)
+        extended = []
+        deltas = {}
+        for pn, hx, hy, direction, etype, orig, pin_len, pflags in classified:
+            if pin_len < min_len:
+                d = round(min_len - pin_len, 2)
+                dx, dy = 0.0, 0.0
+                if direction == 0:
+                    dx = -d
+                elif direction == 180:
+                    dx = d
+                elif direction == 90:
+                    dy = -d
+                elif direction == 270:
+                    dy = d
+                hx = round(hx + dx, 2)
+                hy = round(hy + dy, 2)
+                deltas[str(pn)] = (dx, dy)
+                pin_len = min_len
+            extended.append((pn, hx, hy, direction, etype, orig, pin_len,
+                             pflags))
+        classified = extended
+        if deltas:
+            _pin_extension_deltas[cell_name] = deltas
 
     rects = _cell_body_rects.get(cell_name)
     ann = _cell_text_annotations.get(cell_name)
@@ -2222,6 +2285,10 @@ _cell_centers = {}
 # Cache pins in original order: {cell_name: [(hot_x, hot_y), ...]}
 # Pin at index i corresponds to page-stream pin_num = i+1
 _cell_pin_lists = {}
+
+# Pin extension deltas in symbol-local mm: {cell_name: {pin_num: (dx, dy)}}
+# Populated by lib_symbol_from_pins when pins are extended for readability.
+_pin_extension_deltas = {}
 
 # Multi-unit symbol groups detected from page instances.
 # {base_name: {cell_name: unit_number (1-based), ...}}
@@ -2741,7 +2808,42 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
 
     parts.append(sch_lib_symbols(symbols_needed))
 
-    # Wires and bus segments
+    # Build map of pin-extension adjustments in DSN page units.
+    # For each extended pin that has a wire, maps the old endpoint
+    # position to the new (extended) position.
+    pin_adjust = {}
+    for comp in components:
+        cell = comp['cell']
+        deltas = _pin_extension_deltas.get(cell)
+        if not deltas:
+            continue
+        cx_cy = _cell_centers.get(cell)
+        pin_list = _cell_pin_lists.get(cell)
+        if not cx_cy or not pin_list:
+            continue
+        cx, cy = cx_cy
+        pin_defs = _cell_pin_defs.get(cell, [])
+        for i, (raw_hx, raw_hy) in enumerate(pin_list):
+            pn = str(pin_defs[i][0]) if i < len(pin_defs) else str(i + 1)
+            if pn not in deltas:
+                continue
+            dx_mm, dy_mm = deltas[pn]
+            dx_cache = dx_mm / UNIT_TO_MM
+            dy_cache = -dy_mm / UNIT_TO_MM
+            rdx, rdy = _forward_rotate(dx_cache, dy_cache, comp['orient'])
+            old_dx, old_dy = raw_hx - cx, raw_hy - cy
+            old_rdx, old_rdy = _forward_rotate(old_dx, old_dy, comp['orient'])
+            ox = round(comp['x'] + old_rdx)
+            oy = round(comp['y'] + old_rdy)
+            nx = round(comp['x'] + old_rdx + rdx)
+            ny = round(comp['y'] + old_rdy + rdy)
+            if (ox, oy) != (nx, ny):
+                pin_adjust[(ox, oy)] = (nx, ny)
+
+    # Wires and bus segments.
+    # At output time, extend collinear wire endpoints to reach extended
+    # pins.  The DSN-unit wire data stays untouched so labels, junctions,
+    # and power-symbol logic see the original positions.
     regular_wires = []
     bus_points = defaultdict(set)
     for w in wires:
@@ -2754,6 +2856,24 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             bus_points[w['net']].add((w['x1'], w['y1']))
             bus_points[w['net']].add((w['x2'], w['y2']))
         else:
+            new_pos = pin_adjust.get((w['x1'], w['y1']))
+            if new_pos:
+                sdx = new_pos[0] - w['x1']
+                sdy = new_pos[1] - w['y1']
+                wdx = w['x2'] - w['x1']
+                wdy = w['y2'] - w['y1']
+                if sdx * wdy - sdy * wdx == 0:
+                    x1 = dsn_to_mm(new_pos[0])
+                    y1 = dsn_to_mm(new_pos[1])
+            new_pos = pin_adjust.get((w['x2'], w['y2']))
+            if new_pos:
+                sdx = new_pos[0] - w['x2']
+                sdy = new_pos[1] - w['y2']
+                wdx = w['x1'] - w['x2']
+                wdy = w['y1'] - w['y2']
+                if sdx * wdy - sdy * wdx == 0:
+                    x2 = dsn_to_mm(new_pos[0])
+                    y2 = dsn_to_mm(new_pos[1])
             parts.append(sch_wire(x1, y1, x2, y2))
             regular_wires.append(w)
 
@@ -4160,6 +4280,7 @@ def main():
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
+    _pin_extension_deltas.clear()
     cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses, cache_body_arcs, cache_body_polygons = parse_cache_cells(ole)
     register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses, cache_body_arcs, cache_body_polygons)
     cache_count = len(_cell_pin_defs)

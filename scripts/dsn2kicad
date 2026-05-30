@@ -16,7 +16,7 @@ Generates KiCad schematic files (.kicad_sch) with:
   - Text annotations
 
 Usage:
-    scripts/dsn2kicad <file.DSN> [output_dir]
+    scripts/dsn2kicad [--kicad-power] [--debug-bbox] <file.DSN> [output_dir]
 """
 
 import json
@@ -1060,6 +1060,74 @@ def is_power_symbol_record_name(name):
     return name.upper() in ('GND', 'VCC_BAR')
 
 
+_kicad_native_power = {}
+_use_kicad_power = False
+
+
+def _kicad_power_from_template(template_name, new_name):
+    """Create a power symbol by renaming a native KiCad template (VCC or GND)."""
+    tmpl = _kicad_native_power.get(template_name)
+    if not tmpl:
+        return None
+    return tmpl.replace(template_name, new_name)
+
+
+def load_kicad_power_library():
+    """Load symbol definitions from KiCad's installed power library.
+
+    Populates _kicad_native_power: {name: inline_definition_str}.
+    The definitions are re-indented to match the inline lib_symbols format.
+    """
+    search_paths = [
+        Path('/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols/power.kicad_sym'),
+        Path('/usr/share/kicad/symbols/power.kicad_sym'),
+        Path(os.environ.get('KICAD8_SYMBOL_DIR', ''), 'power.kicad_sym'),
+        Path(os.environ.get('KICAD_SYMBOL_DIR', ''), 'power.kicad_sym'),
+    ]
+    lib_path = None
+    for p in search_paths:
+        if p.exists():
+            lib_path = p
+            break
+    if not lib_path:
+        print("  Warning: KiCad power library not found, "
+              "using built-in power symbols", file=sys.stderr)
+        return
+    content = lib_path.read_text(encoding='utf-8')
+    pos = 0
+    count = 0
+    while True:
+        idx = content.find('\t(symbol "', pos)
+        if idx < 0:
+            break
+        name_start = idx + len('\t(symbol "')
+        name_end = content.index('"', name_start)
+        name = content[name_start:name_end]
+        depth = 0
+        end = idx
+        for i in range(idx, len(content)):
+            if content[i] == '(':
+                depth += 1
+            elif content[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        sym_text = content[idx:end]
+        sym_text = sym_text.replace('\t(symbol ', '\t\t(symbol "power:' + name + '"\n\t\t\t', 1)
+        sym_text = '\t\t(symbol "power:' + name + '"\n'
+        body = content[idx:end]
+        lines = body.split('\n')
+        rebuilt = ['\t\t(symbol "power:' + name + '"']
+        for line in lines[1:]:
+            rebuilt.append('\t' + line)
+        sym_text = '\n'.join(rebuilt) + '\n'
+        _kicad_native_power[name] = sym_text
+        pos = end
+        count += 1
+    print(f"  Loaded {count} symbols from {lib_path.name}")
+
+
 def lib_symbol_power_gnd():
     """KiCad `power:GND` definition (triangle-down glyph at pin 1)."""
     return (
@@ -1228,7 +1296,12 @@ def sch_power_symbol(name, x, y, is_ground=False):
         lib_id = f"power:{name_esc}"
         pin_name = name
 
-    val_y = y + 2.54 if is_ground else y - 2.54
+    if is_ground:
+        val_y = y + 2.54
+    elif _use_kicad_power:
+        val_y = y - 3.81
+    else:
+        val_y = y - 2.54
     val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
 
     return (
@@ -2800,11 +2873,21 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         if _is_gnd_power_name(pname):
             lid = 'power:GND'
             if lid not in symbols_needed:
-                symbols_needed[lid] = lib_symbol_power_gnd()
+                if _use_kicad_power:
+                    symbols_needed[lid] = (_kicad_native_power.get('GND')
+                                           or lib_symbol_power_gnd())
+                else:
+                    symbols_needed[lid] = lib_symbol_power_gnd()
         else:
             lid = f'power:{pname}'
             if lid not in symbols_needed:
-                symbols_needed[lid] = lib_symbol_power_rail(pname)
+                if _use_kicad_power:
+                    symbols_needed[lid] = (
+                        _kicad_native_power.get(pname)
+                        or _kicad_power_from_template('VCC', pname)
+                        or lib_symbol_power_rail(pname))
+                else:
+                    symbols_needed[lid] = lib_symbol_power_rail(pname)
 
     parts.append(sch_lib_symbols(symbols_needed))
 
@@ -3275,12 +3358,22 @@ def generate_symbol_library(project_name, power_names=None, used_cells=None):
         for pname in sorted(power_names):
             if _is_gnd_power_name(pname):
                 if not gnd_seen:
-                    parts.append(lib_symbol_power_gnd())
+                    if _use_kicad_power:
+                        parts.append(_kicad_native_power.get('GND')
+                                     or lib_symbol_power_gnd())
+                    else:
+                        parts.append(lib_symbol_power_gnd())
                     gnd_seen = True
             else:
                 lid = f'power:{pname}'
                 if lid not in emitted_power:
-                    parts.append(lib_symbol_power_rail(pname))
+                    if _use_kicad_power:
+                        parts.append(
+                            _kicad_native_power.get(pname)
+                            or _kicad_power_from_template('VCC', pname)
+                            or lib_symbol_power_rail(pname))
+                    else:
+                        parts.append(lib_symbol_power_rail(pname))
                     emitted_power.add(lid)
     parts.append(")\n")
     return "".join(parts)
@@ -4194,8 +4287,13 @@ def main():
     if "--debug-bbox" in argv:
         debug_bbox = True
         argv.remove("--debug-bbox")
+    global _use_kicad_power
+    if "--kicad-power" in argv:
+        _use_kicad_power = True
+        argv.remove("--kicad-power")
     if not argv:
-        print(f"Usage: {sys.argv[0]} [--debug-bbox] <file.DSN> [output_dir]",
+        print(f"Usage: {sys.argv[0]} [--debug-bbox] [--kicad-power] "
+              f"<file.DSN> [output_dir]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -4213,6 +4311,10 @@ def main():
 
     project_name = dsn_path.stem
     safe_project = re.sub(r'[^A-Za-z0-9_.-]', '_', project_name)
+
+    if _use_kicad_power:
+        print("Loading KiCad power library...")
+        load_kicad_power_library()
 
     print(f"Opening {dsn_path.name}...")
     if not _HAS_FREETYPE:

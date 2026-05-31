@@ -518,16 +518,111 @@ def parse_power_symbols(data, net_table):
                                 pos = idx + 4
                                 continue
                             after_null = name_end + 1
-                            if after_null + 8 < len(data):
-                                x = struct.unpack_from('<h', data, after_null + 4)[0]
-                                y = struct.unpack_from('<h', data, after_null + 6)[0]
+                            if after_null + 18 <= len(data):
+                                cell_id = struct.unpack_from('<I', data, after_null)[0]
+                                coords = struct.unpack_from('<6h', data, after_null + 4)
+                                orient = struct.unpack_from('<H', data, after_null + 16)[0]
+                                x = coords[0]
+                                y = coords[1]
                                 symbols.append({
+                                    'record_name': name,
                                     'name': name,
+                                    'cell_id': cell_id,
+                                    'coords': coords,
+                                    'orient': orient,
                                     'x': x,
                                     'y': y,
                                 })
         pos = idx + 4
     return symbols
+
+
+def _power_symbol_hotpoint_candidates(sym):
+    """Return candidate electrical hotpoints for an OrCAD power-port record.
+
+    Coordinates are in raw page units, the same space used by wire endpoints
+    and component pin records. The first candidate is the primary formula;
+    later candidates are fallbacks for confirmed orientation edge cases.
+    """
+    coords = sym.get('coords')
+    if not coords or len(coords) != 6:
+        return []
+    n0, _n1, n2, _n3, n4, n5 = coords
+    orient = sym.get('orient', 0)
+    record_name = sym.get('record_name', sym.get('name', '')).upper()
+
+    if record_name == 'GND':
+        if orient == 0x0430:
+            return [(n4 + 10, n0)]
+        return [(n4 + 10, n2 - 10)]
+
+    if record_name == 'VCC_BAR':
+        if orient == 0x0330:
+            primary = (n4, n5 + 10)
+        else:
+            primary = (n4 + 10, n5 + 10)
+        alternate = (n4, n5 + 10)
+        if alternate == primary:
+            return [primary]
+        return [primary, alternate]
+
+    return []
+
+
+def resolve_power_symbol_nets(power_syms, wires, components):
+    """Resolve OrCAD power-port records to page-local net names.
+
+    A power port may attach to a wire endpoint or directly to a component pin.
+    The DSN power-port record itself has no net_id, so the net is recovered by
+    matching the derived hotpoint against those two connectivity indexes.
+    """
+    wire_points = {}
+    for w in wires:
+        if not w.get('net'):
+            continue
+        wire_points[(w['x1'], w['y1'])] = {
+            'net_id': w.get('net_id'),
+            'net': w.get('net'),
+        }
+        wire_points[(w['x2'], w['y2'])] = {
+            'net_id': w.get('net_id'),
+            'net': w.get('net'),
+        }
+
+    pin_points = {}
+    for comp in components:
+        for (_pin_num, px, py), pin_net in comp.get('pin_nets', {}).items():
+            if pin_net.get('net'):
+                pin_points[(px, py)] = pin_net
+
+    power_net_names = set()
+    resolved = []
+    for sym in power_syms:
+        match = None
+        hotpoint = None
+        for candidate in _power_symbol_hotpoint_candidates(sym):
+            if candidate in wire_points:
+                match = wire_points[candidate]
+                hotpoint = candidate
+                break
+            if candidate in pin_points:
+                match = pin_points[candidate]
+                hotpoint = candidate
+                break
+        if match and match.get('net'):
+            sym = dict(sym)
+            sym['net_id'] = match.get('net_id')
+            sym['net'] = match.get('net')
+            sym['name'] = match.get('net')
+            sym['x'], sym['y'] = hotpoint
+            sym['matched'] = True
+            power_net_names.add(match['net'])
+        else:
+            sym = dict(sym)
+            sym['matched'] = False
+        resolved.append(sym)
+
+    return resolved, power_net_names
 
 
 TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
@@ -1085,7 +1180,10 @@ def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
 
 def _is_gnd_power_name(name):
     """Return True for names that should use the GND triangle glyph."""
-    return name.upper() in ('GND', 'AGND', 'PGND', 'VSS', 'DGND', 'SGND')
+    upper = name.upper()
+    return (upper in ('GND', 'AGND', 'PGND', 'VSS', 'DGND', 'SGND',
+                      'ADAVSS')
+            or upper.endswith('_VSS'))
 
 
 def is_power_symbol_record_name(name):
@@ -1166,10 +1264,11 @@ def load_kicad_power_library():
     print(f"  Loaded {count} symbols from {lib_path.name}")
 
 
-def lib_symbol_power_gnd():
-    """KiCad `power:GND` definition (triangle-down glyph at pin 1)."""
+def lib_symbol_power_gnd(name='GND'):
+    """KiCad GND-style power definition (triangle-down glyph at pin 1)."""
+    name_esc = _esc_kicad_str(name)
     return (
-        '\t\t(symbol "power:GND"\n'
+        f'\t\t(symbol "power:{name_esc}"\n'
         '\t\t\t(power)\n'
         '\t\t\t(pin_numbers hide)\n'
         '\t\t\t(pin_names\n'
@@ -1187,7 +1286,7 @@ def lib_symbol_power_gnd():
         '\t\t\t\t\t(hide yes)\n'
         '\t\t\t\t)\n'
         '\t\t\t)\n'
-        '\t\t\t(property "Value" "GND"\n'
+        f'\t\t\t(property "Value" "{name_esc}"\n'
         '\t\t\t\t(at 0 -3.81 0)\n'
         '\t\t\t\t(effects\n'
         '\t\t\t\t\t(font\n'
@@ -1195,7 +1294,7 @@ def lib_symbol_power_gnd():
         '\t\t\t\t\t)\n'
         '\t\t\t\t)\n'
         '\t\t\t)\n'
-        '\t\t\t(symbol "GND_0_1"\n'
+        f'\t\t\t(symbol "{name_esc}_0_1"\n'
         '\t\t\t\t(polyline\n'
         '\t\t\t\t\t(pts\n'
         '\t\t\t\t\t\t(xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) '
@@ -1210,11 +1309,11 @@ def lib_symbol_power_gnd():
         '\t\t\t\t\t)\n'
         '\t\t\t\t)\n'
         '\t\t\t)\n'
-        '\t\t\t(symbol "GND_1_1"\n'
+        f'\t\t\t(symbol "{name_esc}_1_1"\n'
         '\t\t\t\t(pin power_in line\n'
         '\t\t\t\t\t(at 0 0 270)\n'
         '\t\t\t\t\t(length 0)\n'
-        '\t\t\t\t\t(name "GND"\n'
+        f'\t\t\t\t\t(name "{name_esc}"\n'
         '\t\t\t\t\t\t(effects\n'
         '\t\t\t\t\t\t\t(font\n'
         '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
@@ -1328,19 +1427,19 @@ def sch_power_symbol(name, x, y, is_ground=False):
     name_esc = _esc_kicad_str(name)
 
     if is_ground:
-        lib_id = "power:GND"
-        pin_name = "GND"
+        lib_id = f"power:{name_esc}"
+        pin_name = name
     else:
         lib_id = f"power:{name_esc}"
         pin_name = name
 
     if is_ground:
-        val_y = y + 2.54
+        val_y = y + 3.81
     elif _use_kicad_power:
         val_y = y - 3.81
     else:
         val_y = y - 2.54
-    val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
+    val_hide = '\t\t\t\t(hide yes)\n' if is_ground and name == 'GND' else ''
 
     return (
         f"\t(symbol\n"
@@ -2812,6 +2911,20 @@ def is_power_net(name):
     return False
 
 
+def _is_power_net_for_page(name, power_net_names=None):
+    """Return True when `name` is known to be a power net on this page.
+
+    Prefer object-derived power nets. If no object-derived set was provided,
+    fall back to the historical name heuristic for compatibility with callers
+    that have not resolved OrCAD power-port records.
+    """
+    if not name:
+        return False
+    if power_net_names is None:
+        return is_power_net(name)
+    return name in power_net_names
+
+
 def point_touches_wire(point, wires):
     """Return True if a page-space point lies on any parsed wire segment."""
     px, py = point
@@ -2949,7 +3062,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                       sheet_number=None, total_sheets=None,
                       page_rects=None, page_lines=None, page_ellipses=None,
                       library_styles=None, debug_bbox=False,
-                      net_aliases=None):
+                      net_aliases=None, power_net_names=None):
     """Generate a complete KiCad schematic page from parsed DSN data."""
     parts = []
     tb = title_block or {}
@@ -2982,24 +3095,24 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # is what determines which `power:<NAME>` definitions are needed.
     power_names_used = set()
     for w in wires:
-        if w.get('net') and is_power_net(w['net']):
+        if _is_power_net_for_page(w.get('net'), power_net_names):
             power_names_used.add(w['net'])
 
     for comp in components:
         for pin_net in comp.get('pin_nets', {}).values():
             net_name = pin_net.get('net')
-            if net_name and is_power_net(net_name):
+            if _is_power_net_for_page(net_name, power_net_names):
                 power_names_used.add(net_name)
 
     for pname in sorted(power_names_used):
         if _is_gnd_power_name(pname):
-            lid = 'power:GND'
+            lid = f'power:{pname}'
             if lid not in symbols_needed:
-                if _use_kicad_power:
+                if _use_kicad_power and pname == 'GND':
                     symbols_needed[lid] = (_kicad_native_power.get('GND')
                                            or lib_symbol_power_gnd())
                 else:
-                    symbols_needed[lid] = lib_symbol_power_gnd()
+                    symbols_needed[lid] = lib_symbol_power_gnd(pname)
         else:
             lid = f'power:{pname}'
             if lid not in symbols_needed:
@@ -3182,7 +3295,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             if point_touches_wire((px, py), regular_wires):
                 continue
             net_name = pin_net.get('net')
-            if not net_name or not is_power_net(net_name):
+            if not _is_power_net_for_page(net_name, power_net_names):
                 continue
             parts.append(sch_power_symbol(
                 net_name, dsn_to_mm(px), dsn_to_mm(py),
@@ -3201,7 +3314,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         labeled_nets.add(lbl['name'])
         x = dsn_to_mm(lbl['x'])
         y = dsn_to_mm(lbl['y'])
-        if is_power_net(lbl['name']):
+        if _is_power_net_for_page(lbl['name'], power_net_names):
             is_gnd = _is_gnd_power_name(lbl['name'])
             parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd))
             power_positions.add((lbl['x'], lbl['y']))
@@ -3225,7 +3338,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         x = dsn_to_mm(alias['x'])
         y = dsn_to_mm(alias['y'])
         angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
-        if is_power_net(alias['name']):
+        if _is_power_net_for_page(alias['name'], power_net_names):
             is_gnd = _is_gnd_power_name(alias['name'])
             parts.append(sch_power_symbol(alias['name'], x, y, is_gnd))
             power_positions.add((alias['x'], alias['y']))
@@ -3500,16 +3613,16 @@ def generate_symbol_library(project_name, power_names=None, used_cells=None):
         parts.append(lib_func())
     if power_names:
         emitted_power = set()
-        gnd_seen = False
         for pname in sorted(power_names):
             if _is_gnd_power_name(pname):
-                if not gnd_seen:
-                    if _use_kicad_power:
+                lid = f'power:{pname}'
+                if lid not in emitted_power:
+                    if _use_kicad_power and pname == 'GND':
                         parts.append(_kicad_native_power.get('GND')
                                      or lib_symbol_power_gnd())
                     else:
-                        parts.append(lib_symbol_power_gnd())
-                    gnd_seen = True
+                        parts.append(lib_symbol_power_gnd(pname))
+                    emitted_power.add(lid)
             else:
                 lid = f'power:{pname}'
                 if lid not in emitted_power:
@@ -4436,6 +4549,34 @@ def lookup_component_value(value_idx):
     return ''
 
 
+def extract_library_power_names(value_strings):
+    """Return power-symbol names referenced from POWER.OLB string blocks."""
+    power_names = set()
+    i = 0
+    while i < len(value_strings):
+        s = value_strings[i]
+        if isinstance(s, str) and s.upper().endswith('POWER.OLB'):
+            j = i + 1
+            while j < len(value_strings):
+                name = value_strings[j]
+                if not isinstance(name, str):
+                    break
+                upper = name.upper()
+                if upper.endswith('.OLB') or upper.startswith('{'):
+                    break
+                if re.fullmatch(r'\d+(?:\.\d+)*', name):
+                    break
+                if re.fullmatch(r'[A-Za-z0-9_./+\-]+', name):
+                    power_names.add(name)
+                    j += 1
+                    continue
+                break
+            i = j
+        else:
+            i += 1
+    return power_names
+
+
 # ---------------------------------------------------------------------------
 # Hierarchy stream parsing (for cross-page net analysis)
 # ---------------------------------------------------------------------------
@@ -4543,6 +4684,9 @@ def main():
     # Parse the Library stream's value string table for component values.
     value_strings = parse_library_value_strings(ole)
     print(f"  Library value strings: {len(value_strings)} entries")
+    library_power_names = extract_library_power_names(value_strings)
+    if library_power_names:
+        print(f"  Library POWER.OLB names: {len(library_power_names)}")
     # Note: the DSN's title-block fields are what's *stored* in the file —
     # not necessarily the latest version printed in the PDF. For renamed
     # or re-exported DSNs the DocNumber may differ from the filename.
@@ -4651,6 +4795,10 @@ def main():
         wires = parse_wires(data, net_table)
         components = parse_components(data, net_table)
         power_syms = parse_power_symbols(data, net_table)
+        power_syms, page_power_names = resolve_power_symbol_nets(
+            power_syms, wires, components)
+        page_power_names.update(
+            name for name in net_table.values() if name in library_power_names)
         texts = parse_text_annotations(data, paper)
         page_rects, page_lines, page_ellipses = parse_page_graphics(data, paper)
         aliases = parse_net_aliases(data, net_table)
@@ -4668,6 +4816,7 @@ def main():
             library_styles=library_styles,
             debug_bbox=debug_bbox,
             net_aliases=aliases,
+            power_net_names=page_power_names,
         )
         (output_dir / filename).write_text(content, encoding='utf-8')
 
@@ -4681,19 +4830,14 @@ def main():
             if comp['cell']:
                 project_used_cells.add(comp['cell'])
 
-        for w in wires:
-            if w.get('net') and is_power_net(w['net']):
-                project_power_names.add(w['net'])
-
-        for comp in components:
-            for pin_net in comp.get('pin_nets', {}).values():
-                net_name = pin_net.get('net')
-                if net_name and is_power_net(net_name):
-                    project_power_names.add(net_name)
+        project_power_names.update(page_power_names)
 
         pwr_counts = defaultdict(int)
         for ps in power_syms:
-            pwr_counts[ps['name']] += 1
+            if ps.get('matched'):
+                pwr_counts[ps['name']] += 1
+            else:
+                pwr_counts[ps.get('record_name', ps['name'])] += 1
         for pname, pcount in pwr_counts.items():
             total_stats[f'pwr_{pname}'] += pcount
 

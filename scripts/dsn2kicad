@@ -2058,12 +2058,14 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
         for lx1, ly1, lx2, ly2 in body_lines:
             _emit_symbol_line(parts, lx1, ly1, lx2, ly2)
     if text_annotations:
-        for tx, ty, text in text_annotations:
+        for ann_entry in text_annotations:
+            tx, ty, text = ann_entry[0], ann_entry[1], ann_entry[2]
+            text_angle = ann_entry[3] // 10 if len(ann_entry) > 3 else 0
             if not text:
                 continue
             text_esc = _esc_kicad_str(text)
             parts.append(f'\t\t\t\t(text "{text_esc}"\n')
-            parts.append(f'\t\t\t\t\t(at {tx:.2f} {ty:.2f} 0)\n')
+            parts.append(f'\t\t\t\t\t(at {tx:.2f} {ty:.2f} {text_angle})\n')
             parts.append('\t\t\t\t\t(effects\n')
             parts.append('\t\t\t\t\t\t(font\n')
             parts.append('\t\t\t\t\t\t\t(size 1.27 1.27)\n')
@@ -2199,6 +2201,7 @@ def _build_unit_pin_data(cell_name):
             _pin_extension_deltas[cell_name] = deltas
 
     rects = _cell_body_rects.get(cell_name)
+    lines = _cell_body_lines.get(cell_name)
     ann = _cell_text_annotations.get(cell_name)
     ellipses = _cell_body_ellipses.get(cell_name)
     arcs = _cell_body_arcs.get(cell_name)
@@ -2217,7 +2220,7 @@ def _build_unit_pin_data(cell_name):
             y2 += MIN_BODY
         rects = [(x1, y1, x2, y2)]
 
-    return classified, rects, ann, ellipses, arcs, polys, plines
+    return classified, rects, lines, ann, ellipses, arcs, polys, plines
 
 
 def lib_symbol_multi_unit(base_name, unit_map):
@@ -2255,7 +2258,7 @@ def lib_symbol_multi_unit(base_name, unit_map):
         data = _build_unit_pin_data(cell_name)
         if data is None:
             continue
-        classified, rects, ann, ellipses, arcs, polys, plines = data
+        classified, rects, lines, ann, ellipses, arcs, polys, plines = data
 
         # Unit body (graphics): {base}_{unit}_0
         parts.append(f'\t\t\t(symbol "{base_name}_{unit_num}_0"\n')
@@ -2272,13 +2275,18 @@ def lib_symbol_multi_unit(base_name, unit_map):
                 parts.append('\t\t\t\t\t\t(type background)\n')
                 parts.append('\t\t\t\t\t)\n')
                 parts.append('\t\t\t\t)\n')
+        if lines:
+            for lx1, ly1, lx2, ly2 in lines:
+                _emit_symbol_line(parts, lx1, ly1, lx2, ly2)
         if ann:
-            for tx, ty, text in ann:
+            for ann_entry in ann:
+                tx, ty, text = ann_entry[0], ann_entry[1], ann_entry[2]
+                text_angle = ann_entry[3] if len(ann_entry) > 3 else 0
                 if not text:
                     continue
                 text_esc = _esc_kicad_str(text)
                 parts.append(f'\t\t\t\t(text "{text_esc}"\n')
-                parts.append(f'\t\t\t\t\t(at {tx:.2f} {ty:.2f} 0)\n')
+                parts.append(f'\t\t\t\t\t(at {tx:.2f} {ty:.2f} {text_angle})\n')
                 parts.append('\t\t\t\t\t(effects\n')
                 parts.append('\t\t\t\t\t\t(font\n')
                 parts.append('\t\t\t\t\t\t\t(size 1.27 1.27)\n')
@@ -3508,10 +3516,10 @@ def _emit_symbol_rectangle(parts, x1, y1, x2, y2):
     parts.append('\t\t\t\t)\n')
 
 
-def _emit_symbol_text(parts, x, y, text):
+def _emit_symbol_text(parts, x, y, text, angle=0):
     text_esc = _esc_kicad_str(text)
     parts.append(f'\t\t\t\t(text "{text_esc}"\n')
-    parts.append(f'\t\t\t\t\t(at {x:.2f} {y:.2f} 0)\n')
+    parts.append(f'\t\t\t\t\t(at {x:.2f} {y:.2f} {angle})\n')
     parts.append('\t\t\t\t\t(effects\n')
     parts.append('\t\t\t\t\t\t(font\n')
     parts.append('\t\t\t\t\t\t\t(size 1.27 1.27)\n')
@@ -3689,7 +3697,7 @@ def _parse_cache_graphics(data, aps, scan_end):
             ax, ay = struct.unpack_from('<ii', data, pos + 26)
             text_len = struct.unpack_from('<H', data, pos + 38)[0]
             text = ''
-            if 1 <= text_len <= 4 and pos + 40 + text_len <= len(data):
+            if 1 <= text_len <= 100 and pos + 40 + text_len <= len(data):
                 tb = data[pos + 40:pos + 40 + text_len]
                 if all(32 <= b < 127 for b in tb):
                     text = tb.decode('ascii')
@@ -3807,25 +3815,25 @@ def parse_cache_cells(ole):
 
         scan_end = cell_regions[i + 1][0] if i + 1 < len(cell_regions) else len(data)
 
-        if cell_name in seen_names and cell_name not in body_rects:
+        if cell_name in seen_names:
             path_len = struct.unpack_from('<H', data, end)[0]
             aps = end + 2 + path_len + 1
             if aps + 32 <= len(data):
                 rects, lines, ellipses, arcs, polys, plines, anns = _parse_cache_graphics(data, aps, scan_end)
-                if rects:
+                if rects and cell_name not in body_rects:
                     body_rects[cell_name] = rects
                 if lines:
-                    body_lines[cell_name] = lines
+                    body_lines.setdefault(cell_name, []).extend(lines)
                 if ellipses:
-                    body_ellipses[cell_name] = ellipses
+                    body_ellipses.setdefault(cell_name, []).extend(ellipses)
                 if arcs:
-                    body_arcs[cell_name] = arcs
+                    body_arcs.setdefault(cell_name, []).extend(arcs)
                 if polys:
-                    body_polygons[cell_name] = polys
+                    body_polygons.setdefault(cell_name, []).extend(polys)
                 if plines:
-                    body_polylines[cell_name] = plines
+                    body_polylines.setdefault(cell_name, []).extend(plines)
                 if anns:
-                    cell_text_annotations[cell_name] = anns
+                    cell_text_annotations.setdefault(cell_name, []).extend(anns)
 
         seen_names.add(cell_name)
 
@@ -4000,10 +4008,12 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
             for bx1, by1, bx2, by2, ax, ay, text in cache_text_annotations[cell_name]:
                 mx = (bx1 + bx2) / 2
                 my = (by1 + by2) / 2
+                angle = 900 if abs(by2 - by1) > abs(bx2 - bx1) else 0
                 sym_anns.append((
                     round((mx - cx) * UNIT_TO_MM, 2),
                     round(-(my - cy) * UNIT_TO_MM, 2),
                     text,
+                    angle,
                 ))
             _cell_text_annotations[cell_name] = sym_anns
 

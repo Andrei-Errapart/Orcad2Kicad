@@ -1857,6 +1857,7 @@ def _emit_ellipse_polyline(parts, cx, cy, rx, ry, n=32):
 def lib_symbol_from_pins(name, pin_positions, body_rects=None,
                          body_lines=None, body_ellipses=None,
                          body_arcs=None, body_polygons=None,
+                         body_polylines=None,
                          text_annotations=None):
     """Generate a symbol definition from pin positions.
 
@@ -2038,6 +2039,21 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     if body_polygons:
         for poly in body_polygons:
             _emit_filled_polygon(parts, poly)
+    if body_polylines:
+        for pline in body_polylines:
+            parts.append('\t\t\t\t(polyline\n')
+            parts.append('\t\t\t\t\t(pts\n')
+            for px, py in pline:
+                parts.append(f'\t\t\t\t\t\t(xy {px:.2f} {py:.2f})\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t\t(stroke\n')
+            parts.append('\t\t\t\t\t\t(width 0.254)\n')
+            parts.append('\t\t\t\t\t\t(type default)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t\t(fill\n')
+            parts.append('\t\t\t\t\t\t(type none)\n')
+            parts.append('\t\t\t\t\t)\n')
+            parts.append('\t\t\t\t)\n')
     if body_lines:
         for lx1, ly1, lx2, ly2 in body_lines:
             _emit_symbol_line(parts, lx1, ly1, lx2, ly2)
@@ -2187,6 +2203,7 @@ def _build_unit_pin_data(cell_name):
     ellipses = _cell_body_ellipses.get(cell_name)
     arcs = _cell_body_arcs.get(cell_name)
     polys = _cell_body_polygons.get(cell_name)
+    plines = _cell_body_polylines.get(cell_name)
 
     if not rects and not (ellipses or arcs) and body_xs:
         x1, y1 = min(body_xs), min(body_ys)
@@ -2200,7 +2217,7 @@ def _build_unit_pin_data(cell_name):
             y2 += MIN_BODY
         rects = [(x1, y1, x2, y2)]
 
-    return classified, rects, ann, ellipses, arcs, polys
+    return classified, rects, ann, ellipses, arcs, polys, plines
 
 
 def lib_symbol_multi_unit(base_name, unit_map):
@@ -2238,7 +2255,7 @@ def lib_symbol_multi_unit(base_name, unit_map):
         data = _build_unit_pin_data(cell_name)
         if data is None:
             continue
-        classified, rects, ann, ellipses, arcs, polys = data
+        classified, rects, ann, ellipses, arcs, polys, plines = data
 
         # Unit body (graphics): {base}_{unit}_0
         parts.append(f'\t\t\t(symbol "{base_name}_{unit_num}_0"\n')
@@ -2313,6 +2330,21 @@ def lib_symbol_multi_unit(base_name, unit_map):
                     f'\t\t\t\t\t)\n'
                     f'\t\t\t\t)\n'
                 )
+        if plines:
+            for pline in plines:
+                parts.append('\t\t\t\t(polyline\n')
+                parts.append('\t\t\t\t\t(pts\n')
+                for px, py in pline:
+                    parts.append(f'\t\t\t\t\t\t(xy {px:.2f} {py:.2f})\n')
+                parts.append('\t\t\t\t\t)\n')
+                parts.append('\t\t\t\t\t(stroke\n')
+                parts.append('\t\t\t\t\t\t(width 0.254)\n')
+                parts.append('\t\t\t\t\t\t(type default)\n')
+                parts.append('\t\t\t\t\t)\n')
+                parts.append('\t\t\t\t\t(fill\n')
+                parts.append('\t\t\t\t\t\t(type none)\n')
+                parts.append('\t\t\t\t\t)\n')
+                parts.append('\t\t\t\t)\n')
         parts.append('\t\t\t)\n')
 
         # Unit pins: {base}_{unit}_1
@@ -2348,6 +2380,7 @@ _cell_body_lines = {}
 _cell_body_ellipses = {}
 _cell_body_arcs = {}
 _cell_body_polygons = {}
+_cell_body_polylines = {}
 
 # Text annotations from Cache: {cell_name: [(cx_mm, cy_mm, text), ...]} in symbol coords
 _cell_text_annotations = {}
@@ -2467,32 +2500,37 @@ def get_lib_symbol(cell_name):
         ellipses = _cell_body_ellipses.get(cell_name)
         arcs = _cell_body_arcs.get(cell_name)
         polys = _cell_body_polygons.get(cell_name)
+        plines = _cell_body_polylines.get(cell_name)
         return (cell_name, ref_prefix,
                 lambda name=cell_name, pp=pin_positions, body_rects=rects,
                        body_lines=lines, body_ellipses=ellipses,
                        body_arcs=arcs, body_polygons=polys,
+                       body_polylines=plines,
                        text_annotations=ann:
                     lib_symbol_from_pins(name, pp, body_rects=body_rects,
                                          body_lines=body_lines,
                                          body_ellipses=body_ellipses,
                                          body_arcs=body_arcs,
                                          body_polygons=body_polygons,
+                                         body_polylines=body_polylines,
                                          text_annotations=text_annotations))
     rects = _cell_body_rects.get(cell_name)
     lines = _cell_body_lines.get(cell_name)
     ellipses = _cell_body_ellipses.get(cell_name)
     arcs = _cell_body_arcs.get(cell_name)
     polys = _cell_body_polygons.get(cell_name)
-    if rects or lines or ellipses or arcs or polys:
+    plines = _cell_body_polylines.get(cell_name)
+    if rects or lines or ellipses or arcs or polys or plines:
         return (cell_name, ref_prefix,
                 lambda name=cell_name, body_rects=rects, body_lines=lines,
                        body_ellipses=ellipses, body_arcs=arcs,
-                       body_polygons=polys:
+                       body_polygons=polys, body_polylines=plines:
                     lib_symbol_from_pins(name, [], body_rects=body_rects,
                                          body_lines=body_lines,
                                          body_ellipses=body_ellipses,
                                          body_arcs=body_arcs,
-                                         body_polygons=body_polygons))
+                                         body_polygons=body_polygons,
+                                         body_polylines=body_polylines))
     return (cell_name, ref_prefix,
             lambda name=cell_name: lib_symbol_generic_fallback(name))
 
@@ -3495,6 +3533,7 @@ def _parse_cache_graphics(data, aps, scan_end):
       body_arcs = [(bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                     start_x, start_y, end_x, end_y), ...]
       body_polygons = [[(x1, y1), (x2, y2), ...], ...]  filled polygons
+      body_polylines = [[(x1, y1), (x2, y2), ...], ...]  open paths
       text_annotations = [(bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                             anchor_x, anchor_y, text), ...]
 
@@ -3517,6 +3556,7 @@ def _parse_cache_graphics(data, aps, scan_end):
     body_ellipses = []
     body_arcs = []
     body_polygons = []
+    body_polylines = []
     text_annotations = []
     pos = aps
 
@@ -3615,6 +3655,35 @@ def _parse_cache_graphics(data, aps, scan_end):
             pos = nm + 8
             continue
 
+        if type_word == 0x2d2d and pos + 12 <= len(data):
+            byte_length = struct.unpack_from('<I', data, pos + 2)[0]
+            remaining = byte_length - 8
+            if remaining >= 10 and (remaining - 10) % 4 == 0:
+                nv = struct.unpack_from('<H', data, pos + 18)[0]
+                pt_off = pos + 20
+            elif remaining >= 2 and (remaining - 2) % 4 == 0:
+                nv = struct.unpack_from('<H', data, pos + 10)[0]
+                pt_off = pos + 12
+            else:
+                nv = 0
+                pt_off = pos + 12
+            if 2 <= nv <= 50 and pt_off + nv * 4 <= len(data):
+                pts = []
+                for vi in range(nv):
+                    vy, vx = struct.unpack_from('<hh', data, pt_off + vi * 4)
+                    pts.append((vx, vy))
+                deduped = [pts[0]]
+                for p in pts[1:]:
+                    if p != deduped[-1]:
+                        deduped.append(p)
+                if len(deduped) >= 2:
+                    body_polylines.append(deduped)
+            nm = data.find(RECORD_MARKER, pos + 2 + byte_length, scan_end)
+            if nm < 0:
+                break
+            pos = nm + 8
+            continue
+
         if type_word == 0x2e2e and pos + 42 <= len(data):
             bx1, by1, bx2, by2 = struct.unpack_from('<iiii', data, pos + 10)
             ax, ay = struct.unpack_from('<ii', data, pos + 26)
@@ -3637,7 +3706,8 @@ def _parse_cache_graphics(data, aps, scan_end):
             break
         pos = nm + 8
 
-    return body_rects, body_lines, body_ellipses, body_arcs, body_polygons, text_annotations
+    return (body_rects, body_lines, body_ellipses, body_arcs, body_polygons,
+            body_polylines, text_annotations)
 
 
 def _parse_cache_pin_numbers(data):
@@ -3726,6 +3796,7 @@ def parse_cache_cells(ole):
     body_ellipses = {}
     body_arcs = {}
     body_polygons = {}
+    body_polylines = {}
     cell_text_annotations = {}
     seen_names = set()
 
@@ -3740,7 +3811,7 @@ def parse_cache_cells(ole):
             path_len = struct.unpack_from('<H', data, end)[0]
             aps = end + 2 + path_len + 1
             if aps + 32 <= len(data):
-                rects, lines, ellipses, arcs, polys, anns = _parse_cache_graphics(data, aps, scan_end)
+                rects, lines, ellipses, arcs, polys, plines, anns = _parse_cache_graphics(data, aps, scan_end)
                 if rects:
                     body_rects[cell_name] = rects
                 if lines:
@@ -3751,6 +3822,8 @@ def parse_cache_cells(ole):
                     body_arcs[cell_name] = arcs
                 if polys:
                     body_polygons[cell_name] = polys
+                if plines:
+                    body_polylines[cell_name] = plines
                 if anns:
                     cell_text_annotations[cell_name] = anns
 
@@ -3788,7 +3861,8 @@ def parse_cache_cells(ole):
 
     pin_numbers = _parse_cache_pin_numbers(data)
 
-    return cells, body_rects, body_lines, pin_numbers, cell_text_annotations, body_ellipses, body_arcs, body_polygons
+    return (cells, body_rects, body_lines, pin_numbers, cell_text_annotations,
+            body_ellipses, body_arcs, body_polygons, body_polylines)
 
 
 def register_cache_cells(cache_cells, cache_body_rects=None,
@@ -3797,10 +3871,11 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
                          cache_text_annotations=None,
                          cache_body_ellipses=None,
                          cache_body_arcs=None,
-                         cache_body_polygons=None):
+                         cache_body_polygons=None,
+                         cache_body_polylines=None):
     """Populate _cell_pin_defs, _cell_body_rects, _cell_body_lines,
     _cell_body_ellipses, _cell_body_arcs, _cell_body_polygons,
-    _cell_text_annotations from Cache data.
+    _cell_body_polylines, _cell_text_annotations from Cache data.
 
     Each pin entry is (unique_name, hot_x_mm, hot_y_mm, orig_name,
                        body_x_mm, body_y_mm, pin_flags).
@@ -3821,6 +3896,8 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         cache_body_arcs = {}
     if cache_body_polygons is None:
         cache_body_polygons = {}
+    if cache_body_polylines is None:
+        cache_body_polylines = {}
     for cell_name, pins in cache_cells.items():
         if cell_name in CELL_TO_KICAD:
             continue
@@ -3906,6 +3983,17 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
                 ]
                 sym_polys.append(sym_poly)
             _cell_body_polygons[cell_name] = sym_polys
+
+        if cell_name in cache_body_polylines:
+            sym_plines = []
+            for pline in cache_body_polylines[cell_name]:
+                sym_pline = [
+                    (round((x - cx) * UNIT_TO_MM, 2),
+                     round(-(y - cy) * UNIT_TO_MM, 2))
+                    for x, y in pline
+                ]
+                sym_plines.append(sym_pline)
+            _cell_body_polylines[cell_name] = sym_plines
 
         if cell_name in cache_text_annotations:
             sym_anns = []
@@ -4001,6 +4089,17 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
                 ]
                 sym_polys.append(sym_poly)
             _cell_body_polygons[cell_name] = sym_polys
+
+        if cell_name in cache_body_polylines:
+            sym_plines = []
+            for pline in cache_body_polylines[cell_name]:
+                sym_pline = [
+                    (round((x - cx) * UNIT_TO_MM, 2),
+                     round(-(y - cy) * UNIT_TO_MM, 2))
+                    for x, y in pline
+                ]
+                sym_plines.append(sym_pline)
+            _cell_body_polylines[cell_name] = sym_plines
 
 
 # ---------------------------------------------------------------------------
@@ -4163,77 +4262,30 @@ def parse_library_styles(ole):
 
 _library_value_strings = []
 
-LIBRARY_VALUE_OFFSET = 7
-
 
 def parse_library_value_strings(ole):
-    """Parse the Library stream's value string table.
+    """Parse the Library stream's string table using olb_parser.
 
-    The Library stream contains a sequence of u16-length-prefixed ASCII
-    strings. The first 7 are field-name headers ("1ST PART FIELD" through
-    "7TH PART FIELD"); the remaining strings are component value entries
-    (INS instance IDs, value strings like "10K/1005", part names, etc.).
-
-    Page-stream component records carry a u16 LE index (after the ref
-    name null terminator) that resolves to a value string at position
-    index + 7 in this table.
+    The string table is indexed directly by the value_idx field in
+    page-stream component records — no offset needed.
 
     Populates the module-level _library_value_strings list and returns it.
     """
     global _library_value_strings
     try:
+        from olb_parser import parse_library_stream
         data = ole.openstream('Library').read()
+        lib = parse_library_stream(data)
+        _library_value_strings = list(lib.str_lst)
     except Exception:
         _library_value_strings = []
-        return _library_value_strings
-
-    _library_value_strings = [s for _, _, s in _enumerate_u16_strings(data)]
     return _library_value_strings
 
 
 def lookup_component_value(value_idx):
-    """Resolve a component's value index to its value string.
-
-    Returns the string at position value_idx + LIBRARY_VALUE_OFFSET in the
-    Library string table, or '' if out of range or the table is empty.
-    Some DSNs have local Library table runs with one fewer populated property
-    slot; if the nominal +7 target is metadata, also try nearby offsets such
-    as +6 before giving up.
-    """
-    idx = value_idx + LIBRARY_VALUE_OFFSET
-    if 0 <= idx < len(_library_value_strings):
-        value = _library_value_strings[idx]
-        if _looks_like_library_metadata(value):
-            recovered = _recover_component_value_with_nearby_offset(value_idx)
-            if recovered:
-                return recovered
-        return value
-    return ''
-
-
-def _looks_like_library_metadata(value):
-    if not value:
-        return True
-    if value.startswith('INS'):
-        return True
-    if GUID_RE.match(value):
-        return True
-    if re.match(r'^\d+(?:\.\d+)+$', value):
-        return True
-    if ':\\' in value or value.upper().endswith('.OLB'):
-        return True
-    return False
-
-
-def _recover_component_value_with_nearby_offset(value_idx):
-    # The common case is +7, but some components resolve correctly at +6
-    # because a local Library property slot is absent.
-    for offset in (6, 8, 5, 9, 4, 10):
-        near_idx = value_idx + offset
-        if 0 <= near_idx < len(_library_value_strings):
-            value = _library_value_strings[near_idx]
-            if not _looks_like_library_metadata(value):
-                return value
+    """Resolve a component's value index to its value string."""
+    if 0 <= value_idx < len(_library_value_strings):
+        return _library_value_strings[value_idx]
     return ''
 
 
@@ -4379,12 +4431,18 @@ def main():
     _cell_body_ellipses.clear()
     _cell_body_arcs.clear()
     _cell_body_polygons.clear()
+    _cell_body_polylines.clear()
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
     _pin_extension_deltas.clear()
-    cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses, cache_body_arcs, cache_body_polygons = parse_cache_cells(ole)
-    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers, cache_text_annotations, cache_body_ellipses, cache_body_arcs, cache_body_polygons)
+    (cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers,
+     cache_text_annotations, cache_body_ellipses, cache_body_arcs,
+     cache_body_polygons, cache_body_polylines) = parse_cache_cells(ole)
+    register_cache_cells(cache_cells, cache_body_rects, cache_body_lines,
+                         cache_pin_numbers, cache_text_annotations,
+                         cache_body_ellipses, cache_body_arcs,
+                         cache_body_polygons, cache_body_polylines)
     cache_count = len(_cell_pin_defs)
     for cname, cpins in cache_cells.items():
         print(f"    {cname}: {len(cpins)} pins")

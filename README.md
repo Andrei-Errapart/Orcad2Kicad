@@ -41,12 +41,19 @@ Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the
 longest pin number in the symbol. Connecting wires are extended to match.
 
+Output UUIDs are deterministic: each output file is seeded with
+`SHA256(DSN content + output filename)`, so changes on one page never
+cause UUID diffs on unrelated pages.
+
 Root schematic sheet symbols are placed top-to-bottom, then left-to-right, so
 KiCad's hierarchy navigator follows the original DSN page order. Symbol
-pin-name and pin-number visibility is derived from the DSN Cache symbol
-records: one-pin symbols hide both labels, redundant numeric pin names are
-hidden, and two-terminal symbols whose Cache pin flags hide numbers emit
-hidden KiCad pin names and pin numbers.
+pin-name and pin-number visibility is derived from the OLB `GeneralProperties`
+embedded in the DSN Cache stream via `olb_parser.py`. Component values are
+resolved directly from the Library stream's string table (no offset heuristic).
+
+Only OrCAD Capture format version 3.x (files with `FF E4 5C 39` record
+markers, typically OrCAD 16.x and later) is supported. Older version 2.0
+files use a different binary layout and cannot be parsed.
 
 ### dsn_dump
 
@@ -62,16 +69,15 @@ Walks the OLE compound document and prints all parseable records from every stre
 
 - [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — DSN binary format specification
 - [PDF_COLORS.md](PDF_COLORS.md) — OrCAD schematic PDF color map
-- [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN streams
+- [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN and OLB streams
 
 ## Current Limitations
 
 - Parsed hierarchy nets and explicit power-symbol records are not yet used as
   authoritative conversion data.
-- Component values/properties are still incomplete for many symbols.
-- Vertical text annotations that read top-to-bottom in OrCAD are rendered
-  bottom-to-top in KiCad, because KiCad normalizes text to always read
-  left-to-right or bottom-to-top.
+- Connector symbols (CON*) show only a body rectangle; the circle/arc pin
+  graphics from the original OLB library are not embedded in the DSN Cache.
+- OrCAD format version 2.0 files are not supported (different binary layout).
 
 ## Tests
 

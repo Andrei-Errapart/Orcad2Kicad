@@ -253,6 +253,44 @@ def parse_wires(data, net_table):
     return wires
 
 
+def parse_net_aliases(data, net_table):
+    """Extract net-alias labels from a page stream.
+
+    Net-alias records share the RECORD_MARKER and subtype 0x30 with wire
+    records, but carry a name string instead of valid wire coordinates:
+      RECORD_MARKER(4) + zeros(4) + x(4) + y(4) + 0x30(4)
+      + zeros(4) + type(4) + name_len(u16) + name(name_len)
+
+    The x,y at offsets +8/+12 are the alias position in OrCAD 10-mil units.
+    """
+    net_name_upper = {v.upper(): v for v in net_table.values()}
+    aliases = []
+    pos = 0
+    while True:
+        idx = data.find(RECORD_MARKER, pos)
+        if idx < 0:
+            break
+        if idx + 36 <= len(data):
+            subtype = struct.unpack_from('<I', data, idx + 16)[0]
+            if subtype == 0x30:
+                x1 = struct.unpack_from('<i', data, idx + 20)[0]
+                if x1 == 0 and idx + 30 <= len(data):
+                    name_len = struct.unpack_from('<H', data, idx + 28)[0]
+                    if 1 <= name_len <= 100 and idx + 30 + name_len <= len(data):
+                        raw = data[idx + 30:idx + 30 + name_len]
+                        if all(0x20 <= b <= 0x7e for b in raw):
+                            alias_name = raw.decode('ascii')
+                            ax = struct.unpack_from('<I', data, idx + 8)[0]
+                            ay = struct.unpack_from('<I', data, idx + 12)[0]
+                            canon = net_name_upper.get(alias_name.upper(),
+                                                      alias_name)
+                            aliases.append({
+                                'name': canon, 'x': ax, 'y': ay,
+                            })
+        pos = idx + 4
+    return aliases
+
+
 def _parse_pin_records(data, cell_end, search_end, net_table=None):
     """Parse pin placement records after a component instance.
 
@@ -2064,7 +2102,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     if text_annotations:
         for ann_entry in text_annotations:
             tx, ty, text = ann_entry[0], ann_entry[1], ann_entry[2]
-            text_angle = ann_entry[3] // 10 if len(ann_entry) > 3 else 0
+            text_angle = ann_entry[3] if len(ann_entry) > 3 else 0
             if not text:
                 continue
             text_esc = _esc_kicad_str(text)
@@ -2839,6 +2877,35 @@ def _label_angle_from_wire(endpoint, wires):
     return 0
 
 
+def _alias_label_angle(ax, ay, wires):
+    """Determine label angle for a net alias placed ON a wire.
+
+    Finds the wire passing through (ax, ay) and returns the KiCad label
+    angle that makes the text extend toward the far end of the wire
+    (away from the nearest component pin).
+    """
+    for w in wires:
+        x1, y1, x2, y2 = w['x1'], w['y1'], w['x2'], w['y2']
+        on_h = (y1 == y2 == ay and min(x1, x2) <= ax <= max(x1, x2))
+        on_v = (x1 == x2 == ax and min(y1, y2) <= ay <= max(y1, y2))
+        if not (on_h or on_v):
+            continue
+        dx = x2 - x1
+        dy = y2 - y1
+        # Point toward the farther endpoint of the wire.
+        d1 = abs(ax - x1) + abs(ay - y1)
+        d2 = abs(ax - x2) + abs(ay - y2)
+        if d1 > d2:
+            dx, dy = x1 - ax, y1 - ay
+        else:
+            dx, dy = x2 - ax, y2 - ay
+        if abs(dx) >= abs(dy):
+            return 0 if dx > 0 else 180
+        else:
+            return 270 if dy > 0 else 90
+    return 0
+
+
 def place_net_labels(wires, net_table, endpoints):
     """Determine where to place net labels.
 
@@ -2881,7 +2948,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                       net_table, global_nets, texts=None, title_block=None,
                       sheet_number=None, total_sheets=None,
                       page_rects=None, page_lines=None, page_ellipses=None,
-                      library_styles=None, debug_bbox=False):
+                      library_styles=None, debug_bbox=False,
+                      net_aliases=None):
     """Generate a complete KiCad schematic page from parsed DSN data."""
     parts = []
     tb = title_block or {}
@@ -3124,11 +3192,13 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # Labels for regular (non-bus) wires
     endpoints = compute_wire_endpoints(regular_wires)
     labels = place_net_labels(regular_wires, net_table, endpoints)
+    labeled_nets = set()
     for lbl in labels:
         if (lbl['x'], lbl['y']) in power_positions:
             continue
         if (lbl['x'], lbl['y']) in pin_positions:
             continue
+        labeled_nets.add(lbl['name'])
         x = dsn_to_mm(lbl['x'])
         y = dsn_to_mm(lbl['y'])
         if is_power_net(lbl['name']):
@@ -3140,6 +3210,29 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         else:
             local_angle = (lbl['angle'] + 180) % 360
             parts.append(sch_label(lbl['name'], x, y, angle=local_angle))
+
+    # Net-alias labels — explicit labels from OrCAD net-alias records.
+    # These provide labels for nets where wire-endpoint labels were
+    # filtered (e.g. pin-to-pin wires with no free endpoint).
+    # Unlike wire-endpoint labels, alias labels are placed ON the wire
+    # and their text should extend along the wire toward the far end.
+    for alias in net_aliases or []:
+        if alias['name'] in labeled_nets:
+            continue
+        if (alias['x'], alias['y']) in power_positions:
+            continue
+        labeled_nets.add(alias['name'])
+        x = dsn_to_mm(alias['x'])
+        y = dsn_to_mm(alias['y'])
+        angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
+        if is_power_net(alias['name']):
+            is_gnd = _is_gnd_power_name(alias['name'])
+            parts.append(sch_power_symbol(alias['name'], x, y, is_gnd))
+            power_positions.add((alias['x'], alias['y']))
+        elif alias['name'] in global_nets and alias['name'] not in bus_member_nets:
+            parts.append(sch_global_label(alias['name'], x, y, angle=angle))
+        else:
+            parts.append(sch_label(alias['name'], x, y, angle=angle))
 
     # Bus labels — placed at the true free endpoints of the bus
     # (using all bus segments including diagonals so intermediate
@@ -4561,6 +4654,7 @@ def main():
         power_syms = parse_power_symbols(data, net_table)
         texts = parse_text_annotations(data, paper)
         page_rects, page_lines, page_ellipses = parse_page_graphics(data, paper)
+        aliases = parse_net_aliases(data, net_table)
 
         seed_uuid_rng(dsn_bytes, filename)
         content = generate_page_sch(
@@ -4574,6 +4668,7 @@ def main():
             page_ellipses=page_ellipses,
             library_styles=library_styles,
             debug_bbox=debug_bbox,
+            net_aliases=aliases,
         )
         (output_dir / filename).write_text(content, encoding='utf-8')
 

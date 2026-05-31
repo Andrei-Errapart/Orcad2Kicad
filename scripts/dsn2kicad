@@ -2823,6 +2823,10 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         val_angle = (val_text_angle - angle) % 360
     else:
         val_angle = 0
+    if ref_angle >= 180:
+        ref_angle -= 180
+    if val_angle >= 180:
+        val_angle -= 180
 
     mirror_line = "\t\t(mirror y)\n" if mirror_x else ""
     parts = [

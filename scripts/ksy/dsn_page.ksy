@@ -201,6 +201,11 @@ types:
       pins, application code should try the opposite-side candidate
       `(n4, n5 + 10)`. A hotpoint match resolves the connected page-local
       net_id and marks that net as an object-derived power net.
+
+      Each VCC_BAR record is followed by a secondary marker record with
+      `rec_type = 0xE0`. Observed secondary records contain small coordinates
+      such as (-8, -12, 0) and extra tagged values, but no decoded net_id or
+      value index. This schema does not currently model that auxiliary record.
     seq:
       - id: rec_type
         type: u4
@@ -396,6 +401,11 @@ types:
       Long paragraphs may contain `\n` (0x0a) bytes; consumers should
       split on `\n` and distribute lines across the bbox by
       `bbox_height / line_count`.
+
+      Visible labels next to some VCC_BAR power ports use this same page-text
+      record format. Intersecting the text payload with the page net table can
+      identify power-net names, but not all power ports have explicit text
+      records; some labels are rendered implicitly by OrCAD.
     seq:
       - id: type_word
         contents: [0x01, 0x00, 0x2e, 0x2e]

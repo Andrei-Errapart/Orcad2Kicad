@@ -8,8 +8,9 @@ meta:
 
 doc: |
   The `Library` stream of an OrCAD Capture 16.x .DSN file. Carries the
-  project's font/style table plus the title-block field values
-  (Title, Document Number, Rev — see also `Views/SCHEMATIC1/Pages/*`).
+  project's font/style table, the u16-length-prefixed value string table,
+  and title-block field values (Title, Document Number, Rev — see also
+  `Views/SCHEMATIC1/Pages/*`).
 
   Two regions:
 
@@ -19,11 +20,14 @@ doc: |
        of zeros.
 
     2. Style records (60 bytes each, packed back-to-back) followed by
-       the title-block field run (packed u16-length-prefixed strings).
+       the value/title-block string run (packed u16-length-prefixed strings).
 
   This sketch covers the font/style record structure. The title-block
   field run is parsed by `scripts/dsn2kicad`'s `parse_title_block` using
-  a `SCHEMATIC1`-anchor heuristic; see ORCAD_FILE_FORMAT.md.
+  a `SCHEMATIC1`-anchor heuristic; component values are parsed by
+  `parse_library_value_strings`. Some power-symbol names appear in this same
+  string table, including entries following paths containing `POWER.OLB`
+  (for example `ADAVSS` and `ADAVDD_18_SOC`). See ORCAD_FILE_FORMAT.md.
 
 seq:
   - id: program_name

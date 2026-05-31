@@ -489,6 +489,24 @@ the KiCad output.
 Implemented in `scripts/dsn2kicad` as `parse_library_value_strings()`
 and `lookup_component_value()`.
 
+#### Power names in the value string table
+
+Some power-symbol names can be recovered from the Library value string table, but
+the structure is mixed with ordinary component values and metadata.
+
+Two useful patterns have been observed:
+
+- Entries following `.OLB` paths containing `POWER.OLB` are power-symbol names.
+  In the CPU test, this yields `ADAVSS` and `ADAVDD_18_SOC`.
+- A small block between the metadata strings `Name` and `SDTSourceLibName`
+  contains initial power-net values such as `VDD1G_1p8`, `VIO1.8V`, `D5.0V1`,
+  `S1.2V`, `S1.8V`, and `GND`.
+
+These patterns are useful as a supplement to page-object hotpoint matching, but
+they are not a general power/signal discriminator: other power-like strings are
+interleaved with component values, INS IDs, GUIDs, library paths, and version
+strings.
+
 #### Title-block field run
 
 The title-block fields are embedded within the same u16-length-prefixed
@@ -892,6 +910,11 @@ component pin coordinates. A match resolves the page-local `net_id` and marks
 that net as an object-derived power net. This replaces the earlier behavior
 that synthesized power glyphs only from name heuristics at dangling endpoints.
 
+Each `VCC_BAR` record is followed by a secondary marker record with
+`rec_type = 0xE0`. Observed secondary records contain small coordinates such as
+`(-8, -12, 0)` and additional tagged values, but no decoded `net_id` or value
+index. They are currently treated as auxiliary records.
+
 Component pin records may also carry a resolved power `net_id` even when no
 parsed wire touches the pin. In that case `scripts/dsn2kicad` emits the power
 symbol directly at the pin hotpoint. This covers direct OrCAD power-port
@@ -992,6 +1015,11 @@ renderer applies an internal `m_outlineFontSizeCompensation = 1.4`
 the `.kicad_sch` file is divided by 1.4 to compensate. If
 `freetype-py` is unavailable the script falls back to a fixed `0.6 ×
 size` average glyph width.
+
+Visible labels next to some `VCC_BAR` power ports are ordinary page-stream text
+records with the same layout. Intersecting their text payload with the page net
+table identifies many power-net names, but coverage is incomplete: some OrCAD
+power ports render the net name implicitly and have no corresponding text record.
 
 **Descender offset**: KiCad's `(justify left bottom)` anchors at the
 descender line (below the baseline by ~21% of em height). To match

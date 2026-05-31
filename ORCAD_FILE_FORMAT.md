@@ -858,8 +858,8 @@ name_len(2, LE)      length of symbol name
 name(name_len)       ASCII name (e.g., "GND", "VCC_BAR")
 null(1)              null terminator
 cell_id(4, LE)       cell/symbol ID
-x(2, LE signed)      X position
-y(2, LE signed)      Y position
+n0..n5(6 × i16)      coordinate-like fields
+orient(2, LE)        orientation/type marker, e.g. 0x0030, 0x0130, 0x0330, 0x0430
 ```
 
 The `header` field varies widely between DSN files and is NOT a reliable filter.
@@ -867,35 +867,36 @@ Observed records that survive the structural filters are mostly power-port glyph
 names such as `GND` and `VCC_BAR`, plus junk candidates such as `0` and `AG`.
 `scripts/dsn2kicad` only treats known glyph record names as power-symbol records.
 
-##### Caveat: these are *not* glyph-placement records
+##### Power-symbol hotpoints
 
-Empirical testing on one small-board DSN
-showed that **none** of the 12 records identified by the layout above
-have coordinates that land on any wire endpoint of the matching net.
-The bbox sizes (10×20 OrCAD units for GND records, 22×65/72 for
-VCC_BAR records) match the dimensions of the **caption text label**
-("GND", "VCC_BAR", a supply net name, …) drawn next to the glyph —
-not the glyph anchor itself. OrCAD apparently draws the actual GND /
-VCC glyph **implicitly** at the wire endpoint when the net is a
-power net, and these records carry the bounding box of the caption
-text only.
+The six int16 coordinate-like fields are not direct placement coordinates.
+They encode a derivable electrical hotpoint in the same raw page coordinate
+space as wire endpoints and component pins:
 
-`scripts/dsn2kicad` therefore **ignores** these records as a source
-of glyph positions. Instead it synthesizes power-symbol glyphs at
-every wire endpoint that:
+```
+GND:      x = n4 + 10, y = n2 - 10
+          except orient == 0x0430: x = n4 + 10, y = n0
+VCC_BAR:  x = n4 + 10, y = n5 + 10
+          except orient == 0x0330: x = n4, y = n5 + 10
+```
 
-1. is on a recognized power net (per `is_power_net` — GND, VCC*,
-   VDD*, VSS*, VBUS*, VIO*, AGND, PGND, AVDD, DVDD, names ending in
-   `<digits>V`, etc.; broad substring matches are avoided so signal names
-   such as `USB20_VBUSEN` do not become power ports),
-2. is a "free" wire endpoint (count == 1 in the segment graph), and
-3. does **not** coincide with a component pin position.
+If a VCC_BAR primary hotpoint misses both wire endpoints and component pins,
+try the opposite-side candidate:
 
-There is one additional source of synthesized power glyphs: a component pin
-record may carry a resolved power `net_id` even when no parsed wire touches the
-pin. In that case `scripts/dsn2kicad` emits the power symbol directly at the
-pin hotpoint. This covers direct OrCAD power-port connections where the binary
-stores the net association on the pin record rather than as a wire segment.
+```
+VCC_BAR alternate: x = n4, y = n5 + 10
+```
+
+`scripts/dsn2kicad` matches these hotpoints to parsed wire endpoints and
+component pin coordinates. A match resolves the page-local `net_id` and marks
+that net as an object-derived power net. This replaces the earlier behavior
+that synthesized power glyphs only from name heuristics at dangling endpoints.
+
+Component pin records may also carry a resolved power `net_id` even when no
+parsed wire touches the pin. In that case `scripts/dsn2kicad` emits the power
+symbol directly at the pin hotpoint. This covers direct OrCAD power-port
+connections where the binary stores the net association on the pin record
+rather than as a wire segment.
 
 The pin-position filter is essential: without it, a multi-pin
 connector with a GND bus running across its left column ends up

@@ -176,7 +176,7 @@ types:
           contain TitleBlock / Border / OFFPAGE
         - The name matches a power-net prefix (GND, VCC, VDD, …)
 
-      Layout (from `parse_power_symbols`, dsn2kicad lines 326–371):
+      Layout (from `parse_power_symbols`):
         marker(4)
         zeros(4)             at marker+4, == 0
         rec_type(4)          at marker+8
@@ -184,22 +184,23 @@ types:
         name_len(2)          at marker+16
         name(name_len)       at marker+18
         null(1)              at marker+18+name_len
-        cell_id(4)           at name_end + 1
-        x(2 signed)          at name_end + 1 + 4
-        y(2 signed)          at name_end + 1 + 6
+        cell_id(4)           at name_end + 1, instance ID
+        n0..n5(6 * s2)       coordinate-like fields
+        orient(2)            e.g. 0x0030, 0x0130, 0x0330, 0x0430
 
-      **CAVEAT**: empirical testing shows these (x, y) values do NOT
-      land on any wire endpoint of the matching net. The bbox at
-      `+4..+11` (10×20 OrCAD units for GND, 22×65/72 for VCC_BAR)
-      matches the dimensions of the **caption text label** drawn
-      next to the glyph, not the glyph anchor itself. The actual
-      GND / VCC glyph is rendered by OrCAD implicitly at the wire
-      endpoint when the net is a power net. `scripts/dsn2kicad`
-      therefore ignores these records as a source of glyph
-      positions and synthesizes glyphs at dangling power-net wire
-      endpoints (filtered against component pin positions to avoid
-      stacking a glyph at every pin of a multi-pin connector
-      whose pins each emit a "free" wire stub).
+      The six int16 fields are not direct placement coordinates, but they
+      encode a derivable electrical hotpoint in the same raw page coordinate
+      space as wire endpoints and component pins:
+
+        GND:      x = n4 + 10, y = n2 - 10
+                  except orient == 0x0430: x = n4 + 10, y = n0
+        VCC_BAR:  x = n4 + 10, y = n5 + 10
+                  except orient == 0x0330: x = n4, y = n5 + 10
+
+      If a VCC_BAR primary hotpoint misses both wire endpoints and component
+      pins, application code should try the opposite-side candidate
+      `(n4, n5 + 10)`. A hotpoint match resolves the connected page-local
+      net_id and marks that net as an object-derived power net.
     seq:
       - id: rec_type
         type: u4
@@ -209,10 +210,20 @@ types:
         type: dsn_common::u2_prefixed_string
       - id: cell_id
         type: u4
-      - id: x
+      - id: n0
         type: s2
-      - id: y
+      - id: n1
         type: s2
+      - id: n2
+        type: s2
+      - id: n3
+        type: s2
+      - id: n4
+        type: s2
+      - id: n5
+        type: s2
+      - id: orient
+        type: u2
 
   wire_or_power_body:
     doc: |

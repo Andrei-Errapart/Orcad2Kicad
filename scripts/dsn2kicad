@@ -1750,8 +1750,11 @@ def _min_pin_length_for_numbers(classified):
     return max(PIN_LENGTH, (max_chars + 1) * 1.27)
 
 
-def _symbol_pin_visibility(classified):
+def _symbol_pin_visibility(classified, cell_name=None):
     """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
+    if cell_name and cell_name in _cache_pin_visibility:
+        pnv, pnumv = _cache_pin_visibility[cell_name]
+        return (not pnv, not pnumv)
     if len(classified) == 1:
         return True, True
     pin_flags = [p[7] for p in classified if p[7] is not None]
@@ -1970,7 +1973,8 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     ref_y = by2 + 2.54
     val_y = by1 - 2.54
 
-    hide_pin_names, hide_pin_numbers = _symbol_pin_visibility(classified)
+    hide_pin_names, hide_pin_numbers = _symbol_pin_visibility(classified,
+                                                              name)
 
     if classified and not hide_pin_numbers:
         min_len = _min_pin_length_for_numbers(classified)
@@ -2173,7 +2177,7 @@ def _build_unit_pin_data(cell_name):
         classified.append((pn, hx, hy, direction, etype, orig, pin_len,
                            pin_flags))
 
-    _, hide_pin_numbers = _symbol_pin_visibility(classified)
+    _, hide_pin_numbers = _symbol_pin_visibility(classified, cell_name)
     if classified and not hide_pin_numbers:
         min_len = _min_pin_length_for_numbers(classified)
         extended = []
@@ -2403,6 +2407,10 @@ _cell_pin_lists = {}
 # Pin extension deltas in symbol-local mm: {cell_name: {pin_num: (dx, dy)}}
 # Populated by lib_symbol_from_pins when pins are extended for readability.
 _pin_extension_deltas = {}
+
+# Pin visibility from Cache LibraryPart GeneralProperties:
+# {cell_name: (pin_name_visible, pin_number_visible)}
+_cache_pin_visibility = {}
 
 # Multi-unit symbol groups detected from page instances.
 # {base_name: {cell_name: unit_number (1-based), ...}}
@@ -3873,6 +3881,43 @@ def parse_cache_cells(ole):
             body_ellipses, body_arcs, body_polygons, body_polylines)
 
 
+_LP_STRUCT_RE = re.compile(rb'(.{4})\1\x18\x00\x18', re.DOTALL)
+
+
+def parse_cache_pin_visibility(ole):
+    """Extract per-cell pin visibility from Cache LibraryPart structures.
+
+    Returns {cell_name: (pin_name_visible, pin_number_visible)}.
+    """
+    try:
+        data = ole.openstream('Cache').read()
+    except Exception:
+        return {}
+
+    from olb_parser import DataStream, read_library_part
+
+    result = {}
+    for m in _LP_STRUCT_RE.finditer(data):
+        struct_start = m.start() + 10
+        try:
+            ds = DataStream(data[struct_start:struct_start + 8000])
+            lp = read_library_part(ds)
+            if lp.general_properties:
+                gp = lp.general_properties
+                name = lp.name
+                if name.endswith('.Normal'):
+                    name = name[:-7]
+                vis = (gp.pin_name_visible, gp.pin_number_visible)
+                if name not in result:
+                    result[name] = vis
+                cell_name = name.rsplit(' ', 1)[-1]
+                if cell_name != name and cell_name not in result:
+                    result[cell_name] = vis
+        except Exception:
+            pass
+    return result
+
+
 def register_cache_cells(cache_cells, cache_body_rects=None,
                          cache_body_lines=None,
                          cache_pin_numbers=None,
@@ -4446,6 +4491,8 @@ def main():
     _cell_centers.clear()
     _cell_pin_lists.clear()
     _pin_extension_deltas.clear()
+    _cache_pin_visibility.clear()
+    _cache_pin_visibility.update(parse_cache_pin_visibility(ole))
     (cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers,
      cache_text_annotations, cache_body_ellipses, cache_body_arcs,
      cache_body_polygons, cache_body_polylines) = parse_cache_cells(ole)
@@ -4457,6 +4504,9 @@ def main():
     for cname, cpins in cache_cells.items():
         print(f"    {cname}: {len(cpins)} pins")
     print(f"  {cache_count} cells from Cache (+ R, C built-in)")
+    vis_count = sum(1 for v in _cache_pin_visibility.values()
+                    if not v[0] or not v[1])
+    print(f"  Pin visibility overrides: {vis_count} cells")
 
     # Detect multi-unit components (cells sharing the same ref designator)
     print("  Detecting multi-unit components...")

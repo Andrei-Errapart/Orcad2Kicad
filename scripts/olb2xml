@@ -1,0 +1,8 @@
+#!/bin/sh
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ ! -d "$REPO_ROOT/.venv" ]; then
+    echo "Creating .venv..."
+    python3 -m venv "$REPO_ROOT/.venv"
+    "$REPO_ROOT/.venv/bin/pip" install --quiet olefile
+fi
+exec "$REPO_ROOT/.venv/bin/python3" "$(dirname "$0")/olb2xml.py" "$@"

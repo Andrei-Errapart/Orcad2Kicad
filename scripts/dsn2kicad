@@ -3229,15 +3229,14 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             is_gnd = _is_gnd_power_name(alias['name'])
             parts.append(sch_power_symbol(alias['name'], x, y, is_gnd))
             power_positions.add((alias['x'], alias['y']))
+        elif is_bus_net(alias['name']):
+            parts.append(sch_label(alias['name'], x, y, angle=angle))
         elif alias['name'] in global_nets and alias['name'] not in bus_member_nets:
             parts.append(sch_global_label(alias['name'], x, y, angle=angle))
         else:
             parts.append(sch_label(alias['name'], x, y, angle=angle))
 
-    # Bus labels — placed at the true free endpoints of the bus
-    # (using all bus segments including diagonals so intermediate
-    # junction points cancel out). Always use global_label for
-    # cross-sheet connectivity. Skip endpoints where bus entries land.
+    # Bus labels — placed at free endpoints of bus wires.
     bus_wires = [w for w in wires if w.get('bus')]
     bus_endpoints = compute_wire_endpoints(bus_wires)
     bus_labels = place_net_labels(bus_wires, net_table, bus_endpoints)

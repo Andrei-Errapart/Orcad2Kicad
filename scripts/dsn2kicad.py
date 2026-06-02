@@ -706,24 +706,30 @@ def parse_page_graphics(data, paper='A3'):
     Layout from marker (FF E4 5C 39):
       +18..+23  type tag: PAGE_RECT_TYPE_WORD or PAGE_LINE_TYPE_WORD
       +30..+45  4 × u32 (x1, y1, x2, y2) — line endpoints or rect corners
-      +50..+51  u16 style index (rectangles only):
+
+    Rectangle-only fields (+46..+61, total record = 62 bytes):
+      +46..+49  u32 line style:
+                  0 = solid stroke
+                  1 = dashed stroke
+      +50..+51  u16 color style:
                   0 = "normal" — rendered black, thin
                   1 = "emphasis" — rendered red, thick
-                Not an index into the Library stream's records (those
-                are font references); likely a hardcoded OrCAD palette.
+      +54..+57  u32 fill type:
+                  0 = no fill
+                  1 = solid fill (outline)
+                  2 = diagonal hatch fill
+      +58..+61  u32 fill parameter (3 when hatch, 0 otherwise)
 
-    Total record length: 62 bytes for rectangles, 54 for lines. For
-    line records, the +50 offset overlaps the next record's marker
-    bytes, so the style index can only be reliably read for rectangles
-    — `dsn2kicad` treats all lines as style 0.
+    Line records are 54 bytes; the +46 fields overlap the next record's
+    marker, so style/fill can only be read for rectangles.
 
     Records that fall entirely inside the title-block region at the
     bottom-right corner of the page are filtered out (KiCad redraws the
     title-block frame from the (title_block ...) data).
 
-    Returns (rects, lines) where each item is a dict with keys
-    {x1, y1, x2, y2, color}. The `color` field maps style 0 → 'black'
-    and style 1 → 'red' for KiCad emission convenience.
+    Returns (rects, lines, ellipses) where each rect is a dict with keys
+    {x1, y1, x2, y2, color, fill, stroke_type}. Lines/ellipses have
+    {x1, y1, x2, y2, color}.
     """
     page_w, page_h = ORCAD_PAGE_SIZE.get(paper, (1654, 1170))
     tb_x = page_w - TB_REGION_W
@@ -753,11 +759,20 @@ def parse_page_graphics(data, paper='A3'):
         if in_tb(x1, y1) and in_tb(x2, y2):
             continue
         color = 'black'
-        if tag == PAGE_RECT_TYPE_WORD and m + 52 <= len(data):
+        fill = 'none'
+        stroke_type = 'default'
+        if tag == PAGE_RECT_TYPE_WORD and m + 62 <= len(data):
             flag = struct.unpack_from('<H', data, m + 50)[0]
             if flag == 1:
                 color = 'red'
-        entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color}
+            line_style = struct.unpack_from('<I', data, m + 46)[0]
+            if line_style == 1:
+                stroke_type = 'dash'
+            fill_type = struct.unpack_from('<I', data, m + 54)[0]
+            if fill_type == 2:
+                fill = 'hatch'
+        entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color,
+                 'fill': fill, 'stroke_type': stroke_type}
         if tag == PAGE_RECT_TYPE_WORD:
             rects.append(entry)
         elif tag == PAGE_ELLIPSE_TYPE_WORD:
@@ -1132,8 +1147,9 @@ def sch_polyline(points, color='black', width=0.15):
     )
 
 
-def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15):
-    """KiCad rectangle graphical primitive on a schematic page (no fill)."""
+def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15, fill='none',
+                  stroke_type='default'):
+    """KiCad rectangle graphical primitive on a schematic page."""
     uid = new_uuid()
     rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
     return (
@@ -1142,10 +1158,10 @@ def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15):
         f"\t\t(end {x2:.2f} {y2:.2f})\n"
         f"\t\t(stroke\n"
         f"\t\t\t(width {width})\n"
-        f"\t\t\t(type default)\n"
+        f"\t\t\t(type {stroke_type})\n"
         f"\t\t\t(color {rgba})\n"
         f"\t\t)\n"
-        f"\t\t(fill (type none))\n"
+        f"\t\t(fill (type {fill}))\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
     )
@@ -3815,17 +3831,18 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         y = dsn_to_mm(lbl['y'])
         parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
 
-    # Decorative rectangles (e.g. INDEX table outline, CAUTION block).
-    # OrCAD doesn't store an explicit stroke width; red borders render
-    # ~3× thicker than black ones (observed in the PDF: 0.36 pt black vs
-    # 1.08 pt red). We mirror that convention.
+    # Decorative rectangles (INDEX table outline, CAUTION block, DNP
+    # hatch areas). Stroke width mirrors the OrCAD PDF convention
+    # (0.36 pt black vs 1.08 pt red). Dashed stroke and hatch fill
+    # are preserved from the binary record fields.
     for r in page_rects or []:
         col = r.get('color', 'black')
         width = 0.30 if col == 'red' else 0.15
         parts.append(sch_rectangle(
             dsn_to_mm(r['x1']), dsn_to_mm(r['y1']),
             dsn_to_mm(r['x2']), dsn_to_mm(r['y2']),
-            color=col, width=width,
+            color=col, width=width, fill=r.get('fill', 'none'),
+            stroke_type=r.get('stroke_type', 'default'),
         ))
 
     # Decorative lines (INDEX table dividers, etc.).

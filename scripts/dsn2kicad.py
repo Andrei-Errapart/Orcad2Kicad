@@ -1863,12 +1863,16 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
     else:
         style, record_name = entry, None
     if _is_gnd_power_name(name) or style == 'gnd':
+        if _use_kicad_power and name == 'GND':
+            return _kicad_native_power.get('GND') or lib_symbol_power_gnd()
         if record_name and record_name in _orcad_power_glyphs:
             return lib_symbol_power_extracted(
                 name, record_name, _orcad_power_glyphs[record_name])
-        if _use_kicad_power and name == 'GND':
-            return _kicad_native_power.get('GND') or lib_symbol_power_gnd()
         return lib_symbol_power_gnd(name)
+    if _use_kicad_power:
+        return (_kicad_native_power.get(name)
+                or _kicad_power_from_template('VCC', name)
+                or lib_symbol_power_rail(name))
     if not record_name:
         record_name = _power_glyph_record_name(style)
     if record_name and record_name in _orcad_power_glyphs:
@@ -1876,10 +1880,6 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
             name, record_name, _orcad_power_glyphs[record_name])
     if style == 'circle':
         return lib_symbol_power_circle(name)
-    if _use_kicad_power:
-        return (_kicad_native_power.get(name)
-                or _kicad_power_from_template('VCC', name)
-                or lib_symbol_power_rail(name))
     return lib_symbol_power_rail(name)
 
 

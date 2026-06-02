@@ -29,6 +29,10 @@ Converts all schematic pages, generates a root schematic with hierarchical sheet
 references, a symbol library, and a KiCad project file. Output defaults to a
 directory named after the DSN file.
 
+The `scripts/dsn2kicad` wrapper creates a small Python virtualenv on first use
+under the user's cache directory, falling back to the temp directory if needed.
+Set `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
+
 Options:
 
 - `--kicad-power` — Use KiCad-native power symbol graphics (VCC chevron, GND

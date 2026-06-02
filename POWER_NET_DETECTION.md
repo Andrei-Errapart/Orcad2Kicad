@@ -56,8 +56,9 @@ property tags        0x25, 0x27, 0x21 tagged values (purpose unknown)
 ```
 
 **Critical:** The coordinate fields are not directly the glyph anchor. Treating them
-as literal positions gives poor spatial correlation. However, applying the hotpoint
-formulas described below recovers the electrical attachment point with high accuracy.
+as literal positions gives poor spatial correlation. However, transforming the
+extracted glyph anchor through the page instance logical box recovers the
+electrical attachment point with high accuracy.
 
 Each VCC_BAR record is followed by a secondary marker record with `rec_type = 0xE0`,
 containing coordinates (-8, -12, 0) and additional property values. These secondary
@@ -115,32 +116,39 @@ orient(2)            e.g. 0x0030, 0x0130, 0x0330, 0x0430
 property tags...
 ```
 
-The electrical hotpoint can be derived from these values:
+The electrical hotpoint is derived from the extracted Cache `GlobalSymbol` glyph.
+Power glyph instances use a 20-by-10 logical box in page coordinates: `n4,n5`
+are the logical origin, and the high byte of `orient` supplies the rotation/mirror
+family. The glyph primitive anchor determines where the electrical terminal sits
+inside that logical box:
 
 ```
-GND:              x = n4 + 10, y = n2 - 10
-                  except orient == 0x0430: x = n4 + 10, y = n0
-VCC_BAR:          x = n4 + 10, y = n5 + 10
-                  except orient == 0x0330: x = n4, y = n5 + 10
-VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
-                  orient 0x0330/0x0730: x = n4,      y = n5 + 10
-                  orient 0x0130/0x0530: x = n3,      y = n5 + 10
-                  orient 0x0230:        x = n4 + 10, y = n5
+GND/GND_POWER:       logical anchor (10, 0)
+VCC_BAR/VCC/CIRCLE: logical anchor (10, 10)
 ```
 
-If the primary VCC_BAR hotpoint does not match a wire endpoint or component pin, try
-the 180-degree/opposite-side candidate:
+The converter rotates that logical anchor into page coordinates:
 
 ```
-VCC_BAR alternate: x = n4, y = n5 + 10
+rot 0: x = n4 + ax,          y = n5 + ay
+rot 1: x = n4 + ay,          y = n5 + (width - ax)
+rot 2: x = n4 + (width - ax), y = n5 + (height - ay)
+rot 3: x = n4 + (height - ay), y = n5 + ax
 ```
 
-This alternate is confirmed for the `03_Clock...` VCC_BAR at `(8800, 14200)`, where
-the primary formula gives `(8800, 14200)` and the opposite-side candidate gives the
-actual wire endpoint `(8700, 14200)`.
+where `rot = (orient >> 8) & 3`, `width = 20`, and `height = 10` for observed
+OrCAD power-port logical boxes. This replaces the previous per-record hotpoint
+equations for `GND`, `VCC_BAR`, `VCC`, and `VCC_CIRCLE`.
 
-The `VCC`/`VCC_CIRCLE` formulas are confirmed on `board 0120`;
-all 114 records land exactly on parsed wire endpoints.
+The `VCC`/`VCC_CIRCLE` transform is confirmed on `board 0120`;
+all 114 records land exactly on parsed wire endpoints or component pins.
+
+The resolved record name also selects the emitted KiCad power-symbol geometry.
+For positive power symbols, `scripts/dsn2kicad` first tries to extract matching
+OrCAD `GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
+`VCC_CIRCLE`, etc.) and emits those as project-local KiCad power symbols. If
+extraction is unavailable, it falls back to built-in GND, rail/bar, or circle
+glyphs. GND-style symbols still use the controlled KiCad GND triangle path.
 
 Use raw coordinates for matching to `parse_wires()` output. Multiply by 10 only when
 comparing to the DSN-unit values implied by generated KiCad output.
@@ -151,10 +159,10 @@ Across all page streams in `board 0001`:
 
 | Symbol | Hotpoints matching a wire endpoint | Notes |
 |--------|------------------------------------|-------|
-| GND | 393 / 394 | The remaining miss is a deliberately floating GND symbol. The `0x0430` orientation requires the orientation-specific formula above. |
+| GND | 393 / 394 | The remaining miss is a deliberately floating GND symbol. |
 | VCC_BAR | 246 / 254 | The misses are valid direct-to-component-pin attachments, not missing power nets. |
 
-For `15_POWER1`, the formula matches all 74 GND expected anchors and 51 of 53
+For `15_POWER1`, the transform matches all 74 GND expected anchors and 51 of 53
 VCC_BAR expected anchors exactly. The two VCC_BAR misses are confirmed direct
 connections to component pins (`R256` and `R257`) with no intervening wire segment.
 
@@ -163,18 +171,13 @@ a power symbol hotpoint can connect either to a wire endpoint or directly to a
 component pin. Direct pin attachments observed in test 0001 include `R12`, `R19`,
 `R23`, `FB21`, `R256`, `R257`, and `R278`.
 
-When the primary hotpoint misses both wire and pin indexes, try the alternate
-opposite-side VCC_BAR hotpoint before declaring the symbol floating or unresolved.
-Do not apply this alternate when the primary hotpoint already matches; most records
-are correct with the primary formula.
-
 Known exact-match exceptions from visual inspection:
 
 | Page | Symbol | Hotpoint | Interpretation |
 |------|--------|----------|----------------|
 | `11_PCIe` | GND | `(4300, 10400)` | Floating, disconnected GND in original schematic. |
-| `10_Ethernet` | GND | normal formula `(15000, 11620)`, `0x0430` formula `(15000, 11500)` | Horizontal GND in OrCAD; orientation-specific hotpoint matches the wire endpoint. |
-| `03_Clock...` | VCC_BAR | primary `(8800, 14200)`, alternate `(8700, 14200)` | Valid connection on opposite side; alternate matches the wire endpoint. |
+| `10_Ethernet` | GND | `(15000, 11500)` | Horizontal GND in OrCAD; transformed anchor matches the wire endpoint. |
+| `03_Clock...` | VCC_BAR | `(8700, 14200)` | Valid connection on opposite side; transformed anchor matches the wire endpoint. |
 | `03_Clock...` | VCC_BAR | `(4500, 12500)` | Direct connection to `R19`. |
 | `03_Clock...` | VCC_BAR | `(2800, 13300)` | Direct connection to `R23`. |
 | `03_Clock...` | VCC_BAR | `(2000, 6800)` | Direct connection to `R12`. |
@@ -185,15 +188,15 @@ Known exact-match exceptions from visual inspection:
 
 ### Detection method
 
-1. Parse `GND` and `VCC_BAR` records from each page stream.
-2. Compute the hotpoint using the formulas above.
+1. Parse power glyph records from each page stream (`GND`, `VCC_BAR`, `VCC`,
+   `VCC_CIRCLE`, etc.).
+2. Compute each hotpoint from the extracted glyph anchor and page instance
+   transform.
 3. Build an index from wire endpoint `(x, y)` to the wire's page-local `net_id`.
 4. Build or reuse a component-pin coordinate index with each pin's connected `net_id`.
 5. A power-symbol hotpoint matching either a wire endpoint or a component pin marks
    that `net_id` as a power net.
-6. If a VCC_BAR primary hotpoint misses both indexes, try the alternate
-   `(n4, n5 + 10)` hotpoint.
-7. Resolve the `net_id` through the page net table to get the net name.
+6. Resolve the `net_id` through the page net table to get the net name.
 
 This is the first high-confidence data-driven method found for implicit labels such
 as `VDD_BUCK1` and `VIO1.8V`, which do not have text records.

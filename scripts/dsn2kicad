@@ -45,6 +45,9 @@ except ImportError:
 # OrCAD coordinate unit: 10 mils = 0.254 mm
 UNIT_TO_MM = 0.254
 
+# OrCAD GlobalSymbol primitive coordinates use 5 mil units.
+POWER_SYMBOL_UNIT_TO_MM = 0.127
+
 # KiCad schematic grid
 GRID_MM = 2.54
 
@@ -537,46 +540,76 @@ def parse_power_symbols(data, net_table):
     return symbols
 
 
+def _power_symbol_logical_anchor(record_name):
+    """Return the power-port anchor inside OrCAD's logical 20x10 box.
+
+    GlobalSymbol primitive graphics are drawn inside a small local coordinate
+    system, but the page instance record places the power port using a
+    20-by-10 logical box. The extracted glyph tells which side carries the
+    electrical terminal; the logical box gives the page-record scale.
+    """
+    record_name = record_name.upper()
+    glyph = _orcad_power_glyphs.get(record_name)
+    if glyph:
+        primitives = glyph.get('primitives', [])
+        points = _power_glyph_points(primitives)
+        if points:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            anchor_x, anchor_y = _power_glyph_anchor(record_name, primitives)
+            width = max(20, max(xs) - min(xs))
+            height = max(10, max(ys) - min(ys))
+            logical_x = width / 2
+            if anchor_y == min(ys):
+                logical_y = 0
+            elif anchor_y == max(ys):
+                logical_y = height
+            else:
+                logical_y = anchor_y - min(ys)
+            return (logical_x, logical_y, width, height)
+
+    # Fallback for DSNs where the Cache GlobalSymbol record is missing or not
+    # yet decoded. This preserves the same logical anchor model without using
+    # page-record hotpoint formulas.
+    if record_name in ('GND', 'GND_POWER'):
+        return (10, 0, 20, 10)
+    return (10, 10, 20, 10)
+
+
+def _transform_power_symbol_anchor(sym, anchor_x, anchor_y, width, height):
+    coords = sym.get('coords')
+    if not coords or len(coords) != 6:
+        return None
+    _loc_y, _loc_x, _y2, _x2, x1, y1 = coords
+    rot = (sym.get('orient', 0) >> 8) & 0x03
+
+    if rot == 0:
+        x = x1 + anchor_x
+        y = y1 + anchor_y
+    elif rot == 1:
+        x = x1 + anchor_y
+        y = y1 + (width - anchor_x)
+    elif rot == 2:
+        x = x1 + (width - anchor_x)
+        y = y1 + (height - anchor_y)
+    else:
+        x = x1 + (height - anchor_y)
+        y = y1 + anchor_x
+
+    return (int(round(x)), int(round(y)))
+
+
 def _power_symbol_hotpoint_candidates(sym):
     """Return candidate electrical hotpoints for an OrCAD power-port record.
 
     Coordinates are in raw page units, the same space used by wire endpoints
-    and component pin records. The first candidate is the primary formula;
-    later candidates are fallbacks for confirmed orientation edge cases.
+    and component pin records. The hotpoint is derived from the extracted
+    GlobalSymbol anchor and transformed through the page instance orientation.
     """
-    coords = sym.get('coords')
-    if not coords or len(coords) != 6:
-        return []
-    n0, _n1, n2, n3, n4, n5 = coords
-    orient = sym.get('orient', 0)
     record_name = sym.get('record_name', sym.get('name', '')).upper()
-
-    if record_name == 'GND':
-        if orient == 0x0430:
-            return [(n4 + 10, n0)]
-        return [(n4 + 10, n2 - 10)]
-
-    if record_name in ('VCC', 'VCC_CIRCLE'):
-        if orient in (0x0030, 0x0430):
-            return [(n4 + 10, n2)]
-        if orient in (0x0330, 0x0730):
-            return [(n4, n5 + 10)]
-        if orient in (0x0130, 0x0530):
-            return [(n3, n5 + 10)]
-        if orient == 0x0230:
-            return [(n4 + 10, n5)]
-
-    if record_name == 'VCC_BAR':
-        if orient == 0x0330:
-            primary = (n4, n5 + 10)
-        else:
-            primary = (n4 + 10, n5 + 10)
-        alternate = (n4, n5 + 10)
-        if alternate == primary:
-            return [primary]
-        return [primary, alternate]
-
-    return []
+    anchor = _power_symbol_logical_anchor(record_name)
+    hotpoint = _transform_power_symbol_anchor(sym, *anchor)
+    return [hotpoint] if hotpoint is not None else []
 
 
 def resolve_power_symbol_nets(power_syms, wires, components):
@@ -633,6 +666,30 @@ def resolve_power_symbol_nets(power_syms, wires, components):
         resolved.append(sym)
 
     return resolved, power_net_names
+
+
+def power_symbol_styles(power_syms):
+    """Return {net_name: glyph_style} from resolved OrCAD power records."""
+    styles = {}
+    for sym in power_syms:
+        if not sym.get('matched') or not sym.get('net'):
+            continue
+        record_name = sym.get('record_name', '').upper()
+        if record_name == 'GND':
+            style = 'gnd'
+        elif record_name in ('VCC', 'VCC_CIRCLE'):
+            style = 'circle'
+        elif record_name == 'VCC_BAR':
+            style = 'rail'
+        else:
+            continue
+
+        net_name = sym['net']
+        if styles.get(net_name) == 'gnd':
+            continue
+        if style == 'gnd' or net_name not in styles:
+            styles[net_name] = style
+    return styles
 
 
 TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
@@ -1208,6 +1265,7 @@ def is_power_symbol_record_name(name):
 
 _kicad_native_power = {}
 _use_kicad_power = False
+_orcad_power_glyphs = {}
 
 
 def _kicad_power_from_template(template_name, new_name):
@@ -1272,6 +1330,79 @@ def load_kicad_power_library():
         pos = end
         count += 1
     print(f"  Loaded {count} symbols from {lib_path.name}")
+
+
+def _parse_global_symbol_head(data, offset):
+    """Parse the stable prefix/name/primitive part of a GlobalSymbol record."""
+    from olb_parser import (
+        DataStream, auto_read_prefixes, read_preamble, read_prim_prefix,
+        read_primitive, PRIM_SYMBOL_VECTOR, PRIMITIVE_TYPES,
+    )
+
+    ds = DataStream(data[offset:])
+    _prefixes, checkpoints = auto_read_prefixes(ds, 0x21)
+    read_preamble(ds)
+    name = ds.read_string_len_zero_term()
+    source_library = ds.read_string_len_zero_term()
+    if (not name or len(name) > 40
+            or not all(32 <= ord(c) < 127 for c in name)
+            or not all((32 <= ord(c) < 127) for c in source_library)):
+        return None
+    if checkpoints:
+        checkpoint = checkpoints[0] - offset
+        if 0 <= checkpoint < len(ds.data):
+            ds.pos = checkpoint
+    _color = ds.read_uint32()
+    primitive_count = ds.read_uint16()
+    if primitive_count > 20:
+        return None
+
+    primitives = []
+    for i in range(primitive_count):
+        prim_type = read_prim_prefix(ds)
+        if prim_type not in PRIMITIVE_TYPES:
+            return None
+        if prim_type == PRIM_SYMBOL_VECTOR:
+            ds.pos -= 1
+        prim = read_primitive(ds, prim_type)
+        if prim is not None:
+            primitives.append(prim)
+        # Some GlobalSymbol records carry an all-zero separator between
+        # primitive records. The C++ parser treats it as additional bytes.
+        if i + 1 < primitive_count and ds.peek(8) == b'\x00' * 8:
+            ds.skip(8)
+
+    if not primitives:
+        return None
+    return {
+        'name': name,
+        'source_library': source_library,
+        'primitives': primitives,
+    }
+
+
+def extract_orcad_power_glyphs(ole):
+    """Extract GlobalSymbol primitive glyphs for OrCAD power symbols."""
+    try:
+        data = ole.openstream('Cache').read()
+    except Exception:
+        return {}
+
+    glyphs = {}
+    wanted = {'GND', 'VCC', 'VCC_BAR', 'VCC_CIRCLE', 'GND_POWER'}
+    for offset, byte in enumerate(data):
+        if byte != 0x21:
+            continue
+        try:
+            glyph = _parse_global_symbol_head(data, offset)
+        except Exception:
+            continue
+        if not glyph or glyph['name'] not in wanted:
+            continue
+        # Prefer the first definition encountered; later Cache entries often
+        # include unrelated library examples from other projects.
+        glyphs.setdefault(glyph['name'], glyph)
+    return glyphs
 
 
 def lib_symbol_power_gnd(name='GND'):
@@ -1427,6 +1558,297 @@ def lib_symbol_power_rail(name):
         f'\t\t\t)\n'
         f'\t\t)\n'
     )
+
+
+def lib_symbol_power_circle(name):
+    """OrCAD/Capsym-style circle power symbol with a short stem."""
+    name_esc = _esc_kicad_str(name)
+    return (
+        f'\t\t(symbol "power:{name_esc}"\n'
+        f'\t\t\t(power)\n'
+        f'\t\t\t(pin_numbers hide)\n'
+        f'\t\t\t(pin_names\n'
+        f'\t\t\t\t(offset 0)\n'
+        f'\t\t\t\thide)\n'
+        f'\t\t\t(exclude_from_sim no)\n'
+        f'\t\t\t(in_bom yes)\n'
+        f'\t\t\t(on_board yes)\n'
+        f'\t\t\t(property "Reference" "#PWR"\n'
+        f'\t\t\t\t(at 0 -2.54 0)\n'
+        f'\t\t\t\t(effects\n'
+        f'\t\t\t\t\t(font\n'
+        f'\t\t\t\t\t\t(size 1.27 1.27)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t\t(hide yes)\n'
+        f'\t\t\t\t)\n'
+        f'\t\t\t)\n'
+        f'\t\t\t(property "Value" "{name_esc}"\n'
+        f'\t\t\t\t(at 0 3.175 0)\n'
+        f'\t\t\t\t(effects\n'
+        f'\t\t\t\t\t(font\n'
+        f'\t\t\t\t\t\t(size 1.27 1.27)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t)\n'
+        f'\t\t\t)\n'
+        f'\t\t\t(symbol "{name_esc}_0_1"\n'
+        f'\t\t\t\t(polyline\n'
+        f'\t\t\t\t\t(pts\n'
+        f'\t\t\t\t\t\t(xy 0 0) (xy 0 1.27)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t\t(stroke\n'
+        f'\t\t\t\t\t\t(width 0)\n'
+        f'\t\t\t\t\t\t(type default)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t\t(fill\n'
+        f'\t\t\t\t\t\t(type none)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t)\n'
+        f'\t\t\t\t(circle\n'
+        f'\t\t\t\t\t(center 0 1.905)\n'
+        f'\t\t\t\t\t(radius 0.635)\n'
+        f'\t\t\t\t\t(stroke\n'
+        f'\t\t\t\t\t\t(width 0)\n'
+        f'\t\t\t\t\t\t(type default)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t\t(fill\n'
+        f'\t\t\t\t\t\t(type none)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t)\n'
+        f'\t\t\t)\n'
+        f'\t\t\t(symbol "{name_esc}_1_1"\n'
+        f'\t\t\t\t(pin power_in line\n'
+        f'\t\t\t\t\t(at 0 0 90)\n'
+        f'\t\t\t\t\t(length 0)\n'
+        f'\t\t\t\t\t(name "{name_esc}"\n'
+        f'\t\t\t\t\t\t(effects\n'
+        f'\t\t\t\t\t\t\t(font\n'
+        f'\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
+        f'\t\t\t\t\t\t\t)\n'
+        f'\t\t\t\t\t\t)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t\t(number "1"\n'
+        f'\t\t\t\t\t\t(effects\n'
+        f'\t\t\t\t\t\t\t(font\n'
+        f'\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
+        f'\t\t\t\t\t\t\t)\n'
+        f'\t\t\t\t\t\t)\n'
+        f'\t\t\t\t\t)\n'
+        f'\t\t\t\t)\n'
+        f'\t\t\t)\n'
+        f'\t\t)\n'
+    )
+
+
+def _power_glyph_record_name(style):
+    if style == 'circle':
+        return 'VCC_CIRCLE' if 'VCC_CIRCLE' in _orcad_power_glyphs else 'VCC'
+    if style == 'rail':
+        return 'VCC_BAR'
+    if style == 'gnd':
+        return 'GND'
+    return None
+
+
+def _power_glyph_points(primitives):
+    from olb_parser import (
+        PrimLine, PrimRect, PrimArc, PrimEllipse, PrimPolyline, PrimPolygon,
+    )
+    points = []
+    for prim in primitives:
+        if isinstance(prim, (PrimLine, PrimRect, PrimArc, PrimEllipse)):
+            points.extend([(prim.x1, prim.y1), (prim.x2, prim.y2)])
+            if isinstance(prim, PrimArc):
+                points.extend([(prim.start_x, prim.start_y),
+                               (prim.end_x, prim.end_y)])
+        elif isinstance(prim, (PrimPolyline, PrimPolygon)):
+            points.extend((p.x, p.y) for p in prim.points)
+    return points
+
+
+def _power_glyph_anchor(record_name, primitives):
+    points = _power_glyph_points(primitives)
+    if not points:
+        return (0, 0)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    anchor_x = (min(xs) + max(xs)) / 2
+    if record_name in ('GND', 'GND_POWER'):
+        anchor_y = min(ys)
+    else:
+        anchor_y = max(ys)
+    return (anchor_x, anchor_y)
+
+
+def _power_glyph_xy(x, y, anchor_x, anchor_y):
+    return (
+        round((x - anchor_x) * POWER_SYMBOL_UNIT_TO_MM, 3),
+        round((anchor_y - y) * POWER_SYMBOL_UNIT_TO_MM, 3),
+    )
+
+
+def lib_symbol_power_extracted(name, record_name, glyph):
+    """KiCad power symbol generated from an OrCAD GlobalSymbol primitive list."""
+    from olb_parser import (
+        PrimLine, PrimRect, PrimArc, PrimEllipse, PrimPolyline, PrimPolygon,
+    )
+    name_esc = _esc_kicad_str(name)
+    primitives = glyph.get('primitives', [])
+    anchor_x, anchor_y = _power_glyph_anchor(record_name, primitives)
+
+    parts = [
+        f'\t\t(symbol "power:{name_esc}"\n',
+        '\t\t\t(power)\n',
+        '\t\t\t(pin_numbers hide)\n',
+        '\t\t\t(pin_names\n',
+        '\t\t\t\t(offset 0)\n',
+        '\t\t\t\thide)\n',
+        '\t\t\t(exclude_from_sim no)\n',
+        '\t\t\t(in_bom yes)\n',
+        '\t\t\t(on_board yes)\n',
+        '\t\t\t(property "Reference" "#PWR"\n',
+        '\t\t\t\t(at 0 -2.54 0)\n',
+        '\t\t\t\t(effects\n',
+        '\t\t\t\t\t(font\n',
+        '\t\t\t\t\t\t(size 1.27 1.27)\n',
+        '\t\t\t\t\t)\n',
+        '\t\t\t\t\t(hide yes)\n',
+        '\t\t\t\t)\n',
+        '\t\t\t)\n',
+        f'\t\t\t(property "Value" "{name_esc}"\n',
+        '\t\t\t\t(at 0 2.286 0)\n',
+        '\t\t\t\t(effects\n',
+        '\t\t\t\t\t(font\n',
+        '\t\t\t\t\t\t(size 1.27 1.27)\n',
+        '\t\t\t\t\t)\n',
+        '\t\t\t\t)\n',
+        '\t\t\t)\n',
+        f'\t\t\t(symbol "{name_esc}_0_1"\n',
+    ]
+
+    for prim in primitives:
+        if isinstance(prim, PrimLine):
+            x1, y1 = _power_glyph_xy(prim.x1, prim.y1, anchor_x, anchor_y)
+            x2, y2 = _power_glyph_xy(prim.x2, prim.y2, anchor_x, anchor_y)
+            parts.extend([
+                '\t\t\t\t(polyline\n',
+                '\t\t\t\t\t(pts\n',
+                f'\t\t\t\t\t\t(xy {x1:.3f} {y1:.3f}) (xy {x2:.3f} {y2:.3f})\n',
+                '\t\t\t\t\t)\n',
+                '\t\t\t\t\t(stroke\n',
+                '\t\t\t\t\t\t(width 0)\n',
+                '\t\t\t\t\t\t(type default)\n',
+                '\t\t\t\t\t)\n',
+                '\t\t\t\t\t(fill\n',
+                '\t\t\t\t\t\t(type none)\n',
+                '\t\t\t\t\t)\n',
+                '\t\t\t\t)\n',
+            ])
+        elif isinstance(prim, PrimEllipse):
+            x1, y1 = _power_glyph_xy(prim.x1, prim.y1, anchor_x, anchor_y)
+            x2, y2 = _power_glyph_xy(prim.x2, prim.y2, anchor_x, anchor_y)
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            rx = abs(x2 - x1) / 2
+            ry = abs(y2 - y1) / 2
+            if abs(rx - ry) < 0.001:
+                parts.extend([
+                    '\t\t\t\t(circle\n',
+                    f'\t\t\t\t\t(center {cx:.3f} {cy:.3f})\n',
+                    f'\t\t\t\t\t(radius {rx:.3f})\n',
+                    '\t\t\t\t\t(stroke\n',
+                    '\t\t\t\t\t\t(width 0)\n',
+                    '\t\t\t\t\t\t(type default)\n',
+                    '\t\t\t\t\t)\n',
+                    '\t\t\t\t\t(fill\n',
+                    '\t\t\t\t\t\t(type none)\n',
+                    '\t\t\t\t\t)\n',
+                    '\t\t\t\t)\n',
+                ])
+        elif isinstance(prim, (PrimPolyline, PrimPolygon)):
+            pts = [
+                _power_glyph_xy(p.x, p.y, anchor_x, anchor_y)
+                for p in prim.points
+            ]
+            if len(pts) >= 2:
+                if isinstance(prim, PrimPolygon) and pts[0] != pts[-1]:
+                    pts.append(pts[0])
+                pts_s = ' '.join(f'(xy {x:.3f} {y:.3f})' for x, y in pts)
+                parts.extend([
+                    '\t\t\t\t(polyline\n',
+                    '\t\t\t\t\t(pts\n',
+                    f'\t\t\t\t\t\t{pts_s}\n',
+                    '\t\t\t\t\t)\n',
+                    '\t\t\t\t\t(stroke\n',
+                    '\t\t\t\t\t\t(width 0)\n',
+                    '\t\t\t\t\t\t(type default)\n',
+                    '\t\t\t\t\t)\n',
+                    '\t\t\t\t\t(fill\n',
+                    '\t\t\t\t\t\t(type none)\n',
+                    '\t\t\t\t\t)\n',
+                    '\t\t\t\t)\n',
+                ])
+        elif isinstance(prim, PrimRect):
+            x1, y1 = _power_glyph_xy(prim.x1, prim.y1, anchor_x, anchor_y)
+            x2, y2 = _power_glyph_xy(prim.x2, prim.y2, anchor_x, anchor_y)
+            parts.extend([
+                '\t\t\t\t(rectangle\n',
+                f'\t\t\t\t\t(start {x1:.3f} {y1:.3f})\n',
+                f'\t\t\t\t\t(end {x2:.3f} {y2:.3f})\n',
+                '\t\t\t\t\t(stroke\n',
+                '\t\t\t\t\t\t(width 0)\n',
+                '\t\t\t\t\t\t(type default)\n',
+                '\t\t\t\t\t)\n',
+                '\t\t\t\t\t(fill\n',
+                '\t\t\t\t\t\t(type none)\n',
+                '\t\t\t\t\t)\n',
+                '\t\t\t\t)\n',
+            ])
+
+    parts.extend([
+        '\t\t\t)\n',
+        f'\t\t\t(symbol "{name_esc}_1_1"\n',
+        '\t\t\t\t(pin power_in line\n',
+        '\t\t\t\t\t(at 0 0 90)\n',
+        '\t\t\t\t\t(length 0)\n',
+        f'\t\t\t\t\t(name "{name_esc}"\n',
+        '\t\t\t\t\t\t(effects\n',
+        '\t\t\t\t\t\t\t(font\n',
+        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n',
+        '\t\t\t\t\t\t\t)\n',
+        '\t\t\t\t\t\t)\n',
+        '\t\t\t\t\t)\n',
+        '\t\t\t\t\t(number "1"\n',
+        '\t\t\t\t\t\t(effects\n',
+        '\t\t\t\t\t\t\t(font\n',
+        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n',
+        '\t\t\t\t\t\t\t)\n',
+        '\t\t\t\t\t\t)\n',
+        '\t\t\t\t\t)\n',
+        '\t\t\t\t)\n',
+        '\t\t\t)\n',
+        '\t\t)\n',
+    ])
+    return ''.join(parts)
+
+
+def lib_symbol_for_power_name(name, power_symbol_styles=None):
+    """Return the project-local KiCad symbol definition for a power net."""
+    style = (power_symbol_styles or {}).get(name)
+    if _is_gnd_power_name(name) or style == 'gnd':
+        if _use_kicad_power and name == 'GND':
+            return _kicad_native_power.get('GND') or lib_symbol_power_gnd()
+        return lib_symbol_power_gnd(name)
+    record_name = _power_glyph_record_name(style)
+    if record_name and record_name in _orcad_power_glyphs:
+        return lib_symbol_power_extracted(
+            name, record_name, _orcad_power_glyphs[record_name])
+    if style == 'circle':
+        return lib_symbol_power_circle(name)
+    if _use_kicad_power:
+        return (_kicad_native_power.get(name)
+                or _kicad_power_from_template('VCC', name)
+                or lib_symbol_power_rail(name))
+    return lib_symbol_power_rail(name)
 
 
 def sch_power_symbol(name, x, y, is_ground=False):
@@ -3076,7 +3498,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                       sheet_number=None, total_sheets=None,
                       page_rects=None, page_lines=None, page_ellipses=None,
                       library_styles=None, debug_bbox=False,
-                      net_aliases=None, power_net_names=None):
+                      net_aliases=None, power_net_names=None,
+                      power_symbol_styles=None):
     """Generate a complete KiCad schematic page from parsed DSN data."""
     parts = []
     tb = title_block or {}
@@ -3119,24 +3542,10 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 power_names_used.add(net_name)
 
     for pname in sorted(power_names_used):
-        if _is_gnd_power_name(pname):
-            lid = f'power:{pname}'
-            if lid not in symbols_needed:
-                if _use_kicad_power and pname == 'GND':
-                    symbols_needed[lid] = (_kicad_native_power.get('GND')
-                                           or lib_symbol_power_gnd())
-                else:
-                    symbols_needed[lid] = lib_symbol_power_gnd(pname)
-        else:
-            lid = f'power:{pname}'
-            if lid not in symbols_needed:
-                if _use_kicad_power:
-                    symbols_needed[lid] = (
-                        _kicad_native_power.get(pname)
-                        or _kicad_power_from_template('VCC', pname)
-                        or lib_symbol_power_rail(pname))
-                else:
-                    symbols_needed[lid] = lib_symbol_power_rail(pname)
+        lid = f'power:{pname}'
+        if lid not in symbols_needed:
+            symbols_needed[lid] = lib_symbol_for_power_name(
+                pname, power_symbol_styles)
 
     parts.append(sch_lib_symbols(symbols_needed))
 
@@ -3595,7 +4004,8 @@ def generate_project(name):
     return json.dumps(proj, indent=2) + "\n"
 
 
-def generate_symbol_library(project_name, power_names=None, used_cells=None):
+def generate_symbol_library(project_name, power_names=None, used_cells=None,
+                            power_symbol_styles=None):
     """Generate a project-local .kicad_sym file with all cell definitions.
 
     `power_names` is an iterable of power-symbol names used anywhere in
@@ -3628,26 +4038,11 @@ def generate_symbol_library(project_name, power_names=None, used_cells=None):
     if power_names:
         emitted_power = set()
         for pname in sorted(power_names):
-            if _is_gnd_power_name(pname):
-                lid = f'power:{pname}'
-                if lid not in emitted_power:
-                    if _use_kicad_power and pname == 'GND':
-                        parts.append(_kicad_native_power.get('GND')
-                                     or lib_symbol_power_gnd())
-                    else:
-                        parts.append(lib_symbol_power_gnd(pname))
-                    emitted_power.add(lid)
-            else:
-                lid = f'power:{pname}'
-                if lid not in emitted_power:
-                    if _use_kicad_power:
-                        parts.append(
-                            _kicad_native_power.get(pname)
-                            or _kicad_power_from_template('VCC', pname)
-                            or lib_symbol_power_rail(pname))
-                    else:
-                        parts.append(lib_symbol_power_rail(pname))
-                    emitted_power.add(lid)
+            lid = f'power:{pname}'
+            if lid not in emitted_power:
+                parts.append(lib_symbol_for_power_name(
+                    pname, power_symbol_styles))
+                emitted_power.add(lid)
     parts.append(")\n")
     return "".join(parts)
 
@@ -4742,6 +5137,11 @@ def main():
     _cell_pin_lists.clear()
     _pin_extension_deltas.clear()
     _cache_pin_visibility.clear()
+    _orcad_power_glyphs.clear()
+    _orcad_power_glyphs.update(extract_orcad_power_glyphs(ole))
+    if _orcad_power_glyphs:
+        glyph_names = ", ".join(sorted(_orcad_power_glyphs))
+        print(f"  OrCAD power glyphs: {glyph_names}")
     _cache_pin_visibility.update(parse_cache_pin_visibility(ole))
     (cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers,
      cache_text_annotations, cache_body_ellipses, cache_body_arcs,
@@ -4788,6 +5188,7 @@ def main():
     page_names = []
     total_stats = defaultdict(int)
     project_power_names = set()
+    project_power_symbol_styles = {}
     project_used_cells = set()
 
     for i, stream_path in enumerate(page_streams):
@@ -4811,6 +5212,7 @@ def main():
         power_syms = parse_power_symbols(data, net_table)
         power_syms, page_power_names = resolve_power_symbol_nets(
             power_syms, wires, components)
+        page_power_styles = power_symbol_styles(power_syms)
         page_power_names.update(
             name for name in net_table.values() if name in library_power_names)
         texts = parse_text_annotations(data, paper)
@@ -4831,6 +5233,7 @@ def main():
             debug_bbox=debug_bbox,
             net_aliases=aliases,
             power_net_names=page_power_names,
+            power_symbol_styles=page_power_styles,
         )
         (output_dir / filename).write_text(content, encoding='utf-8')
 
@@ -4845,6 +5248,7 @@ def main():
                 project_used_cells.add(comp['cell'])
 
         project_power_names.update(page_power_names)
+        project_power_symbol_styles.update(page_power_styles)
 
         pwr_counts = defaultdict(int)
         for ps in power_syms:
@@ -4872,7 +5276,8 @@ def main():
     print("  Generating symbol library...")
     sym_lib = generate_symbol_library(safe_project,
                                       power_names=project_power_names,
-                                      used_cells=project_used_cells)
+                                      used_cells=project_used_cells,
+                                      power_symbol_styles=project_power_symbol_styles)
     (output_dir / f"{safe_project}.kicad_sym").write_text(sym_lib, encoding='utf-8')
 
     # sym-lib-table

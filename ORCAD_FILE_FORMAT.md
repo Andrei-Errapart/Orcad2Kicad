@@ -890,25 +890,30 @@ such as `0` and `AG`.
 
 The six int16 coordinate-like fields are not direct placement coordinates.
 They encode a derivable electrical hotpoint in the same raw page coordinate
-space as wire endpoints and component pins:
+space as wire endpoints and component pins. `scripts/dsn2kicad` derives this
+from the extracted Cache `GlobalSymbol` glyph anchor and the page instance
+transform. Observed power ports use a 20-by-10 logical box with `n4,n5` as its
+origin:
 
 ```
-GND:              x = n4 + 10, y = n2 - 10
-                  except orient == 0x0430: x = n4 + 10, y = n0
-VCC_BAR:          x = n4 + 10, y = n5 + 10
-                  except orient == 0x0330: x = n4, y = n5 + 10
-VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
-                  orient 0x0330/0x0730: x = n4,      y = n5 + 10
-                  orient 0x0130/0x0530: x = n3,      y = n5 + 10
-                  orient 0x0230:        x = n4 + 10, y = n5
+GND/GND_POWER:       logical anchor (10, 0)
+VCC_BAR/VCC/CIRCLE: logical anchor (10, 10)
+
+rot 0: x = n4 + ax,           y = n5 + ay
+rot 1: x = n4 + ay,           y = n5 + (width - ax)
+rot 2: x = n4 + (width - ax), y = n5 + (height - ay)
+rot 3: x = n4 + (height - ay), y = n5 + ax
 ```
 
-If a VCC_BAR primary hotpoint misses both wire endpoints and component pins,
-try the opposite-side candidate:
+where `rot = (orient >> 8) & 3`, `width = 20`, and `height = 10` for the
+observed logical power-port box.
 
-```
-VCC_BAR alternate: x = n4, y = n5 + 10
-```
+The converter uses the resolved record name to choose the KiCad power-symbol
+glyph. For positive power symbols, it first tries to extract matching OrCAD
+`GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
+`VCC_CIRCLE`, etc.); if no extracted glyph is available, it falls back to
+built-in GND, rail/bar, or circle glyphs. GND-style symbols still use the
+controlled KiCad GND triangle path.
 
 `scripts/dsn2kicad` matches these hotpoints to parsed wire endpoints and
 component pin coordinates. A match resolves the page-local `net_id` and marks

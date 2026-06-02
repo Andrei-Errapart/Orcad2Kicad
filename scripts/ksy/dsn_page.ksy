@@ -191,21 +191,22 @@ types:
 
       The six int16 fields are not direct placement coordinates, but they
       encode a derivable electrical hotpoint in the same raw page coordinate
-      space as wire endpoints and component pins:
+      space as wire endpoints and component pins. Application code derives
+      the hotpoint from the extracted Cache GlobalSymbol glyph anchor and the
+      page instance transform. Observed power ports use a 20-by-10 logical box
+      with `n4,n5` as its origin:
 
-        GND:      x = n4 + 10, y = n2 - 10
-                  except orient == 0x0430: x = n4 + 10, y = n0
-        VCC_BAR:          x = n4 + 10, y = n5 + 10
-                          except orient == 0x0330: x = n4, y = n5 + 10
-        VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
-                          orient 0x0330/0x0730: x = n4,      y = n5 + 10
-                          orient 0x0130/0x0530: x = n3,      y = n5 + 10
-                          orient 0x0230:        x = n4 + 10, y = n5
+        GND/GND_POWER:       logical anchor (10, 0)
+        VCC_BAR/VCC/CIRCLE: logical anchor (10, 10)
 
-      If a VCC_BAR primary hotpoint misses both wire endpoints and component
-      pins, application code should try the opposite-side candidate
-      `(n4, n5 + 10)`. A hotpoint match resolves the connected page-local
-      net_id and marks that net as an object-derived power net.
+        rot 0: x = n4 + ax,            y = n5 + ay
+        rot 1: x = n4 + ay,            y = n5 + (width - ax)
+        rot 2: x = n4 + (width - ax),  y = n5 + (height - ay)
+        rot 3: x = n4 + (height - ay), y = n5 + ax
+
+      where `rot = (orient >> 8) & 3`, `width = 20`, and `height = 10`.
+      A hotpoint match resolves the connected page-local net_id and marks
+      that net as an object-derived power net.
 
       Each VCC_BAR record is followed by a secondary marker record with
       `rec_type = 0xE0`. Observed secondary records contain small coordinates

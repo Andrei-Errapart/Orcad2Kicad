@@ -873,7 +873,7 @@ ff e4 5c 39          record marker
 rec_type(4, LE)      record type ID
 header(4, LE)        header value (varies: 0x1a, 0x1c, 0xa6, 0xdab, etc.)
 name_len(2, LE)      length of symbol name
-name(name_len)       ASCII name (e.g., "GND", "VCC_BAR")
+name(name_len)       ASCII name (e.g., "GND", "VCC_BAR", "VCC", "VCC_CIRCLE")
 null(1)              null terminator
 cell_id(4, LE)       cell/symbol ID
 n0..n5(6 × i16)      coordinate-like fields
@@ -882,7 +882,8 @@ orient(2, LE)        orientation/type marker, e.g. 0x0030, 0x0130, 0x0330, 0x043
 
 The `header` field varies widely between DSN files and is NOT a reliable filter.
 Observed records that survive the structural filters are mostly power-port glyph
-names such as `GND` and `VCC_BAR`, plus junk candidates such as `0` and `AG`.
+names such as `GND`, `VCC_BAR`, `VCC`, and `VCC_CIRCLE`, plus junk candidates
+such as `0` and `AG`.
 `scripts/dsn2kicad` only treats known glyph record names as power-symbol records.
 
 ##### Power-symbol hotpoints
@@ -892,10 +893,14 @@ They encode a derivable electrical hotpoint in the same raw page coordinate
 space as wire endpoints and component pins:
 
 ```
-GND:      x = n4 + 10, y = n2 - 10
-          except orient == 0x0430: x = n4 + 10, y = n0
-VCC_BAR:  x = n4 + 10, y = n5 + 10
-          except orient == 0x0330: x = n4, y = n5 + 10
+GND:              x = n4 + 10, y = n2 - 10
+                  except orient == 0x0430: x = n4 + 10, y = n0
+VCC_BAR:          x = n4 + 10, y = n5 + 10
+                  except orient == 0x0330: x = n4, y = n5 + 10
+VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
+                  orient 0x0330/0x0730: x = n4,      y = n5 + 10
+                  orient 0x0130/0x0530: x = n3,      y = n5 + 10
+                  orient 0x0230:        x = n4 + 10, y = n5
 ```
 
 If a VCC_BAR primary hotpoint misses both wire endpoints and component pins,

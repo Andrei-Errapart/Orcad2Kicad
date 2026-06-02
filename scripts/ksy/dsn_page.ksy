@@ -167,7 +167,8 @@ types:
 
   power_symbol_body:
     doc: |
-      Power-symbol record (GND, VCC_BAR, …). Distinguished from wire and
+      Power-symbol record (GND, VCC_BAR, VCC, VCC_CIRCLE, …).
+      Distinguished from wire and
       component records by:
         - `tag` (4 bytes after marker) is 0
         - The bytes after a 4-byte rec_type and 4-byte header form a
@@ -194,8 +195,12 @@ types:
 
         GND:      x = n4 + 10, y = n2 - 10
                   except orient == 0x0430: x = n4 + 10, y = n0
-        VCC_BAR:  x = n4 + 10, y = n5 + 10
-                  except orient == 0x0330: x = n4, y = n5 + 10
+        VCC_BAR:          x = n4 + 10, y = n5 + 10
+                          except orient == 0x0330: x = n4, y = n5 + 10
+        VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
+                          orient 0x0330/0x0730: x = n4,      y = n5 + 10
+                          orient 0x0130/0x0530: x = n3,      y = n5 + 10
+                          orient 0x0230:        x = n4 + 10, y = n5
 
       If a VCC_BAR primary hotpoint misses both wire endpoints and component
       pins, application code should try the opposite-side candidate

@@ -547,7 +547,7 @@ def _power_symbol_hotpoint_candidates(sym):
     coords = sym.get('coords')
     if not coords or len(coords) != 6:
         return []
-    n0, _n1, n2, _n3, n4, n5 = coords
+    n0, _n1, n2, n3, n4, n5 = coords
     orient = sym.get('orient', 0)
     record_name = sym.get('record_name', sym.get('name', '')).upper()
 
@@ -555,6 +555,16 @@ def _power_symbol_hotpoint_candidates(sym):
         if orient == 0x0430:
             return [(n4 + 10, n0)]
         return [(n4 + 10, n2 - 10)]
+
+    if record_name in ('VCC', 'VCC_CIRCLE'):
+        if orient in (0x0030, 0x0430):
+            return [(n4 + 10, n2)]
+        if orient in (0x0330, 0x0730):
+            return [(n4, n5 + 10)]
+        if orient in (0x0130, 0x0530):
+            return [(n3, n5 + 10)]
+        if orient == 0x0230:
+            return [(n4 + 10, n5)]
 
     if record_name == 'VCC_BAR':
         if orient == 0x0330:
@@ -1193,7 +1203,7 @@ def is_power_symbol_record_name(name):
     VCC_BAR-style records can connect to arbitrary positive supply nets such
     as D5.0V1 or PCIE_3V3.
     """
-    return name.upper() in ('GND', 'VCC_BAR')
+    return name.upper() in ('GND', 'VCC', 'VCC_BAR', 'VCC_CIRCLE')
 
 
 _kicad_native_power = {}

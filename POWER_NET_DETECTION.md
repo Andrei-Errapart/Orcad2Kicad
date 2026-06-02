@@ -47,7 +47,7 @@ ff e4 5c 39          RECORD_MARKER
 rec_type(4, LE)      e.g. 0xE3, 0x039A — varies
 header(4, LE)        e.g. 0x0DAB — varies
 name_len(2, LE)      length of glyph name
-name(name_len)       "GND" or "VCC_BAR"
+name(name_len)       "GND", "VCC_BAR", "VCC", or "VCC_CIRCLE"
 null(1)
 cell_id(4, LE)       instance ID (19M range, sequential)
 n0..n5(6 × i16)      coordinate-like fields used for hotpoint derivation
@@ -118,10 +118,14 @@ property tags...
 The electrical hotpoint can be derived from these values:
 
 ```
-GND:      x = n4 + 10, y = n2 - 10
-          except orient == 0x0430: x = n4 + 10, y = n0
-VCC_BAR:  x = n4 + 10, y = n5 + 10
-          except orient == 0x0330: x = n4, y = n5 + 10
+GND:              x = n4 + 10, y = n2 - 10
+                  except orient == 0x0430: x = n4 + 10, y = n0
+VCC_BAR:          x = n4 + 10, y = n5 + 10
+                  except orient == 0x0330: x = n4, y = n5 + 10
+VCC/VCC_CIRCLE:   orient 0x0030/0x0430: x = n4 + 10, y = n2
+                  orient 0x0330/0x0730: x = n4,      y = n5 + 10
+                  orient 0x0130/0x0530: x = n3,      y = n5 + 10
+                  orient 0x0230:        x = n4 + 10, y = n5
 ```
 
 If the primary VCC_BAR hotpoint does not match a wire endpoint or component pin, try
@@ -134,6 +138,9 @@ VCC_BAR alternate: x = n4, y = n5 + 10
 This alternate is confirmed for the `03_Clock...` VCC_BAR at `(8800, 14200)`, where
 the primary formula gives `(8800, 14200)` and the opposite-side candidate gives the
 actual wire endpoint `(8700, 14200)`.
+
+The `VCC`/`VCC_CIRCLE` formulas are confirmed on `board 0120`;
+all 114 records land exactly on parsed wire endpoints.
 
 Use raw coordinates for matching to `parse_wires()` output. Multiply by 10 only when
 comparing to the DSN-unit values implied by generated KiCad output.

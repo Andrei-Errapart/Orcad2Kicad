@@ -1075,7 +1075,7 @@ _ORCAD_PALETTE_RGBA = [
     '192 192 192 1',   # 45 LightGray            #c0c0c0
     '64 0 64 1',       # 46 VeryDarkMagenta2     #400040
     '255 255 255 1',   # 47 White                #ffffff
-    '0 0 0 0',         # 48 Default (theme)
+    '0 0 0 1',         # 48 Default → explicit black (OrCAD default is black)
 ]
 
 _ORCAD_LINE_WIDTH_MM = {0: 0.15, 1: 0.30, 2: 0.50, 3: 0.15}
@@ -2118,7 +2118,7 @@ def sch_text(txt, x, y, size=1.27, angle=0, justify="left bottom",
         font_inner_lines.append("\t\t\t\t(bold yes)")
     if italic:
         font_inner_lines.append("\t\t\t\t(italic yes)")
-    if rgba and rgba != '0 0 0 0':
+    if rgba:
         font_inner_lines.append(f"\t\t\t\t(color {rgba})")
     font_block = "\t\t\t(font\n" + "\n".join(font_inner_lines) + "\n\t\t\t)\n"
     return (

@@ -912,8 +912,9 @@ The converter uses the resolved record name to choose the KiCad power-symbol
 glyph. For positive power symbols, it first tries to extract matching OrCAD
 `GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
 `VCC_CIRCLE`, etc.); if no extracted glyph is available, it falls back to
-built-in GND, rail/bar, or circle glyphs. GND-style symbols still use the
-controlled KiCad GND triangle path.
+built-in GND, rail/bar, or circle glyphs. Ground-like Cache glyph names such
+as `GND2` and `GND_SIGNAL` are accepted as GND-style power ports. GND-style
+symbols still use the controlled KiCad GND triangle path.
 
 `scripts/dsn2kicad` matches these hotpoints to parsed wire endpoints and
 component pin coordinates. A match resolves the page-local `net_id` and marks

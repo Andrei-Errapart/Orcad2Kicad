@@ -571,7 +571,7 @@ def _power_symbol_logical_anchor(record_name):
     # Fallback for DSNs where the Cache GlobalSymbol record is missing or not
     # yet decoded. This preserves the same logical anchor model without using
     # page-record hotpoint formulas.
-    if record_name in ('GND', 'GND_POWER'):
+    if _power_symbol_record_style(record_name) == 'gnd':
         return (10, 0, 20, 10)
     return (10, 10, 20, 10)
 
@@ -674,14 +674,8 @@ def power_symbol_styles(power_syms):
     for sym in power_syms:
         if not sym.get('matched') or not sym.get('net'):
             continue
-        record_name = sym.get('record_name', '').upper()
-        if record_name == 'GND':
-            style = 'gnd'
-        elif record_name in ('VCC', 'VCC_CIRCLE'):
-            style = 'circle'
-        elif record_name == 'VCC_BAR':
-            style = 'rail'
-        else:
+        style = _power_symbol_record_style(sym.get('record_name', ''))
+        if not style:
             continue
 
         net_name = sym['net']
@@ -1249,8 +1243,22 @@ def _is_gnd_power_name(name):
     """Return True for names that should use the GND triangle glyph."""
     upper = name.upper()
     return (upper in ('GND', 'AGND', 'PGND', 'VSS', 'DGND', 'SGND',
-                      'ADAVSS')
+                      'ADAVSS', 'GROUND')
+            or upper.startswith('GND')
+            or upper.startswith('GROUND')
             or upper.endswith('_VSS'))
+
+
+def _power_symbol_record_style(record_name):
+    """Return the glyph style implied by an OrCAD power-port record name."""
+    record_name = record_name.upper()
+    if _is_gnd_power_name(record_name) or record_name == 'GND_POWER':
+        return 'gnd'
+    if record_name in ('VCC', 'VCC_CIRCLE'):
+        return 'circle'
+    if record_name == 'VCC_BAR':
+        return 'rail'
+    return None
 
 
 def is_power_symbol_record_name(name):
@@ -1260,7 +1268,9 @@ def is_power_symbol_record_name(name):
     VCC_BAR-style records can connect to arbitrary positive supply nets such
     as D5.0V1 or PCIE_3V3.
     """
-    return name.upper() in ('GND', 'VCC', 'VCC_BAR', 'VCC_CIRCLE')
+    upper = name.upper()
+    return (_power_symbol_record_style(upper) is not None
+            or upper in _orcad_power_glyphs)
 
 
 _kicad_native_power = {}
@@ -1397,7 +1407,10 @@ def extract_orcad_power_glyphs(ole):
             glyph = _parse_global_symbol_head(data, offset)
         except Exception:
             continue
-        if not glyph or glyph['name'] not in wanted:
+        if not glyph:
+            continue
+        style = _power_symbol_record_style(glyph['name'])
+        if not style and glyph['name'] not in wanted:
             continue
         # Prefer the first definition encountered; later Cache entries often
         # include unrelated library examples from other projects.
@@ -1672,7 +1685,7 @@ def _power_glyph_anchor(record_name, primitives):
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     anchor_x = (min(xs) + max(xs)) / 2
-    if record_name in ('GND', 'GND_POWER'):
+    if _power_symbol_record_style(record_name) == 'gnd':
         anchor_y = min(ys)
     else:
         anchor_y = max(ys)
@@ -1871,7 +1884,7 @@ def sch_power_symbol(name, x, y, is_ground=False):
         val_y = y - 3.81
     else:
         val_y = y - 2.54
-    val_hide = '\t\t\t\t(hide yes)\n' if is_ground and name == 'GND' else ''
+    val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
 
     return (
         f"\t(symbol\n"

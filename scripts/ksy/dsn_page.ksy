@@ -196,7 +196,7 @@ types:
       page instance transform. Observed power ports use a 20-by-10 logical box
       with `n4,n5` as its origin:
 
-        GND/GND_POWER:       logical anchor (10, 0)
+        GND/GND_POWER/etc.:  logical anchor (10, 0)
         VCC_BAR/VCC/CIRCLE: logical anchor (10, 10)
 
         rot 0: x = n4 + ax,            y = n5 + ay

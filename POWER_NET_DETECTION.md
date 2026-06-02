@@ -146,9 +146,10 @@ all 114 records land exactly on parsed wire endpoints or component pins.
 The resolved record name also selects the emitted KiCad power-symbol geometry.
 For positive power symbols, `scripts/dsn2kicad` first tries to extract matching
 OrCAD `GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
-`VCC_CIRCLE`, etc.) and emits those as project-local KiCad power symbols. If
-extraction is unavailable, it falls back to built-in GND, rail/bar, or circle
-glyphs. GND-style symbols still use the controlled KiCad GND triangle path.
+`VCC_CIRCLE`, etc.) and emits those as project-local KiCad power symbols.
+Ground-like Cache glyph names are also accepted; `board 0005` uses `GND2` for
+the resolved net `GROUND_POWER` and `GND_SIGNAL` for the resolved net of the
+same name. GND-style symbols still use the controlled KiCad GND triangle path.
 
 Use raw coordinates for matching to `parse_wires()` output. Multiply by 10 only when
 comparing to the DSN-unit values implied by generated KiCad output.

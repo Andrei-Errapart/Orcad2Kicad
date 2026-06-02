@@ -835,8 +835,12 @@ def parse_text_annotations(data, paper='A3'):
     sheet number, document-number value, etc. there, and KiCad redraws
     them from the (title_block ...) header.
 
+    Color is stored in the StructGraphicInst wrapper: a FF E4 5C 39
+    marker appears 18 bytes before the text type_word, and the color
+    palette index (uint8) is at marker−37 (same layout as rectangles).
+
     Returns list of dicts:
-      {'text': str, 'x': int, 'y': int, 'style_id': int}
+      {'text': str, 'x': int, 'y': int, 'style_id': int, 'rgba': str}
     where (x, y) is (p3, p4) — the text's anchor in OrCAD 10-mil units.
     Look up the style with `library_styles[style_id - 1]`.
     """
@@ -881,12 +885,23 @@ def parse_text_annotations(data, paper='A3'):
         if x > tb_x and y > tb_y:
             continue
         text = tb.decode('ascii')
+        # Color palette index from StructGraphicInst wrapper:
+        # FF E4 5C 39 marker is 18 bytes before the text type_word,
+        # and the color uint8 is 37 bytes before that marker.
+        marker_pos = idx - 18
+        color_off = marker_pos - 37
+        if color_off >= 0 and data[marker_pos:marker_pos + 4] == b'\xff\xe4\x5c\x39':
+            color_idx = data[color_off]
+            rgba = _ORCAD_PALETTE_RGBA[min(color_idx, 48)]
+        else:
+            rgba = _ORCAD_PALETTE_RGBA[48]
         annotations.append({
             'text': text,
             'x': x,
             'y': y,
             'bbox': (bbox_x1, bbox_y1, bbox_x2, bbox_y2),
             'style_id': style_id,
+            'rgba': rgba,
         })
     return annotations
 
@@ -2085,7 +2100,7 @@ def _pin_label_for_kicad(s):
 
 
 def sch_text(txt, x, y, size=1.27, angle=0, justify="left bottom",
-             bold=False, italic=False, face=None):
+             bold=False, italic=False, face=None, rgba=None):
     """KiCad page-level text. Default justify "left bottom" anchors the
     text at its baseline-left point, matching OrCAD's convention so the
     `(p3, p4)` anchor from the DSN's text record lands correctly.
@@ -2103,6 +2118,8 @@ def sch_text(txt, x, y, size=1.27, angle=0, justify="left bottom",
         font_inner_lines.append("\t\t\t\t(bold yes)")
     if italic:
         font_inner_lines.append("\t\t\t\t(italic yes)")
+    if rgba and rgba != '0 0 0 0':
+        font_inner_lines.append(f"\t\t\t\t(color {rgba})")
     font_block = "\t\t\t(font\n" + "\n".join(font_inner_lines) + "\n\t\t\t)\n"
     return (
         f"\t(text \"{txt_esc}\"\n"
@@ -3986,7 +4003,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 line, lx, ly,
                 size=size, angle=90.0 if rotated else 0.0,
                 bold=bold, italic=italic, face=face,
-                justify="left bottom",
+                justify="left bottom", rgba=t.get('rgba'),
             ))
 
     # Debug overlay: draw bounding boxes around each parsed page-stream

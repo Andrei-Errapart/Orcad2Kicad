@@ -766,7 +766,9 @@ def parse_page_graphics(data, paper='A3'):
             line_width = struct.unpack_from('<I', data, m + 50)[0]
             width_mm = _ORCAD_LINE_WIDTH_MM.get(line_width, 0.15)
             fill_type = struct.unpack_from('<I', data, m + 54)[0]
-            if fill_type == 2:
+            if fill_type == 0:
+                fill = 'color'
+            elif fill_type == 2:
                 fill = 'hatch'
         entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'rgba': rgba,
                  'width': width_mm, 'fill': fill, 'stroke_type': stroke_type}
@@ -3916,11 +3918,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     for r in page_rects or []:
         r_rgba = r.get('rgba', '0 0 0 1')
         r_fill = r.get('fill', 'none')
-        fill_rgba = r_rgba if r_fill == 'hatch' else None
+        fill_rgba = r_rgba if r_fill in ('hatch', 'color') else None
+        stroke_rgba = '0 0 0 1' if r_fill == 'color' else r_rgba
         parts.append(sch_rectangle(
             dsn_to_mm(r['x1']), dsn_to_mm(r['y1']),
             dsn_to_mm(r['x2']), dsn_to_mm(r['y2']),
-            rgba=r_rgba, width=r.get('width', 0.15), fill=r_fill,
+            rgba=stroke_rgba, width=r.get('width', 0.15), fill=r_fill,
             stroke_type=r.get('stroke_type', 'default'),
             fill_color=fill_rgba,
         ))

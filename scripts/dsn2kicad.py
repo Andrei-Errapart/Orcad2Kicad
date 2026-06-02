@@ -805,7 +805,7 @@ ORCAD_PAGE_SIZE = {
 # inside both bands simultaneously is treated as belonging to the title
 # block and dropped.
 TB_REGION_W = 300   # 10-mil units (~76 mm)
-TB_REGION_H = 250   # 10-mil units (~64 mm)
+TB_REGION_H = 150   # 10-mil units (~38 mm)
 
 
 def parse_text_annotations(data, paper='A3'):

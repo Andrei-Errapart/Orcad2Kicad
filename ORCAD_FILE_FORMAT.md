@@ -543,7 +543,7 @@ the "Title-block" subsection of "Page Streams" below.
   | 18-byte prefix between marker and type-word | Identical sequence across every text record on the page. |
   | Full byte-diff of Library records 33 vs 35 (green BI vs red B, both Arial) | Only `tag` (+0) and `italic` flag (+20) differ. No color byte exists. |
   | Library `tag` value as a color discriminator | Tags are **not** unique per Library record (e.g. tag=-13 appears in 5 records, mapped to both black and red texts). So tag alone can't determine color either. |
-  | Page-stream text record vs decorative rectangle style mechanism | Rectangles use a u16 "style index" at offset +50 with 2 values (0=black-thin, 1=red-thick). Text records have no equivalent byte at +50 or any other position that correlates with color. The two mechanisms are unrelated. |
+  | Page-stream text record vs decorative rectangle style mechanism | Rectangles use a u16 "color style" at offset +50 with 2 values (0=black-thin, 1=red-thick). Additional rectangle fields: u32 at +46 encodes line style (0=solid, 1=dashed), u32 at +54 encodes fill type (0=none, 1=solid/outline, 2=diagonal hatch), u32 at +58 is a fill parameter (3 when hatched, 0 otherwise). Text records have no equivalent fields. The two mechanisms are unrelated. |
 
   Our investigation has **not located** the field encoding text
   color anywhere in the DSN streams we currently parse. It may still

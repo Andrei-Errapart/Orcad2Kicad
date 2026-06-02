@@ -36,9 +36,12 @@ Set `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
 Options:
 
 - `--kicad-power` — Use KiCad-native power symbol graphics (VCC chevron, GND
-  triangle) instead of OrCAD-style T-bar symbols. Power nets that exist in
+  triangle) instead of extracted OrCAD glyphs. Power nets that exist in
   KiCad's installed `power.kicad_sym` library use the native definition directly;
   all others are derived from the VCC/GND template with the OrCAD net name.
+  Without this flag, the converter extracts the original OrCAD power symbol
+  glyphs (VCC_BAR, VCC_CIRCLE, GND variants) and embeds them in the symbol
+  library, preserving the schematic's visual appearance.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
@@ -77,8 +80,6 @@ Walks the OLE compound document and prints all parseable records from every stre
 
 ## Current Limitations
 
-- Parsed hierarchy nets and explicit power-symbol records are not yet used as
-  authoritative conversion data.
 - Connector symbols (CON*) show only a body rectangle; the circle/arc pin
   graphics from the original OLB library are not embedded in the DSN Cache.
 - OrCAD format version 2.0 files are not supported (different binary layout).

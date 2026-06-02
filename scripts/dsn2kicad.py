@@ -704,21 +704,17 @@ def parse_page_graphics(data, paper='A3'):
     red border) but the same record layout is used elsewhere.
 
     Layout from marker (FF E4 5C 39):
-      +18..+23  type tag: PAGE_RECT_TYPE_WORD or PAGE_LINE_TYPE_WORD
-      +30..+45  4 × u32 (x1, y1, x2, y2) — line endpoints or rect corners
+      marker-37  u8 color palette index (from StructGraphicInst wrapper;
+                 see _ORCAD_PALETTE_RGBA for the 48-entry color table)
+      +18..+23   type tag: PAGE_RECT_TYPE_WORD or PAGE_LINE_TYPE_WORD
+      +30..+45   4 × i32 (x1, y1, x2, y2) — line endpoints or rect corners
 
     Rectangle-only fields (+46..+61, total record = 62 bytes):
-      +46..+49  u32 line style:
-                  0 = solid stroke
-                  1 = dashed stroke
-      +50..+51  u16 color style:
-                  0 = "normal" — rendered black, thin
-                  1 = "emphasis" — rendered red, thick
-      +54..+57  u32 fill type:
-                  0 = no fill
-                  1 = solid fill (outline)
-                  2 = diagonal hatch fill
-      +58..+61  u32 fill parameter (3 when hatch, 0 otherwise)
+      +46..+49  u32 LineStyle (0=solid, 1=dash, 2=dot, 3=dash-dot, 4=dash-dot-dot)
+      +50..+53  u32 LineWidth (0=thin, 1=medium, 2=wide, 3=default)
+      +54..+57  u32 FillStyle (0=no fill, 1=solid/outline, 2=diagonal hatch)
+      +58..+61  s32 HatchStyle (-1=invalid, 0=horiz, 1=vert, 2=diag-left,
+                3=diag-right, 4=checkerboard, 5=mesh)
 
     Line records are 54 bytes; the +46 fields overlap the next record's
     marker, so style/fill can only be read for rectangles.
@@ -728,8 +724,8 @@ def parse_page_graphics(data, paper='A3'):
     title-block frame from the (title_block ...) data).
 
     Returns (rects, lines, ellipses) where each rect is a dict with keys
-    {x1, y1, x2, y2, color, fill, stroke_type}. Lines/ellipses have
-    {x1, y1, x2, y2, color}.
+    {x1, y1, x2, y2, rgba, width, fill, stroke_type}. Lines/ellipses have
+    {x1, y1, x2, y2, rgba, width}.
     """
     page_w, page_h = ORCAD_PAGE_SIZE.get(paper, (1654, 1170))
     tb_x = page_w - TB_REGION_W
@@ -758,21 +754,22 @@ def parse_page_graphics(data, paper='A3'):
             continue
         if in_tb(x1, y1) and in_tb(x2, y2):
             continue
-        color = 'black'
+        color_idx = data[m - 37] if m >= 37 else 48
+        rgba = _ORCAD_PALETTE_RGBA[min(color_idx, 48)]
+        width_mm = 0.15
         fill = 'none'
         stroke_type = 'default'
         if tag == PAGE_RECT_TYPE_WORD and m + 62 <= len(data):
-            flag = struct.unpack_from('<H', data, m + 50)[0]
-            if flag == 1:
-                color = 'red'
             line_style = struct.unpack_from('<I', data, m + 46)[0]
             if line_style == 1:
                 stroke_type = 'dash'
+            line_width = struct.unpack_from('<I', data, m + 50)[0]
+            width_mm = _ORCAD_LINE_WIDTH_MM.get(line_width, 0.15)
             fill_type = struct.unpack_from('<I', data, m + 54)[0]
             if fill_type == 2:
                 fill = 'hatch'
-        entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color,
-                 'fill': fill, 'stroke_type': stroke_type}
+        entry = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'rgba': rgba,
+                 'width': width_mm, 'fill': fill, 'stroke_type': stroke_type}
         if tag == PAGE_RECT_TYPE_WORD:
             rects.append(entry)
         elif tag == PAGE_ELLIPSE_TYPE_WORD:
@@ -1011,6 +1008,63 @@ _COLOR_RGBA = {
     'magenta': '200 0 200 1',
 }
 
+# OrCAD 48-color palette (index 0–48).  Maps palette index to KiCad RGBA.
+# Index 48 = Default → alpha 0 (use theme color).
+# Source: open_orcad_parser Color.hpp.
+_ORCAD_PALETTE_RGBA = [
+    '255 128 128 1',   # 0  VeryLightRed        #ff8080
+    '255 255 128 1',   # 1  VeryLightYellow      #ffff80
+    '128 255 128 1',   # 2  VeryLightLimeGreen   #80ff80
+    '0 255 128 1',     # 3  Cyan2                #00ff80
+    '128 255 255 1',   # 4  VeryLightCyan        #80ffff
+    '0 128 255 1',     # 5  Blue2                #0080ff
+    '255 128 192 1',   # 6  VeryLightPink        #ff80c0
+    '255 128 255 1',   # 7  VeryLightMagenta     #ff80ff
+    '255 0 0 1',       # 8  Red                  #ff0000
+    '255 255 0 1',     # 9  Yellow               #ffff00
+    '128 255 0 1',     # 10 Green                #80ff00
+    '0 255 64 1',      # 11 Cyan1                #00ff40
+    '0 255 255 1',     # 12 Cyan3                #00ffff
+    '0 128 192 1',     # 13 StrongBlue           #0080c0
+    '128 128 192 1',   # 14 SlightlyDesatBlue    #8080c0
+    '255 0 255 1',     # 15 Magenta              #ff00ff
+    '128 64 64 1',     # 16 DarkModerateRed      #804040
+    '255 128 64 1',    # 17 LightOrange          #ff8040
+    '0 255 0 1',       # 18 LimeGreen2           #00ff00
+    '0 128 128 1',     # 19 DarkCyan             #008080
+    '0 64 128 1',      # 20 DarkBlue2            #004080
+    '128 128 255 1',   # 21 VeryLightBlue        #8080ff
+    '128 0 64 1',      # 22 DarkPink             #800040
+    '255 0 128 1',     # 23 Pink                 #ff0080
+    '128 0 0 1',       # 24 DarkRed              #800000
+    '255 128 0 1',     # 25 Orange               #ff8000
+    '0 128 0 1',       # 26 DarkLimeGreen        #008000
+    '0 128 64 1',      # 27 LimeGreen1           #008040
+    '0 0 255 1',       # 28 Blue1                #0000ff
+    '0 0 160 1',       # 29 DarkBlue1            #0000a0
+    '128 0 128 1',     # 30 DarkMagenta          #800080
+    '128 0 255 1',     # 31 Violet               #8000ff
+    '64 0 0 1',        # 32 VeryDarkRed          #400000
+    '128 64 0 1',      # 33 DarkOrange           #804000
+    '0 64 0 1',        # 34 VeryDarkLimeGreen    #004000
+    '0 64 64 1',       # 35 VeryDarkCyan         #004040
+    '0 0 128 1',       # 36 VeryDarkBlue2        #000080
+    '0 0 64 1',        # 37 VeryDarkBlue1        #000040
+    '64 0 64 1',       # 38 VeryDarkMagenta1     #400040
+    '64 0 128 1',      # 39 DarkViolet           #400080
+    '0 0 0 1',         # 40 Black                #000000
+    '128 128 0 1',     # 41 DarkYellow           #808000
+    '128 128 64 1',    # 42 DarkModerateYellow   #808040
+    '128 128 128 1',   # 43 DarkGray             #808080
+    '64 128 128 1',    # 44 DarkModerateCyan     #408080
+    '192 192 192 1',   # 45 LightGray            #c0c0c0
+    '64 0 64 1',       # 46 VeryDarkMagenta2     #400040
+    '255 255 255 1',   # 47 White                #ffffff
+    '0 0 0 0',         # 48 Default (theme)
+]
+
+_ORCAD_LINE_WIDTH_MM = {0: 0.15, 1: 0.30, 2: 0.50, 3: 0.15}
+
 
 # Optional: use freetype-py to measure exact text widths, so we can size
 # each free-text record to fit its OrCAD bounding box. Falls back to a
@@ -1129,11 +1183,12 @@ def measure_text_width(s, size_mm, face_name='Arial', bold=False, italic=False):
     return total / upem * size_mm
 
 
-def sch_polyline(points, color='black', width=0.15):
+def sch_polyline(points, color='black', width=0.15, rgba=None):
     """A KiCad polyline (page-level graphical line). points = [(x, y), ...]."""
     uid = new_uuid()
     pts = " ".join(f"(xy {x:.2f} {y:.2f})" for x, y in points)
-    rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
+    if rgba is None:
+        rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
     return (
         f"\t(polyline\n"
         f"\t\t(pts {pts})\n"
@@ -1148,10 +1203,15 @@ def sch_polyline(points, color='black', width=0.15):
 
 
 def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15, fill='none',
-                  stroke_type='default'):
+                  stroke_type='default', rgba=None, fill_color=None):
     """KiCad rectangle graphical primitive on a schematic page."""
     uid = new_uuid()
-    rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
+    if rgba is None:
+        rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
+    fill_part = f'(fill (type {fill})'
+    if fill_color:
+        fill_part += f' (color {fill_color})'
+    fill_part += ')'
     return (
         f"\t(rectangle\n"
         f"\t\t(start {x1:.2f} {y1:.2f})\n"
@@ -1161,21 +1221,22 @@ def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15, fill='none',
         f"\t\t\t(type {stroke_type})\n"
         f"\t\t\t(color {rgba})\n"
         f"\t\t)\n"
-        f"\t\t(fill (type {fill}))\n"
+        f"\t\t{fill_part}\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
     )
 
 
-def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32):
+def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None):
     """KiCad ellipse as a circle or polyline approximation on a schematic page."""
     cx = (x1 + x2) / 2
     cy = (y1 + y2) / 2
     rx = abs(x2 - x1) / 2
     ry = abs(y2 - y1) / 2
+    if rgba is None:
+        rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
     if abs(rx - ry) < 0.01:
         uid = new_uuid()
-        rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
         return (
             f"\t(circle\n"
             f"\t\t(center {cx:.2f} {cy:.2f})\n"
@@ -1193,7 +1254,7 @@ def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32):
     for i in range(n + 1):
         angle = 2 * math.pi * i / n
         pts.append((cx + rx * math.cos(angle), cy + ry * math.sin(angle)))
-    return sch_polyline(pts, color=color, width=width)
+    return sch_polyline(pts, color=color, width=width, rgba=rgba)
 
 
 def sch_junction(x, y):
@@ -3836,32 +3897,30 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # (0.36 pt black vs 1.08 pt red). Dashed stroke and hatch fill
     # are preserved from the binary record fields.
     for r in page_rects or []:
-        col = r.get('color', 'black')
-        width = 0.30 if col == 'red' else 0.15
+        r_rgba = r.get('rgba', '0 0 0 1')
+        r_fill = r.get('fill', 'none')
+        fill_rgba = r_rgba if r_fill == 'hatch' else None
         parts.append(sch_rectangle(
             dsn_to_mm(r['x1']), dsn_to_mm(r['y1']),
             dsn_to_mm(r['x2']), dsn_to_mm(r['y2']),
-            color=col, width=width, fill=r.get('fill', 'none'),
+            rgba=r_rgba, width=r.get('width', 0.15), fill=r_fill,
             stroke_type=r.get('stroke_type', 'default'),
+            fill_color=fill_rgba,
         ))
 
     # Decorative lines (INDEX table dividers, etc.).
     for ln in page_lines or []:
-        col = ln.get('color', 'black')
-        width = 0.30 if col == 'red' else 0.15
         parts.append(sch_polyline(
             [(dsn_to_mm(ln['x1']), dsn_to_mm(ln['y1'])),
              (dsn_to_mm(ln['x2']), dsn_to_mm(ln['y2']))],
-            color=col, width=width,
+            rgba=ln.get('rgba', '0 0 0 1'), width=ln.get('width', 0.15),
         ))
 
     for el in page_ellipses or []:
-        col = el.get('color', 'black')
-        width = 0.30 if col == 'red' else 0.15
         parts.append(sch_ellipse(
             dsn_to_mm(el['x1']), dsn_to_mm(el['y1']),
             dsn_to_mm(el['x2']), dsn_to_mm(el['y2']),
-            color=col, width=width,
+            rgba=el.get('rgba', '0 0 0 1'), width=el.get('width', 0.15),
         ))
 
     styles = library_styles or []

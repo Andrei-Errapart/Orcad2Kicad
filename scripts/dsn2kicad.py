@@ -669,20 +669,22 @@ def resolve_power_symbol_nets(power_syms, wires, components):
 
 
 def power_symbol_styles(power_syms):
-    """Return {net_name: glyph_style} from resolved OrCAD power records."""
+    """Return {net_name: (glyph_style, record_name)} from resolved OrCAD power records."""
     styles = {}
     for sym in power_syms:
         if not sym.get('matched') or not sym.get('net'):
             continue
-        style = _power_symbol_record_style(sym.get('record_name', ''))
+        record_name = sym.get('record_name', '')
+        style = _power_symbol_record_style(record_name)
         if not style:
             continue
 
         net_name = sym['net']
-        if styles.get(net_name) == 'gnd':
+        existing = styles.get(net_name)
+        if existing and existing[0] == 'gnd':
             continue
         if style == 'gnd' or net_name not in styles:
-            styles[net_name] = style
+            styles[net_name] = (style, record_name)
     return styles
 
 
@@ -1707,6 +1709,14 @@ def lib_symbol_power_extracted(name, record_name, glyph):
     name_esc = _esc_kicad_str(name)
     primitives = glyph.get('primitives', [])
     anchor_x, anchor_y = _power_glyph_anchor(record_name, primitives)
+    is_gnd = _power_symbol_record_style(record_name) == 'gnd'
+
+    if is_gnd:
+        ref_y = -6.35
+        val_y = -3.81
+    else:
+        ref_y = -2.54
+        val_y = 2.286
 
     parts = [
         f'\t\t(symbol "power:{name_esc}"\n',
@@ -1719,7 +1729,7 @@ def lib_symbol_power_extracted(name, record_name, glyph):
         '\t\t\t(in_bom yes)\n',
         '\t\t\t(on_board yes)\n',
         '\t\t\t(property "Reference" "#PWR"\n',
-        '\t\t\t\t(at 0 -2.54 0)\n',
+        f'\t\t\t\t(at 0 {ref_y} 0)\n',
         '\t\t\t\t(effects\n',
         '\t\t\t\t\t(font\n',
         '\t\t\t\t\t\t(size 1.27 1.27)\n',
@@ -1728,7 +1738,7 @@ def lib_symbol_power_extracted(name, record_name, glyph):
         '\t\t\t\t)\n',
         '\t\t\t)\n',
         f'\t\t\t(property "Value" "{name_esc}"\n',
-        '\t\t\t\t(at 0 2.286 0)\n',
+        f'\t\t\t\t(at 0 {val_y} 0)\n',
         '\t\t\t\t(effects\n',
         '\t\t\t\t\t(font\n',
         '\t\t\t\t\t\t(size 1.27 1.27)\n',
@@ -1817,11 +1827,12 @@ def lib_symbol_power_extracted(name, record_name, glyph):
                 '\t\t\t\t)\n',
             ])
 
+    pin_angle = 270 if is_gnd else 90
     parts.extend([
         '\t\t\t)\n',
         f'\t\t\t(symbol "{name_esc}_1_1"\n',
         '\t\t\t\t(pin power_in line\n',
-        '\t\t\t\t\t(at 0 0 90)\n',
+        f'\t\t\t\t\t(at 0 0 {pin_angle})\n',
         '\t\t\t\t\t(length 0)\n',
         f'\t\t\t\t\t(name "{name_esc}"\n',
         '\t\t\t\t\t\t(effects\n',
@@ -1846,12 +1857,20 @@ def lib_symbol_power_extracted(name, record_name, glyph):
 
 def lib_symbol_for_power_name(name, power_symbol_styles=None):
     """Return the project-local KiCad symbol definition for a power net."""
-    style = (power_symbol_styles or {}).get(name)
+    entry = (power_symbol_styles or {}).get(name)
+    if isinstance(entry, tuple):
+        style, record_name = entry
+    else:
+        style, record_name = entry, None
     if _is_gnd_power_name(name) or style == 'gnd':
+        if record_name and record_name in _orcad_power_glyphs:
+            return lib_symbol_power_extracted(
+                name, record_name, _orcad_power_glyphs[record_name])
         if _use_kicad_power and name == 'GND':
             return _kicad_native_power.get('GND') or lib_symbol_power_gnd()
         return lib_symbol_power_gnd(name)
-    record_name = _power_glyph_record_name(style)
+    if not record_name:
+        record_name = _power_glyph_record_name(style)
     if record_name and record_name in _orcad_power_glyphs:
         return lib_symbol_power_extracted(
             name, record_name, _orcad_power_glyphs[record_name])

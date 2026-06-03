@@ -90,6 +90,90 @@ def snap_to_grid(val_mm, grid=GRID_MM):
     return round(val_mm / grid) * grid
 
 
+def _top_level_child_spans(sexpr_text):
+    """Yield (start, end) spans for direct children of the root S-expression."""
+    depth = 0
+    child_start = None
+    in_string = False
+    escape = False
+
+    for i, ch in enumerate(sexpr_text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == '(':
+            if depth == 1:
+                child_start = i
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 1 and child_start is not None:
+                yield child_start, i + 1
+                child_start = None
+
+
+def _replace_power_reference_in_block(block, ref):
+    block = re.sub(
+        r'(\(property\s+"Reference"\s+")#PWR\d*(")',
+        rf'\g<1>{ref}\2',
+        block,
+        count=1,
+    )
+    block = re.sub(
+        r'(\(reference\s+")#PWR\d*(")',
+        rf'\g<1>{ref}\2',
+        block,
+        count=1,
+    )
+    return block
+
+
+def annotate_power_references_in_schematic(content, start_index=1):
+    """Assign deterministic unique references to top-level power symbols.
+
+    KiCad annotates power symbols as hidden references such as #PWR0001 when
+    opening a schematic. Doing it here keeps generated projects ready to open
+    and makes test snapshots repeatable.
+
+    Returns (annotated_content, next_index).
+    """
+    replacements = []
+    next_index = start_index
+
+    for start, end in _top_level_child_spans(content):
+        block = content[start:end]
+        if not block.startswith('(symbol') and not block.startswith('\t(symbol'):
+            continue
+        if not re.search(r'\(\s*lib_id\s+"power:', block):
+            continue
+        ref = f"#PWR{next_index:04d}"
+        new_block = _replace_power_reference_in_block(block, ref)
+        if new_block != block:
+            replacements.append((start, end, new_block))
+        next_index += 1
+
+    if not replacements:
+        return content, next_index
+
+    parts = []
+    pos = 0
+    for start, end, new_block in replacements:
+        parts.append(content[pos:start])
+        parts.append(new_block)
+        pos = end
+    parts.append(content[pos:])
+    return ''.join(parts), next_index
+
+
 # ---------------------------------------------------------------------------
 # DSN file parsing
 # ---------------------------------------------------------------------------
@@ -5414,6 +5498,7 @@ def main():
     project_power_names = set()
     project_power_symbol_styles = {}
     project_used_cells = set()
+    power_ref_index = 1
 
     for i, stream_path in enumerate(page_streams):
         page_key = stream_path.split("/")[-1]
@@ -5461,6 +5546,8 @@ def main():
             power_net_names=page_power_names,
             power_symbol_styles=page_power_styles,
         )
+        content, power_ref_index = annotate_power_references_in_schematic(
+            content, power_ref_index)
         (output_dir / filename).write_text(content, encoding='utf-8')
 
         page_filenames.append(filename)

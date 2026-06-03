@@ -89,6 +89,55 @@ def test_sch_power_symbol_vcc(dsn2kicad):
     assert "power:VCC" in ps
 
 
+def test_annotate_power_references_assigns_sequential_refs(dsn2kicad):
+    content = (
+        "(kicad_sch\n"
+        + dsn2kicad.sch_power_symbol("GND", 0, 0, True)
+        + dsn2kicad.sch_power_symbol("VCC", 10, 20, False)
+        + ")\n"
+    )
+
+    annotated, next_index = dsn2kicad.annotate_power_references_in_schematic(
+        content)
+
+    assert next_index == 3
+    assert '(property "Reference" "#PWR0001"' in annotated
+    assert '(reference "#PWR0001")' in annotated
+    assert '(property "Reference" "#PWR0002"' in annotated
+    assert '(reference "#PWR0002")' in annotated
+
+
+def test_annotate_power_references_is_repeatable(dsn2kicad):
+    content = (
+        "(kicad_sch\n"
+        + dsn2kicad.sch_power_symbol("GND", 0, 0, True)
+        + dsn2kicad.sch_power_symbol("VCC", 10, 20, False)
+        + ")\n"
+    )
+
+    first, _ = dsn2kicad.annotate_power_references_in_schematic(content)
+    second, next_index = dsn2kicad.annotate_power_references_in_schematic(first)
+
+    assert second == first
+    assert next_index == 3
+
+
+def test_annotate_power_references_leaves_lib_symbols_unannotated(dsn2kicad):
+    content = (
+        "(kicad_sch\n"
+        "\t(lib_symbols\n"
+        + dsn2kicad.lib_symbol_power_gnd()
+        + "\t)\n"
+        + dsn2kicad.sch_power_symbol("GND", 0, 0, True)
+        + ")\n"
+    )
+
+    annotated, _ = dsn2kicad.annotate_power_references_in_schematic(content)
+
+    assert annotated.count('(property "Reference" "#PWR"') == 1
+    assert annotated.count('(property "Reference" "#PWR0001"') == 1
+
+
 def test_sch_component_basic(dsn2kicad):
     c = dsn2kicad.sch_component("R1", "R", 10.0, 20.0)
     assert "(symbol" in c

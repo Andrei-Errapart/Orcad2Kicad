@@ -695,6 +695,49 @@ TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
 PAGE_RECT_TYPE_WORD = b'\x01\x00\x28\x28\x28\x00'    # "decorative rectangle"
 PAGE_LINE_TYPE_WORD = b'\x01\x00\x29\x29\x20\x00'    # "line segment"
 PAGE_ELLIPSE_TYPE_WORD = b'\x01\x00\x2b\x2b\x28\x00' # "ellipse / circle"
+PAGE_POLYGON_TYPE_WORD = b'\x01\x00\x2c\x2c\x2e\x00' # "filled polygon" (LED triangles)
+
+
+def _parse_page_polygon(data, m, rgba):
+    """Decode a page-level filled-polygon record (0x2c2c).
+
+    Used for the small filled triangles OrCAD draws as LED indicators on
+    block-diagram pages. Each triangle is stored as *two* polygon records
+    with identical vertices: a solid colored one (FillStyle 0) plus a
+    darker outline-only one (FillStyle 1) — the same paired-record idiom
+    as the block-diagram background rectangles.
+
+    Layout from the marker `m`:
+      m+38  u32 FillStyle (0=solid color fill, 1=outline only)
+      m+46  u16 vertex count
+      m+48  vertices as u16 (y, x) pairs (OrCAD 10-mil units) — the
+            coordinates are stored swapped, the same as the Cache 0x2c2c
+            polygon records.
+
+    The raw vertex list repeats the first point to close the path (and may
+    carry a trailing duplicate); both are collapsed here. Returns a dict
+    {'points': [(x, y), ...], 'rgba': str, 'fill': 'color'|'none'} or None
+    if the record is malformed.
+    """
+    if m + 48 > len(data):
+        return None
+    n = struct.unpack_from('<H', data, m + 46)[0]
+    if not (3 <= n <= 64) or m + 48 + n * 4 > len(data):
+        return None
+    # Stored as (y, x); reverse each pair to get (x, y).
+    raw = [struct.unpack_from('<HH', data, m + 48 + i * 4)[::-1] for i in range(n)]
+    # Collapse consecutive duplicates and the closing duplicate vertex.
+    pts = []
+    for v in raw:
+        if not pts or pts[-1] != v:
+            pts.append(v)
+    if len(pts) > 1 and pts[-1] == pts[0]:
+        pts.pop()
+    if len(pts) < 3:
+        return None
+    fill_style = struct.unpack_from('<I', data, m + 38)[0]
+    fill = 'color' if fill_style == 0 else 'none'
+    return {'points': pts, 'rgba': rgba, 'fill': fill}
 
 
 def parse_page_graphics(data, paper='A3'):
@@ -723,9 +766,10 @@ def parse_page_graphics(data, paper='A3'):
     bottom-right corner of the page are filtered out (KiCad redraws the
     title-block frame from the (title_block ...) data).
 
-    Returns (rects, lines, ellipses) where each rect is a dict with keys
-    {x1, y1, x2, y2, rgba, width, fill, stroke_type}. Lines/ellipses have
-    {x1, y1, x2, y2, rgba, width}.
+    Returns (rects, lines, ellipses, polygons). Each rect is a dict with
+    keys {x1, y1, x2, y2, rgba, width, fill, stroke_type}. Lines/ellipses
+    have {x1, y1, x2, y2, rgba, width}. Polygons have {points, rgba, fill}
+    (see _parse_page_polygon).
     """
     page_w, page_h = ORCAD_PAGE_SIZE.get(paper, (1654, 1170))
     tb_x = page_w - TB_REGION_W
@@ -737,8 +781,10 @@ def parse_page_graphics(data, paper='A3'):
     rects = []
     lines = []
     ellipses = []
+    polygons = []
     pos = 0
-    known_tags = (PAGE_RECT_TYPE_WORD, PAGE_LINE_TYPE_WORD, PAGE_ELLIPSE_TYPE_WORD)
+    known_tags = (PAGE_RECT_TYPE_WORD, PAGE_LINE_TYPE_WORD,
+                  PAGE_ELLIPSE_TYPE_WORD, PAGE_POLYGON_TYPE_WORD)
     while True:
         m = data.find(b'\xff\xe4\x5c\x39', pos)
         if m < 0:
@@ -749,13 +795,18 @@ def parse_page_graphics(data, paper='A3'):
         tag = data[m + 18:m + 24]
         if tag not in known_tags:
             continue
+        color_idx = data[m - 37] if m >= 37 else 48
+        rgba = _ORCAD_PALETTE_RGBA[min(color_idx, 48)]
+        if tag == PAGE_POLYGON_TYPE_WORD:
+            poly = _parse_page_polygon(data, m, rgba)
+            if poly and not all(in_tb(x, y) for x, y in poly['points']):
+                polygons.append(poly)
+            continue
         x1, y1, x2, y2 = struct.unpack_from('<iiii', data, m + 30)
         if any(abs(v) > 30000 for v in (x1, y1, x2, y2)):
             continue
         if in_tb(x1, y1) and in_tb(x2, y2):
             continue
-        color_idx = data[m - 37] if m >= 37 else 48
-        rgba = _ORCAD_PALETTE_RGBA[min(color_idx, 48)]
         width_mm = 0.15
         fill = 'none'
         stroke_type = 'default'
@@ -778,7 +829,7 @@ def parse_page_graphics(data, paper='A3'):
             ellipses.append(entry)
         else:
             lines.append(entry)
-    return rects, lines, ellipses
+    return rects, lines, ellipses, polygons
 
 
 # OrCAD page sizes in 10-mil units (paper-name → (width, height)).
@@ -1214,6 +1265,37 @@ def sch_polyline(points, color='black', width=0.15, rgba=None):
         f"\t\t\t(type default)\n"
         f"\t\t\t(color {rgba})\n"
         f"\t\t)\n"
+        f"\t\t(uuid \"{uid}\")\n"
+        f"\t)\n"
+    )
+
+
+def sch_filled_polygon(points, rgba='0 0 0 1', width=0.15, fill='none',
+                       fill_color=None):
+    """A KiCad closed polyline (filled polygon) on a schematic page.
+
+    points = [(x, y), ...] open vertex list; the path is closed by
+    repeating the first vertex (so a triangle emits 4 points). With
+    fill='color' and fill_color set, the interior is painted — used for
+    OrCAD filled polygons such as the LED indicator triangles on block
+    diagrams.
+    """
+    uid = new_uuid()
+    closed = list(points) + [points[0]]
+    pts = " ".join(f"(xy {x:.2f} {y:.2f})" for x, y in closed)
+    fill_part = f'(fill (type {fill})'
+    if fill_color:
+        fill_part += f' (color {fill_color})'
+    fill_part += ')'
+    return (
+        f"\t(polyline\n"
+        f"\t\t(pts {pts})\n"
+        f"\t\t(stroke\n"
+        f"\t\t\t(width {width})\n"
+        f"\t\t\t(type default)\n"
+        f"\t\t\t(color {rgba})\n"
+        f"\t\t)\n"
+        f"\t\t{fill_part}\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
     )
@@ -3625,6 +3707,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                       net_table, global_nets, texts=None, title_block=None,
                       sheet_number=None, total_sheets=None,
                       page_rects=None, page_lines=None, page_ellipses=None,
+                      page_polygons=None,
                       library_styles=None, debug_bbox=False,
                       net_aliases=None, power_net_names=None,
                       power_symbol_styles=None):
@@ -3941,6 +4024,19 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             dsn_to_mm(el['x1']), dsn_to_mm(el['y1']),
             dsn_to_mm(el['x2']), dsn_to_mm(el['y2']),
             rgba=el.get('rgba', '0 0 0 1'), width=el.get('width', 0.15),
+        ))
+
+    # Decorative filled polygons (LED indicator triangles on block
+    # diagrams). Like the colored rects, a solid-filled polygon gets a
+    # black stroke; the paired outline-only record keeps its own color.
+    for poly in page_polygons or []:
+        p_rgba = poly.get('rgba', '0 0 0 1')
+        p_fill = poly.get('fill', 'none')
+        fill_rgba = p_rgba if p_fill == 'color' else None
+        stroke_rgba = '0 0 0 1' if p_fill == 'color' else p_rgba
+        parts.append(sch_filled_polygon(
+            [(dsn_to_mm(x), dsn_to_mm(y)) for x, y in poly['points']],
+            rgba=stroke_rgba, fill=p_fill, fill_color=fill_rgba,
         ))
 
     styles = library_styles or []
@@ -5344,7 +5440,8 @@ def main():
         page_power_names.update(
             name for name in net_table.values() if name in library_power_names)
         texts = parse_text_annotations(data, paper)
-        page_rects, page_lines, page_ellipses = parse_page_graphics(data, paper)
+        page_rects, page_lines, page_ellipses, page_polygons = \
+            parse_page_graphics(data, paper)
         aliases = parse_net_aliases(data, net_table)
 
         seed_uuid_rng(dsn_bytes, filename)
@@ -5357,6 +5454,7 @@ def main():
             page_rects=page_rects,
             page_lines=page_lines,
             page_ellipses=page_ellipses,
+            page_polygons=page_polygons,
             library_styles=library_styles,
             debug_bbox=debug_bbox,
             net_aliases=aliases,

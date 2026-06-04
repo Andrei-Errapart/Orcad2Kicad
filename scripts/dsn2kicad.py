@@ -48,9 +48,6 @@ UNIT_TO_MM = 0.254
 # OrCAD GlobalSymbol primitive coordinates use 5 mil units.
 POWER_SYMBOL_UNIT_TO_MM = 0.127
 
-# KiCad schematic grid
-GRID_MM = 2.54
-
 # Record marker in DSN page streams
 RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
 
@@ -84,10 +81,6 @@ def new_uuid():
 
 def dsn_to_mm(coord):
     return round(coord * UNIT_TO_MM, 2)
-
-
-def snap_to_grid(val_mm, grid=GRID_MM):
-    return round(val_mm / grid) * grid
 
 
 def _top_level_child_spans(sexpr_text):
@@ -3416,77 +3409,6 @@ def get_lib_symbol(cell_name):
 
 VERTICAL_BODY_CELLS = {'R', 'C'}
 
-def _rename_multi_unit_pins(cache_cells):
-    """Rename page-stream numeric pins for multi-unit cells using Cache names.
-
-    Page-stream register_cell_pins assigns numeric names (1, 2, ...).
-    This matches them to Cache pins by relative position pattern and
-    substitutes the proper Cache pin names.
-    """
-    for cell_name in _multi_unit_cell_map:
-        page_pins = _cell_pin_defs.get(cell_name)
-        raw_cache = cache_cells.get(cell_name)
-        if not page_pins or not raw_cache:
-            continue
-        # Cache pin positions in OrCAD coords and their names
-        chxs = [p[1] for p in raw_cache]
-        chys = [p[2] for p in raw_cache]
-        cx = (min(chxs) + max(chxs)) / 2
-        cy = (min(chys) + max(chys)) / 2
-        # Convert Cache to page-equivalent symbol mm coords:
-        # X same direction, Y flipped (Cache Y-up → page/KiCad Y-down)
-        cache_syms = []
-        for raw_pin in raw_cache:
-            pin_name, hx, hy = raw_pin[:3]
-            sx = round((hx - cx) * UNIT_TO_MM, 2)
-            sy = round((cy - hy) * UNIT_TO_MM, 2)
-            cache_syms.append((pin_name, sx, sy))
-        # Match by trying all offsets between page and cache pin sets
-        page_pts = [(p[1], p[2]) for p in page_pins]
-        TOL = 2.0
-        best_map = {}
-        best_count = 0
-        seen = set()
-        for pi, (psx, psy) in enumerate(page_pts):
-            for cname, csx, csy in cache_syms:
-                okey = (round(psx - csx, 1), round(psy - csy, 1))
-                if okey in seen:
-                    continue
-                seen.add(okey)
-                ox, oy = psx - csx, psy - csy
-                m = {}
-                for pk, (psx2, psy2) in enumerate(page_pts):
-                    for cn2, csx2, csy2 in cache_syms:
-                        if (abs(ox + csx2 - psx2) < TOL
-                                and abs(oy + csy2 - psy2) < TOL):
-                            m[pk] = cn2
-                            break
-                if len(m) > best_count:
-                    best_count = len(m)
-                    best_map = m
-        # Apply name mapping
-        name_counts = {}
-        for idx, cname in best_map.items():
-            name_counts[cname] = name_counts.get(cname, 0) + 1
-        name_seen = {}
-        new_pins = []
-        for i, p in enumerate(page_pins):
-            if i in best_map:
-                cname = best_map[i]
-                if name_counts[cname] > 1:
-                    idx = name_seen.get(cname, 0) + 1
-                    name_seen[cname] = idx
-                    unique = f"{cname}_{idx}"
-                else:
-                    unique = cname
-                pin_flags = p[6] if len(p) > 6 else None
-                new_pins.append((unique, p[1], p[2], cname, p[4], p[5],
-                                 pin_flags))
-            else:
-                new_pins.append(p)
-        _cell_pin_defs[cell_name] = new_pins
-
-
 def orient_to_angle(orient_byte, cell_name):
     """Convert OrCAD orientation byte to KiCad angle in degrees.
 
@@ -4442,18 +4364,6 @@ def _emit_symbol_rectangle(parts, x1, y1, x2, y2):
     parts.append('\t\t\t\t\t)\n')
     parts.append('\t\t\t\t\t(fill\n')
     parts.append('\t\t\t\t\t\t(type background)\n')
-    parts.append('\t\t\t\t\t)\n')
-    parts.append('\t\t\t\t)\n')
-
-
-def _emit_symbol_text(parts, x, y, text, angle=0):
-    text_esc = _esc_kicad_str(text)
-    parts.append(f'\t\t\t\t(text "{text_esc}"\n')
-    parts.append(f'\t\t\t\t\t(at {x:.2f} {y:.2f} {angle})\n')
-    parts.append('\t\t\t\t\t(effects\n')
-    parts.append('\t\t\t\t\t\t(font\n')
-    parts.append('\t\t\t\t\t\t\t(size 1.27 1.27)\n')
-    parts.append('\t\t\t\t\t\t)\n')
     parts.append('\t\t\t\t\t)\n')
     parts.append('\t\t\t\t)\n')
 

@@ -92,7 +92,8 @@ class TestInverseRotate:
         assert dsn2kicad._inverse_rotate(10, 5, 0x04) == (-10, 5)
 
     def test_mirrored_90(self, dsn2kicad):
-        assert dsn2kicad._inverse_rotate(10, 5, 0x05) == (-5, -10)
+        # 0x05 = mirror (flip X) + 90° CW; inverse of _forward_rotate(10,5,0x05)=(5,10)
+        assert dsn2kicad._inverse_rotate(10, 5, 0x05) == (5, 10)
 
 
 class TestForwardRotate:

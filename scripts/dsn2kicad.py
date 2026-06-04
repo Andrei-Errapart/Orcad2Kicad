@@ -16,7 +16,8 @@ Generates KiCad schematic files (.kicad_sch) with:
   - Text annotations
 
 Usage:
-    scripts/dsn2kicad [--kicad-power] [--debug-bbox] <file.DSN> [output_dir]
+    scripts/dsn2kicad [--kicad-power] [--debug-bbox] [--debug-ref-val]
+                      [--debug-symbol] <file.DSN> [output_dir]
 """
 
 import json

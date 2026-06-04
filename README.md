@@ -22,7 +22,7 @@ pip install olefile
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--debug-bbox] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
@@ -43,6 +43,18 @@ Options:
   glyphs (VCC_BAR, VCC_CIRCLE, GND variants) and embeds them in the symbol
   library, preserving the schematic's visual appearance.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
+- `--debug-ref-val` — Overlay text-placement markers on every component: a red
+  circle at the instance origin (`loc`) tagged with the mirror flag (`H`/`V`), plus
+  a smaller green circle at each Reference/Value display-prop position tagged with
+  its text rotation. Used to diff text placement against the OrCAD PDF.
+- `--debug-symbol` — Draw each symbol's bounding box (the Cache `SymbolBBox`, the
+  pivot for ref/value placement) as a light-blue rectangle.
+
+Reference and Value text is placed to match the OrCAD render: each field is
+mirrored and rotated about the symbol's bounding-box centre, and its KiCad text
+justification is chosen so the label anchors on the same corner OrCAD uses. The
+`--debug-ref-val` / `--debug-symbol` overlays help verify this against the
+original PDF.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the
@@ -83,6 +95,10 @@ Walks the OLE compound document and prints all parseable records from every stre
 - Connector symbols (CON*) show only a body rectangle; the circle/arc pin
   graphics from the original OLB library are not embedded in the DSN Cache.
 - OrCAD format version 2.0 files are not supported (different binary layout).
+- Reference/Value text on 90°/270° symbols with horizontal text can sit ~1.8 mm
+  off the OrCAD position: OrCAD snaps the rotated body half a grid while keeping
+  the text on the placement point, and that grid-snap is not yet modelled exactly.
+  Vertical text on rotated symbols is unaffected.
 
 ## Tests
 

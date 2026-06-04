@@ -75,7 +75,7 @@ Walks the OLE compound document and prints all parseable records from every stre
 ## Documentation
 
 - [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — DSN binary format specification
-- [PDF_COLORS.md](PDF_COLORS.md) — OrCAD schematic PDF color map
+- [ORCAD_PDF_FORMAT.md](ORCAD_PDF_FORMAT.md) — OrCAD PDF format: colors and wire geometry
 - [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN and OLB streams
 
 ## Current Limitations

@@ -129,7 +129,7 @@ class TestCacheGraphics:
         struct.pack_into('<hhh', record, 28, 0, 0, 10)
         struct.pack_into('<hhh', record, 34, 0, 10, 10)
 
-        rects, lines, ellipses, arcs, polys, anns = dsn2kicad._parse_cache_graphics(
+        rects, lines, ellipses, arcs, polys, _plines, anns = dsn2kicad._parse_cache_graphics(
             bytes(record), 0, len(record))
 
         assert rects == []
@@ -146,7 +146,7 @@ class TestCacheGraphics:
         for idx, point in enumerate([(2, 32), (2, 32), (0, 36), (4, 34), (2, 32)]):
             struct.pack_into('<hh', record, 28 + idx * 4, *point)
 
-        *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+        *_, polys, _plines, _anns = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
 
         assert polys == [[(32, 2), (36, 0), (34, 4)]]
 
@@ -158,7 +158,7 @@ class TestCacheGraphics:
         for idx, point in enumerate(points):
             struct.pack_into('<hh', record, 28 + idx * 4, *point)
 
-        _, lines, *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+        _, lines, *_, polys, _plines, _anns = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
 
         assert lines == [(13, 10, 13, 4)]
         assert polys == [[(13, 10), (3, 15), (3, 4)]]
@@ -171,7 +171,7 @@ class TestCacheGraphics:
         for idx, point in enumerate(points):
             struct.pack_into('<hh', record, 28 + idx * 4, *point)
 
-        *_, polys, _ = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
+        *_, polys, _plines, _anns = dsn2kicad._parse_cache_graphics(bytes(record), 0, len(record))
 
         assert polys == [[(40, 32), (33, 29), (35, 27), (36, 25)]]
 

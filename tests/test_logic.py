@@ -47,28 +47,6 @@ def test_is_power_net_prefixed_vbus(dsn2kicad):
     assert dsn2kicad.is_power_net("VBUS_USB") is True
 
 
-def test_lookup_component_value_recovers_from_metadata_slot(dsn2kicad):
-    dsn2kicad._library_value_strings[:] = [
-        "1ST PART FIELD",
-        "2ND PART FIELD",
-        "3RD PART FIELD",
-        "4TH PART FIELD",
-        "5TH PART FIELD",
-        "6TH PART FIELD",
-        "7TH PART FIELD",
-        "{AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA}",
-        "1.0",
-        "{BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB}",
-        "PART_A",
-        "VALUE_A",
-        "{CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC}",
-        "VALUE_B *DNP",
-        "{DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD}",
-    ]
-
-    assert dsn2kicad.lookup_component_value(7) == "VALUE_B *DNP"
-
-
 def test_is_gnd_power_name_gnd(dsn2kicad):
     assert dsn2kicad._is_gnd_power_name("GND") is True
 

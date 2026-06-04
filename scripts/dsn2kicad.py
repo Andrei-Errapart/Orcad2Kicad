@@ -48,6 +48,10 @@ UNIT_TO_MM = 0.254
 # OrCAD GlobalSymbol primitive coordinates use 5 mil units.
 POWER_SYMBOL_UNIT_TO_MM = 0.127
 
+# KiCad's outline-font renderer scales glyphs by this factor, so a `(size H H)`
+# renders ~1.4*H tall. Divide a target rendered height by it when emitting (size).
+KICAD_FONT_SIZE_COMPENSATION = 1.4
+
 # Record marker in DSN page streams
 RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
 
@@ -445,6 +449,10 @@ def parse_components(data, net_table=None):
         raw_x = struct.unpack_from('<h', data, cell_end + 6)[0]
         raw_y = struct.unpack_from('<h', data, cell_end + 8)[0]
         x, y = raw_x, raw_y
+        # Instance placement point (OrCAD StructPlacedInstance locX/locY); the
+        # display-prop (ref/value) text offsets are anchored relative to this.
+        loc_x = struct.unpack_from('<h', data, cell_end + 12)[0]
+        loc_y = struct.unpack_from('<h', data, cell_end + 14)[0]
 
         orient_byte = 0
         orient_search = data[cell_end + 16:cell_end + 22]
@@ -479,8 +487,12 @@ def parse_components(data, net_table=None):
         #   first  = reference position offset
         #   second = value position offset
         # Record format: MARKER(4) + zeros(4) + type_le32(4) + x(int16) + y(int16)
-        #                + flags(2) + ...
-        # Byte at offset 17 (flags byte 1): 0x40 = text rotated 90°.
+        #                + rotFontId(uint16) + ...
+        # Per OpenOrCadParser StructSymbolDisplayProp, the uint16 at offset 16 is
+        # {textFontIdx: bits 0-13, rotation: bits 14-15}; rotation is a 2-bit enum
+        # (0/90/180/270) = the top 2 bits of byte 17. The display-prop x is always
+        # 0 (ref/value are centred horizontally on the part); only y + rotation
+        # carry placement, so we ignore the heuristic x.
         _pos_records = []
         rp = cell_end
         rp_end = min(cell_end + 200, search_end)
@@ -493,26 +505,54 @@ def parse_components(data, net_table=None):
             if rz == 0 and rt < 0x100:
                 rx = struct.unpack_from('<h', data, ri + 12)[0]
                 ry = struct.unpack_from('<h', data, ri + 14)[0]
-                rot = 90 if (data[ri + 17] & 0x40) else 0
-                _pos_records.append((rx, ry, rot))
+                b16 = data[ri + 16]
+                b17 = data[ri + 17]
+                rot = ((b17 >> 6) & 0x3) * 90
+                _pos_records.append((rx, ry, rot, b16, b17))
             rp = ri + 4
+
+        if os.environ.get('DSNDEBUG_POS') and _pos_records:
+            sys.stderr.write(
+                f"POS\t{ref_name}\torient={orient_byte:#04x}\tcell={cell_name}\t"
+                f"raw=({raw_x},{raw_y})\tloc=({loc_x},{loc_y})\t"
+                + "\t".join(f"({r[0]},{r[1]},rot{r[2]},b16={r[3]:#04x},"
+                            f"b17={r[4]:#04x})" for r in _pos_records)
+                + "\n")
 
         # Refine component position from pin matching.
         # ox, oy = Cache body origin (0,0) in page coordinates.
+        # OrCAD mirrors a symbol about the centre of its bounding box, so mirror
+        # the cache-local coords about (bbox.x1 + bbox.x2). With the correct mirror
+        # axis the reconstructed origin lands on `loc` (no drift), so the text —
+        # which is anchored off this origin — falls into place for mirrored parts.
         origin_x, origin_y = None, None
         cache_pl = _cell_pin_lists.get(cell_name)
+        # Mirror/rotate about the symbol's bbox centre (the body centre); fall
+        # back to the pin-extent centre when no bbox is stored (e.g. the cache C).
+        # (The pin-extent centre alone is wrong for single-pin parts, where it is
+        # the pin itself rather than the symbol centre.)
+        _mbox = _cell_bboxes.get(cell_name)
+        if _mbox:
+            center = ((_mbox[0] + _mbox[2]) / 2.0, (_mbox[1] + _mbox[3]) / 2.0)
+        elif cache_pl:
+            _pxs = [p[0] for p in cache_pl]
+            _pys = [p[1] for p in cache_pl]
+            center = ((min(_pxs) + max(_pxs)) / 2.0,
+                      (min(_pys) + max(_pys)) / 2.0)
+        else:
+            center = (0.0, 0.0)
         if cache_pl and pins:
             origins = []
             for pnum, px, py in pins:
                 if 1 <= pnum <= len(cache_pl):
                     chx, chy = cache_pl[pnum - 1]
-                    rhx, rhy = _forward_rotate(chx, chy, orient_byte)
+                    rhx, rhy = _forward_rotate(chx, chy, orient_byte, center)
                     origins.append((px - rhx, py - rhy))
             if origins:
                 origin_x = sum(o[0] for o in origins) / len(origins)
                 origin_y = sum(o[1] for o in origins) / len(origins)
                 cc = _cell_centers[cell_name]
-                rcc_x, rcc_y = _forward_rotate(cc[0], cc[1], orient_byte)
+                rcc_x, rcc_y = _forward_rotate(cc[0], cc[1], orient_byte, center)
                 x = round(origin_x + rcc_x)
                 y = round(origin_y + rcc_y)
             else:
@@ -527,6 +567,13 @@ def parse_components(data, net_table=None):
             x = round(origin_x)
             y = round(origin_y)
 
+        if os.environ.get('DSNDEBUG_ORIGIN') and origin_x is not None:
+            sys.stderr.write(
+                f"ORG\t{ref_name}\torient={orient_byte:#04x}\t"
+                f"loc=({loc_x},{loc_y})\t"
+                f"pinorigin=({origin_x:.0f},{origin_y:.0f})\t"
+                f"diff=({origin_x-loc_x:.0f},{origin_y-loc_y:.0f})\n")
+
         # Convert offsets to absolute page positions using the component origin.
         # For Cache-defined cells, origin comes from pin matching.
         # For built-in cells (R, C), fall back to raw cell position.
@@ -534,13 +581,22 @@ def parse_components(data, net_table=None):
         val_pos = None
         ref_text_angle = None
         val_text_angle = None
+        text_origin = None
+        ref_off = None
+        val_off = None
         if len(_pos_records) >= 2:
             ox = origin_x if origin_x is not None else raw_x
             oy = origin_y if origin_y is not None else raw_y
-            ref_pos = (ox + _pos_records[0][0],
-                       oy + _pos_records[0][1])
-            val_pos = (ox + _pos_records[1][0],
-                       oy + _pos_records[1][1])
+            # Text anchor: OrCAD stores ref/value offsets relative to loc, but for
+            # 90/270 it snaps the body to grid. A non-mirrored part keeps its text
+            # on loc (the body snapped away under it); a mirrored part carries the
+            # text with the snapped/mirrored body. For 0/180 loc == origin either
+            # way, so this only matters for the rotated family.
+            text_origin = (loc_x, loc_y)
+            ref_off = (_pos_records[0][0], _pos_records[0][1])
+            val_off = (_pos_records[1][0], _pos_records[1][1])
+            ref_pos = (ox + ref_off[0], oy + ref_off[1])
+            val_pos = (ox + val_off[0], oy + val_off[1])
             ref_text_angle = _pos_records[0][2]
             val_text_angle = _pos_records[1][2]
 
@@ -555,6 +611,11 @@ def parse_components(data, net_table=None):
             'ref_text_angle': ref_text_angle,
             'val_text_angle': val_text_angle,
             'val_pos': val_pos,
+            'text_origin': text_origin,
+            'ref_off': ref_off,
+            'val_off': val_off,
+            'origin': (origin_x, origin_y) if origin_x is not None else None,
+            'center': center,
             'value_idx': value_idx,
             'pin_nets': pin_nets,
         })
@@ -1147,10 +1208,11 @@ def sch_bus_entry(x, y, sx, sy):
 # Color RGBA values for graphical primitives. KiCad uses (color R G B A)
 # inside (stroke ...) — alpha 0 means "use default theme color".
 _COLOR_RGBA = {
-    'black':   '0 0 0 1',
-    'red':     '200 0 0 1',
-    'green':   '0 128 0 1',
-    'magenta': '200 0 200 1',
+    'black':     '0 0 0 1',
+    'red':       '200 0 0 1',
+    'green':     '0 128 0 1',
+    'magenta':   '200 0 200 1',
+    'lightblue': '120 170 255 1',
 }
 
 # OrCAD 48-color palette (index 0–48).  Maps palette index to KiCad RGBA.
@@ -1328,6 +1390,35 @@ def measure_text_width(s, size_mm, face_name='Arial', bold=False, italic=False):
     return total / upem * size_mm
 
 
+def measure_text_height(s, size_mm, face_name='Arial', bold=False, italic=False):
+    """Return the rendered glyph-bbox height of `s` in mm at KiCad `size_mm`.
+
+    The height is the vertical extent of the inked glyphs (max ascent above the
+    baseline minus min descent below), so e.g. an all-caps/digit string reports
+    its cap height. Falls back to `size_mm` if no font face is available.
+    """
+    if not s:
+        return 0.0
+    face = _get_font_face(face_name, bold, italic)
+    if face is None:
+        return size_mm
+    upem = face.units_per_EM
+    face.set_char_size(int(upem))
+    top, bot = None, None
+    for ch in s:
+        if ch == ' ':
+            continue
+        face.load_char(ch, _freetype.FT_LOAD_NO_BITMAP | _freetype.FT_LOAD_NO_SCALE)
+        m = face.glyph.metrics
+        gtop = m.horiBearingY               # above baseline (+)
+        gbot = m.horiBearingY - m.height    # below baseline (can be -)
+        top = gtop if top is None else max(top, gtop)
+        bot = gbot if bot is None else min(bot, gbot)
+    if top is None:
+        return size_mm
+    return (top - bot) / upem * size_mm
+
+
 def sch_polyline(points, color='black', width=0.15, rgba=None):
     """A KiCad polyline (page-level graphical line). points = [(x, y), ...]."""
     uid = new_uuid()
@@ -1345,6 +1436,34 @@ def sch_polyline(points, color='black', width=0.15, rgba=None):
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
     )
+
+
+def _sch_circle(cx, cy, radius, rgba, width=0.1, fill_rgba=None):
+    """A KiCad circle on a schematic page; filled if fill_rgba is given."""
+    uid = new_uuid()
+    fill = f"(fill (type color) (color {fill_rgba}))" if fill_rgba \
+        else "(fill (type none))"
+    return (
+        f"\t(circle\n"
+        f"\t\t(center {cx:.2f} {cy:.2f})\n"
+        f"\t\t(radius {radius:.2f})\n"
+        f"\t\t(stroke\n"
+        f"\t\t\t(width {width})\n"
+        f"\t\t\t(type default)\n"
+        f"\t\t\t(color {rgba})\n"
+        f"\t\t)\n"
+        f"\t\t{fill}\n"
+        f"\t\t(uuid \"{uid}\")\n"
+        f"\t)\n"
+    )
+
+
+def _debug_marker(cx, cy, rgba, radius, dot=0.3):
+    """An open circle of `radius` with a filled centre dot, for debug overlays.
+    Concentric markers of different radii stay distinguishable when overlapping.
+    """
+    return (_sch_circle(cx, cy, radius, rgba, width=0.12)
+            + _sch_circle(cx, cy, dot, rgba, width=0.05, fill_rgba=rgba))
 
 
 def sch_filled_polygon(points, rgba='0 0 0 1', width=0.15, fill='none',
@@ -2495,13 +2614,22 @@ def _inverse_rotate(dx, dy, orient_byte):
     return (dx, dy)
 
 
-def _forward_rotate(dx, dy, orient_byte):
+def _forward_rotate(dx, dy, orient_byte, center=(0, 0)):
     """Apply OrCAD orient (mirror then CW rotation) to a symbol-local offset.
 
     Takes a (dx, dy) in cache-local coords and returns the equivalent
     (dx, dy) in page-stream coords after the component's orient is applied.
     OrCAD applies mirror first (flip X), then rotates.
+
+    center: the point the symbol is mirrored/rotated about. OrCAD pivots about
+    the centre of the symbol bounding box (so the pins stay put when editing),
+    NOT the origin — pass the bbox centre. The default (0, 0) keeps the old
+    "about the origin" behaviour. Pivoting about the true centre makes the
+    reconstructed origin land on `loc`, which is what the text is anchored to.
     """
+    cx, cy = center
+    dx -= cx
+    dy -= cy
     if orient_byte & 0x04:
         dx = -dx
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
@@ -2512,7 +2640,7 @@ def _forward_rotate(dx, dy, orient_byte):
         dx, dy = (-dx, -dy)
     elif orcad_angle == 270:
         dx, dy = (-dy, dx)
-    return (dx, dy)
+    return (dx + cx, dy + cy)
 
 
 def collect_pin_positions(components):
@@ -3227,10 +3355,10 @@ def lib_symbol_multi_unit(base_name, unit_map):
 
 
 # Map OrCAD cell names to KiCad library symbol info
-CELL_TO_KICAD = {
-    'R': ('R', 'R', lib_symbol_R),
-    'C': ('C', 'C', lib_symbol_C),
-}
+# R and C are NOT mapped to KiCad built-ins: their drawings live in the DSN Cache
+# (a horizontal zig-zag / parallel plates), so they go through the generic cache
+# path to preserve the OrCAD look-and-feel (and pick up the bbox-centre mirror).
+CELL_TO_KICAD = {}
 
 
 # Cell definitions built from pin data: {cell_name: [(pin_num, sym_x_mm, sym_y_mm), ...]}
@@ -3259,6 +3387,10 @@ _cell_centers = {}
 # Cache pins in original order: {cell_name: [(hot_x, hot_y), ...]}
 # Pin at index i corresponds to page-stream pin_num = i+1
 _cell_pin_lists = {}
+
+# OrCAD symbol bounding box (body extent) in cache units, same frame as the pin
+# hot-points: {cell_name: (x1, y1, x2, y2)}.  Debug overlay (--debug-symbol).
+_cell_bboxes = {}
 
 # Pin extension deltas in symbol-local mm: {cell_name: {pin_num: (dx, dy)}}
 # Populated by lib_symbol_from_pins when pins are extended for readability.
@@ -3407,7 +3539,9 @@ def get_lib_symbol(cell_name):
             lambda name=cell_name: lib_symbol_generic_fallback(name))
 
 
-VERTICAL_BODY_CELLS = {'R', 'C'}
+# Empty: R/C now use their OrCAD (horizontal) Cache drawing, so no vertical-body
+# remap is needed. (KiCad's built-in R/C were vertical, which is why this existed.)
+VERTICAL_BODY_CELLS = set()
 
 def orient_to_angle(orient_byte, cell_name):
     """Convert OrCAD orientation byte to KiCad angle in degrees.
@@ -3433,14 +3567,85 @@ def orient_to_angle(orient_byte, cell_name):
     return orcad_angle
 
 
+def _default_text_style(library_styles):
+    """Reference/Value text style for a DSN, derived from the font-style table.
+
+    OrCAD ref/value records carry no per-instance font, so use the modal
+    regular-weight Arial style (its LOGFONT lfHeight lives in `tag`). The emitted
+    KiCad `(size)` is |lfHeight| in DSN units → mm (UNIT_TO_MM) divided by KiCad's
+    1.4 outline-font compensation. Returns (size_mm, face, bold, italic).
+    """
+    counts = {}
+    for s in (library_styles or []):
+        if s.get('weight', 400) != 400 or s.get('italic'):
+            continue
+        face = s.get('face') or ''
+        if face not in ('', 'Arial'):
+            continue
+        key = (abs(s.get('tag', 0)), face)
+        counts[key] = counts.get(key, 0) + 1
+    if counts:
+        (lfh, face), _ = max(counts.items(), key=lambda kv: kv[1])
+        if lfh:
+            return (lfh * UNIT_TO_MM / KICAD_FONT_SIZE_COMPENSATION,
+                    face or 'Arial', False, False)
+    return (1.27, 'Arial', False, False)
+
+
+# Justify token for a Reference/Value field, keyed on (symbol_angle, mirror,
+# text_rotation). KiCad transforms a symbol field's justify by the symbol's
+# rotation+mirror, so to anchor OrCAD's top-left we emit the token that maps back
+# to it. Derived empirically (board 0001 page 3); '' = centre vertically.
+_JUSTIFY_LUT = {
+    (0,   False, 0):  'left top',
+    (90,  False, 0):  'right bottom',
+    (90,  False, 90): 'right top',
+    (180, False, 0):  'right bottom',
+    (270, False, 0):  'left top',
+    (270, False, 90): 'left',
+    (0,   True,  0):  'right top',
+    (270, True,  0):  'right top',
+    (270, True,  90): 'left',
+}
+
+
+def _justify_for(angle, mirror, text_rot):
+    """KiCad justify token for a ref/value field at this orientation."""
+    return _JUSTIFY_LUT.get(
+        (int(angle) % 360, bool(mirror), int(text_rot or 0) % 360),
+        'right top' if mirror else 'left top')
+
+
+def _text_center_mm(origin, off, text, orient_byte,
+                    size_mm, face, bold, italic):
+    """Page-space (mm) anchor of a Reference/Value text, emitted centre-justified.
+
+    Per OpenOrCadParser, OrCAD stores no horizontal text offset (display-prop x
+    is always 0): ref/value are centred horizontally on the part, with only the
+    vertical offset `off[1]` (DSN units). Rotate the local (0, y) anchor by the
+    component orient and add the page-space origin. Centre justify makes the
+    result invariant to how KiCad rotates/mirrors the field.
+    """
+    if off is None:
+        return None
+    ax, ay = _forward_rotate(0.0, dsn_to_mm(off[1]), orient_byte)
+    return (dsn_to_mm(origin[0]) + ax, dsn_to_mm(origin[1]) + ay)
+
+
 def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
                   ref_pos=None, val_pos=None,
+                  ref_center=None, val_center=None,
                   ref_text_angle=None, val_text_angle=None,
-                  unit=1, mirror_x=False, dnp=False):
+                  unit=1, mirror_x=False, dnp=False,
+                  text_size_mm=1.27, text_face=None,
+                  text_bold=False, text_italic=False):
     """Generate a KiCad component instance (symbol placement).
 
-    ref_pos/val_pos: absolute KiCad mm positions for Reference/Value text.
-    If None, uses default offsets from the component center.
+    ref_center/val_center: absolute KiCad mm position of the text bbox centre.
+    When given, the field is emitted centre-justified at that point, which is
+    invariant to the symbol's rotation/mirror (preferred).
+    ref_pos/val_pos: legacy top-left anchor (left-top justify); used only as a
+    fallback when no centre is available.
     unit: 1-based unit number for multi-unit symbols.
     mirror_x: if True, emit (mirror x) to flip the symbol horizontally.
     """
@@ -3449,14 +3654,18 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
     val = value if value else lib_id
     val_esc = _esc_kicad_str(val)
 
-    if ref_pos is not None:
+    if ref_center is not None:
+        ref_x, ref_y = ref_center
+    elif ref_pos is not None:
         ref_x, ref_y = ref_pos[0], ref_pos[1] + 0.5
     else:
         ref_x, ref_y = x + 2.54, y
         if angle == 90 or angle == 270:
             ref_x, ref_y = x, y + 2.54
 
-    if val_pos is not None:
+    if val_center is not None:
+        val_x, val_y = val_center
+    elif val_pos is not None:
         val_x, val_y = val_pos[0], val_pos[1] + 0.5
     else:
         val_x, val_y = x - 2.54, y
@@ -3476,7 +3685,23 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
     if val_angle >= 180:
         val_angle -= 180
 
+    def _font_block(indent):
+        out = [f"{indent}(font\n"]
+        if text_face:
+            out.append(f'{indent}\t(face "{_esc_kicad_str(text_face)}")\n')
+        out.append(f"{indent}\t(size {text_size_mm:.4f} {text_size_mm:.4f})\n")
+        if text_bold:
+            out.append(f"{indent}\t(bold yes)\n")
+        if text_italic:
+            out.append(f"{indent}\t(italic yes)\n")
+        out.append(f"{indent})\n")
+        return "".join(out)
+
     mirror_line = "\t\t(mirror y)\n" if mirror_x else ""
+    # KiCad transforms a field's justify by the symbol rotation+mirror; pick the
+    # token (per orientation + text rotation) that maps back to OrCAD's anchor.
+    ref_just = _justify_for(angle, mirror_x, ref_text_angle)
+    val_just = _justify_for(angle, mirror_x, val_text_angle)
     parts = [
         f"\t(symbol\n"
         f"\t\t(lib_id \"{lib_id}\")\n"
@@ -3491,19 +3716,17 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         f"\t\t(property \"Reference\" \"{ref_esc}\"\n"
         f"\t\t\t(at {ref_x:.2f} {ref_y:.2f} {ref_angle})\n"
         f"\t\t\t(effects\n"
-        f"\t\t\t\t(font\n"
-        f"\t\t\t\t\t(size 1.27 1.27)\n"
-        f"\t\t\t\t)\n"
-        + (f"\t\t\t\t(justify left top)\n" if ref_pos is not None else "")
+        + _font_block("\t\t\t\t")
+        + (f"\t\t\t\t(justify {ref_just})\n"
+           if ref_center is None and ref_pos is not None else "")
         + f"\t\t\t)\n"
         f"\t\t)\n"
         f"\t\t(property \"Value\" \"{val_esc}\"\n"
         f"\t\t\t(at {val_x:.2f} {val_y:.2f} {val_angle})\n"
         f"\t\t\t(effects\n"
-        f"\t\t\t\t(font\n"
-        f"\t\t\t\t\t(size 1.27 1.27)\n"
-        f"\t\t\t\t)\n"
-        + (f"\t\t\t\t(justify left top)\n" if val_pos is not None else "")
+        + _font_block("\t\t\t\t")
+        + (f"\t\t\t\t(justify {val_just})\n"
+           if val_center is None and val_pos is not None else "")
         + f"\t\t\t)\n"
         f"\t\t)\n"
     ]
@@ -3715,10 +3938,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                       page_rects=None, page_lines=None, page_ellipses=None,
                       page_polygons=None,
                       library_styles=None, debug_bbox=False,
+                      debug_ref_val=False, debug_symbol=False,
                       net_aliases=None, power_net_names=None,
                       power_symbol_styles=None):
     """Generate a complete KiCad schematic page from parsed DSN data."""
     parts = []
+    rv_size, rv_face, rv_bold, rv_italic = _default_text_style(library_styles)
     tb = title_block or {}
     # Map OrCAD title-block fields into KiCad's slots:
     #   OrCAD Title       → KiCad (title ...)
@@ -3908,6 +4133,11 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         if comp['cell'] in _multi_unit_cell_map:
             _, comp_unit = _multi_unit_cell_map[comp['cell']]
         mirror_x = bool(comp['orient'] & 0x04)
+        # NOTE: the centre-anchor model (_text_center_mm, driven by the authoritative
+        # OrCAD display-prop) is parked — translating the stored (x≡0, y, rotation)
+        # into the *rendered* position still needs the rotation/mirror-dependent
+        # horizontal anchor worked out (see STATE.md). Emit the baseline
+        # (heuristic offset + left-top), which is correct for un-rotated parts.
         parts.append(sch_component(ref, lib_id, x, y, angle, comp_value,
                                    pin_numbers=pin_nums,
                                    ref_pos=(dsn_to_mm(rp[0]), dsn_to_mm(rp[1])) if rp else None,
@@ -3916,7 +4146,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                                    val_text_angle=comp.get('val_text_angle'),
                                    unit=comp_unit,
                                    mirror_x=mirror_x,
-                                   dnp=comp_dnp))
+                                   dnp=comp_dnp,
+                                   text_size_mm=rv_size, text_face=rv_face,
+                                   text_bold=rv_bold, text_italic=rv_italic))
 
     # Power-symbol glyphs are emitted at wire endpoints that lie on a
     # power net AND are not stuck on a component pin (otherwise every
@@ -4145,6 +4377,61 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 vx, vy = dsn_to_mm(vp[0]), dsn_to_mm(vp[1])
                 parts.append(sch_rectangle(vx, vy, vx + sz, vy + sz,
                                            color='yellow', width=0.10))
+
+    # Debug overlay for the ref/value text anchoring investigation:
+    #   red circle+dot  = instance placement point (loc)
+    #   green circle+dot (slightly smaller) = Reference/Value display-prop anchor
+    #       (x=0, y rotated by the part orient), with a green number = the 2-bit
+    #       rotation. The differing radii stay readable when the two overlap.
+    if debug_ref_val:
+        red = _COLOR_RGBA['red']
+        green = _COLOR_RGBA['green']
+        for comp in components:
+            torg = comp.get('text_origin')   # = loc (DSN units)
+            if torg is None:
+                continue
+            orient = comp['orient']
+            lx, ly = dsn_to_mm(torg[0]), dsn_to_mm(torg[1])
+            parts.append(_debug_marker(lx, ly, red, radius=2.2, dot=0.4))
+            # Mirror flag next to the loc circle. OrCAD has only a horizontal
+            # mirror bit (0x04 -> KiCad (mirror y)); there is no separate vertical
+            # flip flag (a vertical flip is this bit + 180 rotation). loc itself is
+            # mirror-invariant, so the flag explains why a mirrored part (e.g. CN1)
+            # is misplaced even though its anchor circle sits in the right spot.
+            if orient & 0x04:
+                parts.append(sch_text('H', lx - 2.6, ly + 0.7, size=1.6,
+                                      justify='right bottom', rgba=red))
+            for off, rot in ((comp.get('ref_off'), comp.get('ref_text_angle')),
+                             (comp.get('val_off'), comp.get('val_text_angle'))):
+                if off is None:
+                    continue
+                vx, vy = _forward_rotate(0, off[1], orient)
+                ax, ay = dsn_to_mm(torg[0] + vx), dsn_to_mm(torg[1] + vy)
+                parts.append(_debug_marker(ax, ay, green, radius=0.9, dot=0.2))
+                parts.append(sch_text(
+                    str(rot if rot is not None else 0), ax + 1.6, ay,
+                    size=1.0, justify='left bottom', rgba=green))
+
+    # Debug overlay: the OrCAD symbol bounding box (body extent) as a lightblue
+    # rectangle. The bbox is in cache units (pin frame); transform its corners by
+    # the component orient and add the pin-matched origin to map it to the page.
+    if debug_symbol:
+        for comp in components:
+            box = _cell_bboxes.get(comp['cell'])
+            origin = comp.get('origin')
+            if not box or origin is None:
+                continue
+            x1, y1, x2, y2 = box
+            ctr = comp.get('center', (0, 0))
+            xs, ys = [], []
+            for cx, cy in ((x1, y1), (x2, y1), (x2, y2), (x1, y2)):
+                rx, ry = _forward_rotate(cx, cy, comp['orient'], ctr)
+                xs.append(origin[0] + rx)
+                ys.append(origin[1] + ry)
+            parts.append(sch_rectangle(
+                dsn_to_mm(min(xs)), dsn_to_mm(min(ys)),
+                dsn_to_mm(max(xs)), dsn_to_mm(max(ys)),
+                color='lightblue', width=0.1))
 
     parts.append(sch_footer())
     return "".join(parts)
@@ -4750,6 +5037,30 @@ def parse_cache_pin_visibility(ole):
     return result
 
 
+def parse_cache_bboxes(ole):
+    """{cell_name: (x1, y1, x2, y2)} symbol body bbox from Cache LibraryParts,
+    in cache units (same frame as the pin hot-points)."""
+    try:
+        data = ole.openstream('Cache').read()
+    except Exception:
+        return {}
+    from olb_parser import DataStream, read_library_part
+    result = {}
+    for m in _LP_STRUCT_RE.finditer(data):
+        struct_start = m.start() + 10
+        try:
+            lp = read_library_part(DataStream(data[struct_start:struct_start + 8000]))
+            if not lp.bbox:
+                continue
+            name = lp.name[:-7] if lp.name.endswith('.Normal') else lp.name
+            box = (lp.bbox.x1, lp.bbox.y1, lp.bbox.x2, lp.bbox.y2)
+            for key in (name, name.rsplit(' ', 1)[-1]):
+                result.setdefault(key, box)
+        except Exception:
+            pass
+    return result
+
+
 def register_cache_cells(cache_cells, cache_body_rects=None,
                          cache_body_lines=None,
                          cache_pin_numbers=None,
@@ -5254,13 +5565,21 @@ def main():
     if "--debug-bbox" in argv:
         debug_bbox = True
         argv.remove("--debug-bbox")
+    debug_ref_val = False
+    if "--debug-ref-val" in argv:
+        debug_ref_val = True
+        argv.remove("--debug-ref-val")
+    debug_symbol = False
+    if "--debug-symbol" in argv:
+        debug_symbol = True
+        argv.remove("--debug-symbol")
     global _use_kicad_power
     if "--kicad-power" in argv:
         _use_kicad_power = True
         argv.remove("--kicad-power")
     if not argv:
-        print(f"Usage: {sys.argv[0]} [--debug-bbox] [--kicad-power] "
-              f"<file.DSN> [output_dir]",
+        print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
+              f"[--debug-symbol] [--kicad-power] <file.DSN> [output_dir]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -5353,6 +5672,7 @@ def main():
     _cell_text_annotations.clear()
     _cell_centers.clear()
     _cell_pin_lists.clear()
+    _cell_bboxes.clear()
     _pin_extension_deltas.clear()
     _cache_pin_visibility.clear()
     _orcad_power_glyphs.clear()
@@ -5361,6 +5681,7 @@ def main():
         glyph_names = ", ".join(sorted(_orcad_power_glyphs))
         print(f"  OrCAD power glyphs: {glyph_names}")
     _cache_pin_visibility.update(parse_cache_pin_visibility(ole))
+    _cell_bboxes.update(parse_cache_bboxes(ole))
     (cache_cells, cache_body_rects, cache_body_lines, cache_pin_numbers,
      cache_text_annotations, cache_body_ellipses, cache_body_arcs,
      cache_body_polygons, cache_body_polylines) = parse_cache_cells(ole)
@@ -5452,6 +5773,8 @@ def main():
             page_polygons=page_polygons,
             library_styles=library_styles,
             debug_bbox=debug_bbox,
+            debug_ref_val=debug_ref_val,
+            debug_symbol=debug_symbol,
             net_aliases=aliases,
             power_net_names=page_power_names,
             power_symbol_styles=page_power_styles,

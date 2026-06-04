@@ -135,11 +135,14 @@ class TestDirectionFromVector:
 
 
 class TestOrientToAngle:
+    # R/C now use their OrCAD (horizontal) Cache drawing, so they are no longer in
+    # VERTICAL_BODY_CELLS: a resistor follows the plain orient mapping like any
+    # other cell (orient 0 -> 0 degrees, orient 0x01 -> 90).
     def test_resistor_default(self, dsn2kicad):
-        assert dsn2kicad.orient_to_angle(0x00, 'R') == 90
+        assert dsn2kicad.orient_to_angle(0x00, 'R') == 0
 
     def test_resistor_90(self, dsn2kicad):
-        assert dsn2kicad.orient_to_angle(0x01, 'R') == 0
+        assert dsn2kicad.orient_to_angle(0x01, 'R') == 90
 
     def test_generic_default(self, dsn2kicad):
         assert dsn2kicad.orient_to_angle(0x00, 'IC1') == 0

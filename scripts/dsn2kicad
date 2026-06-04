@@ -29,7 +29,11 @@ if [ ! -x "$VENV_DIR/bin/python3" ]; then
     echo "Creating OrCAD2KiCad virtualenv at $VENV_DIR" >&2
     python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
-    "$VENV_DIR/bin/python3" -m pip install --quiet olefile
+    "$VENV_DIR/bin/python3" -m pip install --quiet olefile freetype-py
 fi
+
+# freetype-py gives faithful text metrics; install it if this venv predates it.
+"$VENV_DIR/bin/python3" -c "import freetype" 2>/dev/null \
+    || "$VENV_DIR/bin/python3" -m pip install --quiet freetype-py
 
 exec "$VENV_DIR/bin/python3" "$PY_SCRIPT" "$@"

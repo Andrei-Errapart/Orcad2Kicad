@@ -638,11 +638,34 @@ def parse_power_symbols(data, net_table):
 
     Power symbol records follow:
       marker + zeros(4) + rec_type(4) + header(4) + name_len(2) + name + null
-      + cell_id(4) + x(2) + y(2) + ...
+      + cell_id(4) + StructGraphicInst placement fields + display props
 
     Distinguished from component records by: marker is followed by 4 zero bytes,
     and the name does NOT end with ".Normal".
     """
+    def _parse_display_props(start, count):
+        props = []
+        pos = start
+        for _ in range(count):
+            # SymbolDisplayProp has variable/prefix bytes before its preamble.
+            idx = data.find(RECORD_MARKER, pos, min(pos + 80, len(data)))
+            if idx < 0 or idx + 19 > len(data):
+                break
+            name_idx = struct.unpack_from('<I', data, idx + 8)[0]
+            x_off = struct.unpack_from('<h', data, idx + 12)[0]
+            y_off = struct.unpack_from('<h', data, idx + 14)[0]
+            rot_font = struct.unpack_from('<H', data, idx + 16)[0]
+            props.append({
+                'name_idx': name_idx,
+                'x': x_off,
+                'y': y_off,
+                'rotation': ((rot_font >> 14) & 0x03) * 90,
+                'font_idx': rot_font & 0x3fff,
+                'color': data[idx + 18],
+            })
+            pos = idx + 19
+        return props
+
     symbols = []
     pos = 0
     while True:
@@ -673,6 +696,15 @@ def parse_power_symbols(data, net_table):
                                 cell_id = struct.unpack_from('<I', data, after_null)[0]
                                 coords = struct.unpack_from('<6h', data, after_null + 4)
                                 orient = struct.unpack_from('<H', data, after_null + 16)[0]
+                                display_props = []
+                                if after_null + 22 <= len(data):
+                                    prop_count = struct.unpack_from(
+                                        '<H', data, after_null + 20)[0]
+                                    if prop_count <= 8:
+                                        display_props = _parse_display_props(
+                                            after_null + 22, prop_count)
+                                value_prop = (display_props[0]
+                                              if display_props else None)
                                 x = coords[0]
                                 y = coords[1]
                                 symbols.append({
@@ -681,6 +713,13 @@ def parse_power_symbols(data, net_table):
                                     'cell_id': cell_id,
                                     'coords': coords,
                                     'orient': orient,
+                                    'text_origin': (coords[1], coords[0]),
+                                    'value_off': ((value_prop['x'],
+                                                   value_prop['y'])
+                                                  if value_prop else None),
+                                    'value_text_angle': (value_prop['rotation']
+                                                         if value_prop else None),
+                                    'display_props': display_props,
                                     'x': x,
                                     'y': y,
                                 })
@@ -2285,7 +2324,8 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
 
 def sch_power_symbol(name, x, y, is_ground=False, angle=0,
                      text_size_mm=1.27, text_face=None,
-                     text_bold=False, text_italic=False):
+                     text_bold=False, text_italic=False,
+                     val_center=None, val_text_angle=None):
     """Generate a KiCad power symbol instance."""
     uid = new_uuid()
     pin_uid = new_uuid()
@@ -2300,24 +2340,13 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
         lib_id = f"power:{name_esc}"
         pin_name = name
 
-    if angle in (90, 270):
-        text_offset = 5.72
-        val_x = x + (text_offset if angle == 270 else -text_offset)
-        val_y = y
-        val_angle = angle
-    elif is_ground:
-        val_x = x
-        val_y = y + 3.81
-        val_angle = 0
-    elif _use_kicad_power:
-        val_x = x
-        val_y = y - 3.81
-        val_angle = 0
-    else:
-        val_x = x
-        val_y = y - 2.54
-        val_angle = 0
+    val_x, val_y, val_angle = _automatic_power_value_position(
+        name, x, y, is_ground, angle)
     val_hide = '\t\t\t\t(hide yes)\n' if is_ground and name == 'GND' else ''
+    if val_center is not None and not val_hide:
+        val_x, val_y = val_center
+        if val_text_angle is not None:
+            val_angle = int(val_text_angle) % 360
 
     def _font_block(indent):
         out = [f"{indent}(font\n"]
@@ -2368,6 +2397,28 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
         f"\t\t)\n"
         f"\t)\n"
     )
+
+
+def _automatic_power_value_position(name, x, y, is_ground=False, angle=0):
+    angle = int(round(angle)) % 360
+    if angle in (90, 270):
+        text_offset = 5.72
+        val_x = x + (text_offset if angle == 270 else -text_offset)
+        val_y = y
+        val_angle = angle
+    elif is_ground:
+        val_x = x
+        val_y = y + 3.81
+        val_angle = 0
+    elif _use_kicad_power:
+        val_x = x
+        val_y = y - 3.81
+        val_angle = 0
+    else:
+        val_x = x
+        val_y = y - 2.54
+        val_angle = 0
+    return val_x, val_y, val_angle
 
 
 def _esc_kicad_str(s):
@@ -4263,12 +4314,13 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     pin_positions = collect_pin_positions(components)
     power_positions = set()
 
-    def _append_power_symbol(net_name, px, py, angle):
+    def _append_power_symbol(net_name, px, py, angle, sym=None):
         parts.append(sch_power_symbol(
             net_name, dsn_to_mm(px), dsn_to_mm(py),
             _is_gnd_power_name(net_name), angle=angle,
             text_size_mm=rv_size, text_face=rv_face,
-            text_bold=rv_bold, text_italic=rv_italic))
+            text_bold=rv_bold, text_italic=rv_italic,
+            val_center=None, val_text_angle=None))
         power_positions.add((px, py))
 
     for sym in power_syms or []:
@@ -4277,7 +4329,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             if px is None or py is None or (px, py) in power_positions:
                 continue
             _append_power_symbol(sym['net'], px, py,
-                                 _power_symbol_angle_from_record(sym))
+                                 _power_symbol_angle_from_record(sym), sym)
             continue
 
         # Carry unmatched OrCAD power-port records over too. These are usually
@@ -4290,7 +4342,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         record_name = sym.get('record_name') or sym.get('name')
         if record_name and px is not None and py is not None:
             _append_power_symbol(record_name, px, py,
-                                 _power_symbol_angle_from_record(sym))
+                                 _power_symbol_angle_from_record(sym), sym)
 
     # Labels for regular (non-bus) wires
     endpoints = compute_wire_endpoints(regular_wires)
@@ -4499,6 +4551,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # The differing radii stay readable when the two overlap.
     if debug_ref_val:
         red = _COLOR_RGBA['red']
+        yellow = _COLOR_RGBA['yellow']
         lightgrey = _COLOR_RGBA['lightgrey']
         for comp in components:
             torg = comp.get('text_origin')   # = loc (DSN units)
@@ -4521,6 +4574,24 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 ux, uy = dsn_to_mm(torg[0] + off[0]), dsn_to_mm(torg[1] + off[1])
                 parts.append(_debug_marker(ux, uy, lightgrey,
                                            radius=1.75, dot=0.34))
+        for sym in power_syms or []:
+            off = sym.get('value_off')
+            net_name = sym.get('net') or sym.get('name') or sym.get('record_name')
+            px, py = sym.get('x'), sym.get('y')
+            if px is None or py is None or not net_name or net_name == 'GND':
+                continue
+            angle = _power_symbol_angle_from_record(sym)
+            auto_x, auto_y, _auto_angle = _automatic_power_value_position(
+                net_name, dsn_to_mm(px), dsn_to_mm(py),
+                _is_gnd_power_name(net_name), angle)
+            parts.append(_debug_marker(auto_x, auto_y, yellow,
+                                       radius=1.45, dot=0.28))
+            if off is None:
+                continue
+            ux = dsn_to_mm(px + off[0])
+            uy = dsn_to_mm(py + off[1])
+            parts.append(_debug_marker(ux, uy, lightgrey,
+                                       radius=1.75, dot=0.34))
 
     # Debug overlay: the OrCAD symbol bounding box (body extent) as a lightblue
     # rectangle. The bbox is in cache units (pin frame); transform its corners by
@@ -4541,6 +4612,15 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             parts.append(sch_rectangle(
                 dsn_to_mm(min(xs)), dsn_to_mm(min(ys)),
                 dsn_to_mm(max(xs)), dsn_to_mm(max(ys)),
+                color='lightblue', width=0.1))
+        for sym in power_syms or []:
+            coords = sym.get('coords')
+            if not coords or len(coords) != 6:
+                continue
+            _loc_y, _loc_x, y2, x2, x1, y1 = coords
+            parts.append(sch_rectangle(
+                dsn_to_mm(min(x1, x2)), dsn_to_mm(min(y1, y2)),
+                dsn_to_mm(max(x1, x2)), dsn_to_mm(max(y1, y2)),
                 color='lightblue', width=0.1))
 
     parts.append(sch_footer())

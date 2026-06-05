@@ -836,6 +836,22 @@ def power_symbol_styles(power_syms):
     return styles
 
 
+def _power_symbol_angle_from_record(sym):
+    """Convert an OrCAD power-port record orientation to a KiCad angle."""
+    rot = (sym.get('orient', 0) >> 8) & 0x03
+    return {0: 0, 1: 90, 2: 180, 3: 270}.get(rot, 0)
+
+
+def _power_symbol_angles_by_hotpoint(power_syms):
+    angles = {}
+    for sym in power_syms or []:
+        if not sym.get('matched') or not sym.get('net'):
+            continue
+        angles[(sym.get('x'), sym.get('y'), sym.get('net'))] = (
+            _power_symbol_angle_from_record(sym))
+    return angles
+
+
 TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
 # Graphic primitives drawn on the page (decorative rectangles, lines).
 # Both records start with FF E4 5C 39, then ...010030..., then a 6-byte
@@ -2265,12 +2281,13 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
     return lib_symbol_power_rail(name)
 
 
-def sch_power_symbol(name, x, y, is_ground=False):
+def sch_power_symbol(name, x, y, is_ground=False, angle=0):
     """Generate a KiCad power symbol instance."""
     uid = new_uuid()
     pin_uid = new_uuid()
     sym_uid = new_uuid()
     name_esc = _esc_kicad_str(name)
+    angle = int(round(angle)) % 360
 
     if is_ground:
         lib_id = f"power:{name_esc}"
@@ -2279,18 +2296,29 @@ def sch_power_symbol(name, x, y, is_ground=False):
         lib_id = f"power:{name_esc}"
         pin_name = name
 
-    if is_ground:
+    if angle in (90, 270):
+        text_offset = 5.72
+        val_x = x + (text_offset if angle == 270 else -text_offset)
+        val_y = y
+        val_angle = angle
+    elif is_ground:
+        val_x = x
         val_y = y + 3.81
+        val_angle = 0
     elif _use_kicad_power:
+        val_x = x
         val_y = y - 3.81
+        val_angle = 0
     else:
+        val_x = x
         val_y = y - 2.54
+        val_angle = 0
     val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
 
     return (
         f"\t(symbol\n"
         f"\t\t(lib_id \"{lib_id}\")\n"
-        f"\t\t(at {x:.2f} {y:.2f} 0)\n"
+        f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
         f"\t\t(unit 1)\n"
         f"\t\t(exclude_from_sim no)\n"
         f"\t\t(in_bom yes)\n"
@@ -2307,7 +2335,7 @@ def sch_power_symbol(name, x, y, is_ground=False):
         f"\t\t\t)\n"
         f"\t\t)\n"
         f"\t\t(property \"Value\" \"{name_esc}\"\n"
-        f"\t\t\t(at {x:.2f} {val_y:.2f} 0)\n"
+        f"\t\t\t(at {val_x:.2f} {val_y:.2f} {val_angle})\n"
         f"\t\t\t(effects\n"
         f"\t\t\t\t(font\n"
         f"\t\t\t\t\t(size 1.27 1.27)\n"
@@ -4247,6 +4275,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # wire bus, not at each pin along the way).
     pin_positions = collect_pin_positions(components)
     power_positions = set()
+    power_angles = _power_symbol_angles_by_hotpoint(power_syms)
 
     # Some OrCAD power ports connect directly to component pins without an
     # intervening wire segment. Those net ids live on the pin records.
@@ -4259,9 +4288,10 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             net_name = pin_net.get('net')
             if not _is_power_net_for_page(net_name, power_net_names):
                 continue
+            angle = power_angles.get((px, py, net_name), 0)
             parts.append(sch_power_symbol(
                 net_name, dsn_to_mm(px), dsn_to_mm(py),
-                _is_gnd_power_name(net_name)))
+                _is_gnd_power_name(net_name), angle=angle))
             power_positions.add((px, py))
 
     # Labels for regular (non-bus) wires
@@ -4278,7 +4308,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         y = dsn_to_mm(lbl['y'])
         if _is_power_net_for_page(lbl['name'], power_net_names):
             is_gnd = _is_gnd_power_name(lbl['name'])
-            parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd))
+            angle = power_angles.get((lbl['x'], lbl['y'], lbl['name']), 0)
+            parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd,
+                                          angle=angle))
             power_positions.add((lbl['x'], lbl['y']))
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
             parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
@@ -4302,7 +4334,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
         if _is_power_net_for_page(alias['name'], power_net_names):
             is_gnd = _is_gnd_power_name(alias['name'])
-            parts.append(sch_power_symbol(alias['name'], x, y, is_gnd))
+            angle = power_angles.get((alias['x'], alias['y'], alias['name']), 0)
+            parts.append(sch_power_symbol(alias['name'], x, y, is_gnd,
+                                          angle=angle))
             power_positions.add((alias['x'], alias['y']))
         elif is_bus_net(alias['name']):
             parts.append(sch_label(alias['name'], x, y, angle=angle))

@@ -120,6 +120,26 @@ class TestForwardRotate:
             assert back == (dx, dy), f"roundtrip failed for orient 0x{orient:02x}"
 
 
+class TestPinOriginMatching:
+    def test_uses_indexed_pins_when_consistent(self, dsn2kicad):
+        cache_pins = [(0, 0), (20, 0), (20, 20)]
+        page_pins = [(1, 100, 200), (2, 120, 200), (3, 120, 220)]
+
+        origin = dsn2kicad._match_cache_pin_origin(
+            cache_pins, page_pins, 0x00, (10, 10))
+
+        assert origin == (100, 200)
+
+    def test_recovers_origin_when_page_indices_are_scrambled(self, dsn2kicad):
+        cache_pins = [(0, 0), (20, 0), (20, 20)]
+        page_pins = [(3, 100, 200), (1, 120, 200), (2, 120, 220)]
+
+        origin = dsn2kicad._match_cache_pin_origin(
+            cache_pins, page_pins, 0x00, (10, 10))
+
+        assert origin == (100, 200)
+
+
 class TestDirectionFromVector:
     def test_right(self, dsn2kicad):
         assert dsn2kicad._direction_from_vector(0, 0, 10, 0) == 0

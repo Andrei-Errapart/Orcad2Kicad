@@ -543,15 +543,10 @@ def parse_components(data, net_table=None):
         else:
             center = (0.0, 0.0)
         if cache_pl and pins:
-            origins = []
-            for pnum, px, py in pins:
-                if 1 <= pnum <= len(cache_pl):
-                    chx, chy = cache_pl[pnum - 1]
-                    rhx, rhy = _forward_rotate(chx, chy, orient_byte, center)
-                    origins.append((px - rhx, py - rhy))
-            if origins:
-                origin_x = sum(o[0] for o in origins) / len(origins)
-                origin_y = sum(o[1] for o in origins) / len(origins)
+            matched_origin = _match_cache_pin_origin(
+                cache_pl, pins, orient_byte, center)
+            if matched_origin:
+                origin_x, origin_y = matched_origin
                 cc = _cell_centers[cell_name]
                 rcc_x, rcc_y = _forward_rotate(cc[0], cc[1], orient_byte, center)
                 x = round(origin_x + rcc_x)
@@ -589,15 +584,29 @@ def parse_components(data, net_table=None):
             ox = origin_x if origin_x is not None else raw_x
             oy = origin_y if origin_y is not None else raw_y
             # Text anchor: OrCAD stores ref/value offsets relative to loc, but for
-            # 90/270 it snaps the body to grid. A non-mirrored part keeps its text
-            # on loc (the body snapped away under it); a mirrored part carries the
-            # text with the snapped/mirrored body. For 0/180 loc == origin either
-            # way, so this only matters for the rotated family.
+            # 90/270 it snaps the body to grid. Horizontal text stays on loc while
+            # the body may be pin-matched a half-grid away. For 0/180 loc == origin
+            # either way, so this only matters for the rotated family.
             text_origin = (loc_x, loc_y)
             ref_off = (_pos_records[0][0], _pos_records[0][1])
             val_off = (_pos_records[1][0], _pos_records[1][1])
-            ref_pos = (ox + ref_off[0], oy + ref_off[1])
-            val_pos = (ox + val_off[0], oy + val_off[1])
+            # For 90/270 parts OrCAD stores horizontal ref/value text against
+            # the instance loc, while the pin-matched body origin may be
+            # grid-snapped away from it. Using the body origin shifts horizontal
+            # labels by the body snap vector (notably inductors and mirrored
+            # capacitor banks).
+            if ((orient_byte & 0x03) in (0x01, 0x03)
+                    and _pos_records[0][2] == 0):
+                rtx, rty = loc_x, loc_y
+            else:
+                rtx, rty = ox, oy
+            if ((orient_byte & 0x03) in (0x01, 0x03)
+                    and _pos_records[1][2] == 0):
+                vtx, vty = loc_x, loc_y
+            else:
+                vtx, vty = ox, oy
+            ref_pos = (rtx + ref_off[0], rty + ref_off[1])
+            val_pos = (vtx + val_off[0], vty + val_off[1])
             ref_text_angle = _pos_records[0][2]
             val_text_angle = _pos_records[1][2]
 
@@ -2644,6 +2653,84 @@ def _forward_rotate(dx, dy, orient_byte, center=(0, 0)):
     return (dx + cx, dy + cy)
 
 
+def _origin_spread(origins):
+    if len(origins) <= 1:
+        return 0
+    xs = [o[0] for o in origins]
+    ys = [o[1] for o in origins]
+    return max(max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _mean_origin(origins):
+    return (
+        sum(o[0] for o in origins) / len(origins),
+        sum(o[1] for o in origins) / len(origins),
+    )
+
+
+def _match_cache_pin_origin(cache_pin_list, pins, orient_byte, center):
+    """Return component origin by matching page pins to Cache hotpoints.
+
+    Page pin records normally carry a 1-based index into the Cache pin list.
+    Some OrCAD files are less direct: skipped/placeholder symbol pins or
+    alternate pin-map structures can make the page index and Cache vector index
+    disagree.  The placed page hotpoints and transformed Cache hotpoints still
+    differ by one translation, so use that translation as a geometry fallback.
+    """
+    if not cache_pin_list or not pins:
+        return None
+
+    indexed_origins = []
+    for pnum, px, py in pins:
+        if 1 <= pnum <= len(cache_pin_list):
+            chx, chy = cache_pin_list[pnum - 1]
+            rhx, rhy = _forward_rotate(chx, chy, orient_byte, center)
+            indexed_origins.append((px - rhx, py - rhy))
+
+    if indexed_origins and _origin_spread(indexed_origins) <= 1:
+        return _mean_origin(indexed_origins)
+
+    rotated_cache = [
+        _forward_rotate(hx, hy, orient_byte, center)
+        for hx, hy in cache_pin_list
+    ]
+    candidates = defaultdict(list)
+    for _pnum, px, py in pins:
+        for rhx, rhy in rotated_cache:
+            candidates[(round(px - rhx), round(py - rhy))].append((px, py))
+
+    best = None
+    for ox, oy in sorted(candidates):
+        matched = 0
+        residual = 0.0
+        used = set()
+        for _pnum, px, py in pins:
+            best_dist = None
+            best_idx = None
+            for ci, (rhx, rhy) in enumerate(rotated_cache):
+                if ci in used:
+                    continue
+                dx = px - (ox + rhx)
+                dy = py - (oy + rhy)
+                dist = dx * dx + dy * dy
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = ci
+            if best_dist is not None and best_dist <= 1:
+                matched += 1
+                residual += best_dist
+                used.add(best_idx)
+        score = (matched, -residual)
+        if best is None or score > best[0]:
+            best = (score, ox, oy)
+
+    if best and best[0][0] > 0:
+        return (best[1], best[2])
+    if indexed_origins:
+        return _mean_origin(indexed_origins)
+    return None
+
+
 def collect_pin_positions(components):
     """Return the set of absolute page-stream (x, y) of every placed
     component pin across `components`.
@@ -3605,6 +3692,8 @@ _JUSTIFY_LUT = {
     (270, False, 0):  'left top',
     (270, False, 90): 'left',
     (0,   True,  0):  'right top',
+    (90,  True,  0):  'left bottom',
+    (180, True,  0):  'left bottom',
     (270, True,  0):  'right top',
     (270, True,  90): 'left',
 }

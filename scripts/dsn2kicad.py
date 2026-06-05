@@ -2283,7 +2283,9 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
     return lib_symbol_power_rail(name)
 
 
-def sch_power_symbol(name, x, y, is_ground=False, angle=0):
+def sch_power_symbol(name, x, y, is_ground=False, angle=0,
+                     text_size_mm=1.27, text_face=None,
+                     text_bold=False, text_italic=False):
     """Generate a KiCad power symbol instance."""
     uid = new_uuid()
     pin_uid = new_uuid()
@@ -2317,6 +2319,18 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0):
         val_angle = 0
     val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
 
+    def _font_block(indent):
+        out = [f"{indent}(font\n"]
+        if text_face:
+            out.append(f'{indent}\t(face "{_esc_kicad_str(text_face)}")\n')
+        out.append(f"{indent}\t(size {text_size_mm:.4f} {text_size_mm:.4f})\n")
+        if text_bold:
+            out.append(f"{indent}\t(bold yes)\n")
+        if text_italic:
+            out.append(f"{indent}\t(italic yes)\n")
+        out.append(f"{indent})\n")
+        return "".join(out)
+
     return (
         f"\t(symbol\n"
         f"\t\t(lib_id \"{lib_id}\")\n"
@@ -2330,21 +2344,17 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0):
         f"\t\t(property \"Reference\" \"#PWR\"\n"
         f"\t\t\t(at {x:.2f} {y:.2f} 0)\n"
         f"\t\t\t(effects\n"
-        f"\t\t\t\t(font\n"
-        f"\t\t\t\t\t(size 1.27 1.27)\n"
-        f"\t\t\t\t)\n"
-        f"\t\t\t\t(hide yes)\n"
-        f"\t\t\t)\n"
-        f"\t\t)\n"
+        + _font_block("\t\t\t\t")
+        + f"\t\t\t\t(hide yes)\n"
+        + f"\t\t\t)\n"
+        + f"\t\t)\n"
         f"\t\t(property \"Value\" \"{name_esc}\"\n"
         f"\t\t\t(at {val_x:.2f} {val_y:.2f} {val_angle})\n"
         f"\t\t\t(effects\n"
-        f"\t\t\t\t(font\n"
-        f"\t\t\t\t\t(size 1.27 1.27)\n"
-        f"\t\t\t\t)\n"
-        f"{val_hide}"
-        f"\t\t\t)\n"
-        f"\t\t)\n"
+        + _font_block("\t\t\t\t")
+        + f"{val_hide}"
+        + f"\t\t\t)\n"
+        + f"\t\t)\n"
         f"\t\t(pin \"1\"\n"
         f"\t\t\t(uuid \"{pin_uid}\")\n"
         f"\t\t)\n"
@@ -4265,7 +4275,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             angle = power_angles.get((px, py, net_name), 0)
             parts.append(sch_power_symbol(
                 net_name, dsn_to_mm(px), dsn_to_mm(py),
-                _is_gnd_power_name(net_name), angle=angle))
+                _is_gnd_power_name(net_name), angle=angle,
+                text_size_mm=rv_size, text_face=rv_face,
+                text_bold=rv_bold, text_italic=rv_italic))
             power_positions.add((px, py))
 
     # Labels for regular (non-bus) wires
@@ -4284,7 +4296,11 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             is_gnd = _is_gnd_power_name(lbl['name'])
             angle = power_angles.get((lbl['x'], lbl['y'], lbl['name']), 0)
             parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd,
-                                          angle=angle))
+                                          angle=angle,
+                                          text_size_mm=rv_size,
+                                          text_face=rv_face,
+                                          text_bold=rv_bold,
+                                          text_italic=rv_italic))
             power_positions.add((lbl['x'], lbl['y']))
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
             parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
@@ -4310,7 +4326,11 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             is_gnd = _is_gnd_power_name(alias['name'])
             angle = power_angles.get((alias['x'], alias['y'], alias['name']), 0)
             parts.append(sch_power_symbol(alias['name'], x, y, is_gnd,
-                                          angle=angle))
+                                          angle=angle,
+                                          text_size_mm=rv_size,
+                                          text_face=rv_face,
+                                          text_bold=rv_bold,
+                                          text_italic=rv_italic))
             power_positions.add((alias['x'], alias['y']))
         elif is_bus_net(alias['name']):
             parts.append(sch_label(alias['name'], x, y, angle=angle))

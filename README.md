@@ -56,6 +56,9 @@ converter measures the field text, moves that corner to the box centre, applies
 a perpendicular nudge, and emits centre-justified KiCad fields. This keeps
 rotated and mirrored parts aligned with the OrCAD PDF without
 orientation-specific KiCad justification tables.
+Visible power-symbol Values use the same extracted schematic text style (size,
+face, bold, italic) as component Reference/Value fields, so KiCad renders their
+net names at the same visual size.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the

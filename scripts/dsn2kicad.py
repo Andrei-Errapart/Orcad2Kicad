@@ -2852,6 +2852,14 @@ def _pin_record_hides_number(pin_flags):
     return (pin_flags & 0x01) == 0
 
 
+def _is_capacitor_cell_name(cell_name):
+    """Return True for simple capacitor cache cells."""
+    if not cell_name:
+        return False
+    name = cell_name.upper()
+    return (name == 'C' or name.startswith('CAP') or name.startswith('CP'))
+
+
 def _min_pin_length_for_numbers(classified):
     """Return minimum pin length so pin numbers are readable.
 
@@ -2866,8 +2874,12 @@ def _symbol_pin_visibility(classified, cell_name=None):
     """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
     if cell_name and cell_name in _cache_pin_visibility:
         pnv, pnumv = _cache_pin_visibility[cell_name]
+        if len(classified) == 2 and _is_capacitor_cell_name(cell_name):
+            return (not pnv, True)
         return (not pnv, not pnumv)
     if len(classified) == 1:
+        return True, True
+    if len(classified) == 2 and _is_capacitor_cell_name(cell_name):
         return True, True
     pin_flags = [p[7] for p in classified if p[7] is not None]
     if (len(classified) == 2 and pin_flags

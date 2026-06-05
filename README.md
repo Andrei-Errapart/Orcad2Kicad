@@ -58,7 +58,10 @@ rotated and mirrored parts aligned with the OrCAD PDF without
 orientation-specific KiCad justification tables.
 Visible power-symbol Values use the same extracted schematic text style (size,
 face, bold, italic) as component Reference/Value fields, so KiCad renders their
-net names at the same visual size.
+net names at the same visual size. Power-symbol instances are placed from OrCAD
+power-port records, including analog-ground (`AG`) records and unmatched stray
+records; the converter does not synthesize extra power symbols from wire
+endpoints.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the

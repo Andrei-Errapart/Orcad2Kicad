@@ -1654,7 +1654,7 @@ def _is_gnd_power_name(name):
 def _power_symbol_record_style(record_name):
     """Return the glyph style implied by an OrCAD power-port record name."""
     record_name = record_name.upper()
-    if _is_gnd_power_name(record_name) or record_name == 'GND_POWER':
+    if _is_gnd_power_name(record_name) or record_name in ('GND_POWER', 'AG'):
         return 'gnd'
     if record_name in ('VCC', 'VCC_CIRCLE'):
         return 'circle'
@@ -1801,7 +1801,7 @@ def extract_orcad_power_glyphs(ole):
         return {}
 
     glyphs = {}
-    wanted = {'GND', 'VCC', 'VCC_BAR', 'VCC_CIRCLE', 'GND_POWER'}
+    wanted = {'GND', 'VCC', 'VCC_BAR', 'VCC_CIRCLE', 'GND_POWER', 'AG'}
     for offset, byte in enumerate(data):
         if byte != 0x21:
             continue
@@ -2317,7 +2317,7 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
         val_x = x
         val_y = y - 2.54
         val_angle = 0
-    val_hide = '\t\t\t\t(hide yes)\n' if is_ground else ''
+    val_hide = '\t\t\t\t(hide yes)\n' if is_ground and name == 'GND' else ''
 
     def _font_block(indent):
         out = [f"{indent}(font\n"]
@@ -4082,21 +4082,16 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         if lib_id not in symbols_needed:
             symbols_needed[lib_id] = lib_func()
 
-    # Collect power-symbol names that will actually be emitted on this
-    # page so their lib_symbol definitions can be embedded inline.
-    # Glyphs are emitted at every wire endpoint that sits on a power
-    # net, so the set of distinct power-net names appearing in wires
-    # is what determines which `power:<NAME>` definitions are needed.
+    # Collect power-symbol names that will actually be emitted on this page so
+    # their lib_symbol definitions can be embedded inline.
     power_names_used = set()
-    for w in wires:
-        if _is_power_net_for_page(w.get('net'), power_net_names):
-            power_names_used.add(w['net'])
-
-    for comp in components:
-        for pin_net in comp.get('pin_nets', {}).values():
-            net_name = pin_net.get('net')
-            if _is_power_net_for_page(net_name, power_net_names):
-                power_names_used.add(net_name)
+    for sym in power_syms or []:
+        if sym.get('matched') and sym.get('net'):
+            power_names_used.add(sym['net'])
+        else:
+            record_name = sym.get('record_name') or sym.get('name')
+            if record_name:
+                power_names_used.add(record_name)
 
     for pname in sorted(power_names_used):
         lid = f'power:{pname}'
@@ -4264,33 +4259,38 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                                    text_size_mm=rv_size, text_face=rv_face,
                                    text_bold=rv_bold, text_italic=rv_italic))
 
-    # Power-symbol glyphs are emitted at wire endpoints that lie on a
-    # power net AND are not stuck on a component pin (otherwise every
-    # CN1 GND pin would carry a GND triangle stacked over the pin
-    # number — OrCAD only renders the glyph at the dangling end of the
-    # wire bus, not at each pin along the way).
+    # Power-symbol glyphs come from OrCAD power-port records.
     pin_positions = collect_pin_positions(components)
     power_positions = set()
-    power_angles = _power_symbol_angles_by_hotpoint(power_syms)
 
-    # Some OrCAD power ports connect directly to component pins without an
-    # intervening wire segment. Those net ids live on the pin records.
-    for comp in components:
-        for (_pin_num, px, py), pin_net in comp.get('pin_nets', {}).items():
-            if (px, py) in power_positions:
+    def _append_power_symbol(net_name, px, py, angle):
+        parts.append(sch_power_symbol(
+            net_name, dsn_to_mm(px), dsn_to_mm(py),
+            _is_gnd_power_name(net_name), angle=angle,
+            text_size_mm=rv_size, text_face=rv_face,
+            text_bold=rv_bold, text_italic=rv_italic))
+        power_positions.add((px, py))
+
+    for sym in power_syms or []:
+        if sym.get('matched') and sym.get('net'):
+            px, py = sym.get('x'), sym.get('y')
+            if px is None or py is None or (px, py) in power_positions:
                 continue
-            if point_touches_wire((px, py), regular_wires):
-                continue
-            net_name = pin_net.get('net')
-            if not _is_power_net_for_page(net_name, power_net_names):
-                continue
-            angle = power_angles.get((px, py, net_name), 0)
-            parts.append(sch_power_symbol(
-                net_name, dsn_to_mm(px), dsn_to_mm(py),
-                _is_gnd_power_name(net_name), angle=angle,
-                text_size_mm=rv_size, text_face=rv_face,
-                text_bold=rv_bold, text_italic=rv_italic))
-            power_positions.add((px, py))
+            _append_power_symbol(sym['net'], px, py,
+                                 _power_symbol_angle_from_record(sym))
+            continue
+
+        # Carry unmatched OrCAD power-port records over too. These are usually
+        # graphical strays, so the record name is the best available net name.
+        candidates = _power_symbol_hotpoint_candidates(sym)
+        if candidates:
+            px, py = candidates[0]
+        else:
+            px, py = sym.get('x'), sym.get('y')
+        record_name = sym.get('record_name') or sym.get('name')
+        if record_name and px is not None and py is not None:
+            _append_power_symbol(record_name, px, py,
+                                 _power_symbol_angle_from_record(sym))
 
     # Labels for regular (non-bus) wires
     endpoints = compute_wire_endpoints(regular_wires)
@@ -4305,15 +4305,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         x = dsn_to_mm(lbl['x'])
         y = dsn_to_mm(lbl['y'])
         if _is_power_net_for_page(lbl['name'], power_net_names):
-            is_gnd = _is_gnd_power_name(lbl['name'])
-            angle = power_angles.get((lbl['x'], lbl['y'], lbl['name']), 0)
-            parts.append(sch_power_symbol(lbl['name'], x, y, is_gnd,
-                                          angle=angle,
-                                          text_size_mm=rv_size,
-                                          text_face=rv_face,
-                                          text_bold=rv_bold,
-                                          text_italic=rv_italic))
-            power_positions.add((lbl['x'], lbl['y']))
+            continue
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
             parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
         else:
@@ -4335,15 +4327,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         y = dsn_to_mm(alias['y'])
         angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
         if _is_power_net_for_page(alias['name'], power_net_names):
-            is_gnd = _is_gnd_power_name(alias['name'])
-            angle = power_angles.get((alias['x'], alias['y'], alias['name']), 0)
-            parts.append(sch_power_symbol(alias['name'], x, y, is_gnd,
-                                          angle=angle,
-                                          text_size_mm=rv_size,
-                                          text_face=rv_face,
-                                          text_bold=rv_bold,
-                                          text_italic=rv_italic))
-            power_positions.add((alias['x'], alias['y']))
+            continue
         elif is_bus_net(alias['name']):
             parts.append(sch_label(alias['name'], x, y, angle=angle))
         elif alias['name'] in global_nets and alias['name'] not in bus_member_nets:

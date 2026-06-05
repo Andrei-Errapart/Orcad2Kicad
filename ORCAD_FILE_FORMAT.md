@@ -764,19 +764,19 @@ Same-value components share the same index.
 
 **Component position**: The stored (x, y) at `cell_end + 6/8` is NOT the cell origin and NOT the pin center. Its meaning is unclear (possibly a text anchor or reference point). To determine the actual component origin, match page-stream pin records to Cache pin definitions (see below).
 
-#### Value/Reference text position records
+#### Value/Reference display-property text records
 
 Between the orientation byte and the pin placement records, two
-`RECORD_MARKER`-delimited records encode the page-relative offsets for the
-component's Reference and Value text. They normally appear as a consecutive
-pair:
+`RECORD_MARKER`-delimited display-property records encode the component's
+Reference and Value text placement. They normally appear as a consecutive pair:
 
 ```
 ff e4 5c 39          record marker
 00 00 00 00          4 zero bytes
 prop_id(4, LE)       property ID (file-specific, see below)
-x_off(2, LE signed)  X offset from component origin (10-mil units)
-y_off(2, LE signed)  Y offset from component origin (10-mil units)
+x_off(2, LE signed)  X offset from placement loc (10-mil units)
+y_off(2, LE signed)  Y offset from placement loc (10-mil units)
+rot_font(2, LE)      font index and text rotation
 ```
 
 **Order used by `scripts/dsn2kicad`**: the first record is the **Reference**
@@ -790,10 +790,17 @@ indices into a file-internal property table. Current parser behavior treats
 the first position record as Reference and the second as Value regardless of
 the specific ID values.
 
-**Coordinate system**: Offsets are in page coordinates (not component-local),
-so they do not need rotation transformation. Byte 17 of the position record is
-used by `scripts/dsn2kicad` to detect 90° rotated reference/value text
-(`0x40` flag bit).
+**Coordinate system**: Offsets are in page coordinates (not component-local).
+The converter interprets `loc + (x_off, y_off)` as the axis-aligned top-left
+corner of the rendered text box, before any component rotation or mirror
+operation. Empirical PDF overlays in test 0001 show this top-left corner remains
+stable for 0°, 90°, 180°, 270°, and mirrored components. `scripts/dsn2kicad`
+uses that corner, measured text width/height, and the same perpendicular font
+nudge as `tests/kicad_pdf_join.py` to emit centre-justified KiCad fields.
+
+**Text rotation**: Per OpenOrCadParser's `StructSymbolDisplayProp`, the uint16
+at record offset 16 stores `{textFontIdx: bits 0-13, rotation: bits 14-15}`.
+`scripts/dsn2kicad` extracts that two-bit rotation enum as 0°/90°/180°/270°.
 
 **Empirical examples** (one small board):
 

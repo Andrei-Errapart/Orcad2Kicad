@@ -44,17 +44,18 @@ Options:
   library, preserving the schematic's visual appearance.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
 - `--debug-ref-val` — Overlay text-placement markers on every component: a red
-  circle at the instance origin (`loc`) tagged with the mirror flag (`H`/`V`), plus
-  a smaller green circle at each Reference/Value display-prop position tagged with
-  its text rotation. Used to diff text placement against the OrCAD PDF.
+  circle at the instance origin (`loc`) tagged with the mirror flag (`H`), plus
+  smaller light-grey circles at the raw OrCAD Reference/Value display-prop
+  corners before rotation/mirror.
 - `--debug-symbol` — Draw each symbol's bounding box (the Cache `SymbolBBox`, the
   pivot for ref/value placement) as a light-blue rectangle.
 
-Reference and Value text is placed to match the OrCAD render: each field is
-mirrored and rotated about the symbol's bounding-box centre, and its KiCad text
-justification is chosen so the label anchors on the same corner OrCAD uses. The
-`--debug-ref-val` / `--debug-symbol` overlays help verify this against the
-original PDF.
+Reference and Value text is placed from OrCAD display-property records. Each
+record gives the raw page-space top-left corner of the rendered text box. The
+converter measures the field text, moves that corner to the box centre, applies
+a perpendicular nudge, and emits centre-justified KiCad fields. This keeps
+rotated and mirrored parts aligned with the OrCAD PDF without
+orientation-specific KiCad justification tables.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the
@@ -95,10 +96,6 @@ Walks the OLE compound document and prints all parseable records from every stre
 - Connector symbols (CON*) show only a body rectangle; the circle/arc pin
   graphics from the original OLB library are not embedded in the DSN Cache.
 - OrCAD format version 2.0 files are not supported (different binary layout).
-- Reference/Value text on 90°/270° symbols with horizontal text can sit ~1.8 mm
-  off the OrCAD position: OrCAD snaps the rotated body half a grid while keeping
-  the text on the placement point, and that grid-snap is not yet modelled exactly.
-  Vertical text on rotated symbols is unaffected.
 
 ## Tests
 

@@ -491,9 +491,9 @@ def parse_components(data, net_table=None):
         #                + rotFontId(uint16) + ...
         # Per OpenOrCadParser StructSymbolDisplayProp, the uint16 at offset 16 is
         # {textFontIdx: bits 0-13, rotation: bits 14-15}; rotation is a 2-bit enum
-        # (0/90/180/270) = the top 2 bits of byte 17. The display-prop x is always
-        # 0 (ref/value are centred horizontally on the part); only y + rotation
-        # carry placement, so we ignore the heuristic x.
+        # (0/90/180/270) = the top 2 bits of byte 17. The display-prop x/y offsets
+        # are page-space offsets from loc to the rendered text box's top-left
+        # corner; do not rotate or mirror them with the component.
         _pos_records = []
         rp = cell_end
         rp_end = min(cell_end + 200, search_end)
@@ -1237,6 +1237,8 @@ _COLOR_RGBA = {
     'black':     '0 0 0 1',
     'red':       '200 0 0 1',
     'green':     '0 128 0 1',
+    'yellow':    '220 180 0 1',
+    'lightgrey': '180 180 180 1',
     'magenta':   '200 0 200 1',
     'lightblue': '120 170 255 1',
 }
@@ -3708,50 +3710,37 @@ def _default_text_style(library_styles):
     return (1.27, 'Arial', False, False)
 
 
-# Justify token for a Reference/Value field, keyed on (symbol_angle, mirror,
-# text_rotation). KiCad transforms a symbol field's justify by the symbol's
-# rotation+mirror, so to anchor OrCAD's top-left we emit the token that maps back
-# to it. Derived empirically (board 0001 page 3); '' = centre vertically.
-_JUSTIFY_LUT = {
-    (0,   False, 0):  'left top',
-    (90,  False, 0):  'right bottom',
-    (90,  False, 90): 'right top',
-    (180, False, 0):  'right bottom',
-    (270, False, 0):  'left top',
-    (270, False, 90): 'left',
-    (0,   True,  0):  'right top',
-    (90,  True,  0):  'left bottom',
-    (180, True,  0):  'left bottom',
-    (270, True,  0):  'right top',
-    (270, True,  90): 'left',
-}
-
-
-def _justify_for(angle, mirror, text_rot):
-    """KiCad justify token for a ref/value field at this orientation."""
-    return _JUSTIFY_LUT.get(
-        (int(angle) % 360, bool(mirror), int(text_rot or 0) % 360),
-        'right top' if mirror else 'left top')
-
-
-def _text_center_mm(origin, off, text, orient_byte,
+def _text_center_mm(origin, off, text, text_angle,
                     size_mm, face, bold, italic):
-    """Page-space (mm) anchor of a Reference/Value text, emitted centre-justified.
+    """Page-space centre anchor for a Reference/Value text field.
 
-    Per OpenOrCadParser, OrCAD stores no horizontal text offset (display-prop x
-    is always 0): ref/value are centred horizontally on the part, with only the
-    vertical offset `off[1]` (DSN units). Rotate the local (0, y) anchor by the
-    component orient and add the page-space origin. Centre justify makes the
-    result invariant to how KiCad rotates/mirrors the field.
+    OrCAD's display-prop (x, y) offset lands at the axis-aligned top-left corner
+    of the rendered text box in page coordinates, independent of component
+    rotation/mirror. Convert that corner to the centre anchor KiCad wants for a
+    centre-justified field, with the same perpendicular nudge used by
+    tests/kicad_pdf_join.py for PDF overlays.
     """
-    if off is None:
+    if origin is None or off is None:
         return None
-    ax, ay = _forward_rotate(0.0, dsn_to_mm(off[1]), orient_byte)
-    return (dsn_to_mm(origin[0]) + ax, dsn_to_mm(origin[1]) + ay)
+    x = dsn_to_mm(origin[0] + off[0])
+    y = dsn_to_mm(origin[1] + off[1])
+    width = (measure_text_width(text, size_mm, face or 'Arial', bold, italic)
+             * KICAD_FONT_SIZE_COMPENSATION)
+    height = (measure_text_height(text, size_mm, face or 'Arial', bold, italic)
+              * KICAD_FONT_SIZE_COMPENSATION)
+    angle = int(text_angle or 0) % 360
+    if angle in (90, 270):
+        box_w, box_h = height, width
+    else:
+        box_w, box_h = width, height
+    pdx, pdy = {0: (0, 1), 90: (1, 0), 180: (0, -1),
+                270: (-1, 0)}.get(angle, (0, 1))
+    nudge = 0.416 * size_mm
+    return (x + box_w / 2.0 + nudge * pdx,
+            y + box_h / 2.0 + nudge * pdy)
 
 
 def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
-                  ref_pos=None, val_pos=None,
                   ref_center=None, val_center=None,
                   ref_text_angle=None, val_text_angle=None,
                   unit=1, mirror_x=False, dnp=False,
@@ -3762,8 +3751,6 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
     ref_center/val_center: absolute KiCad mm position of the text bbox centre.
     When given, the field is emitted centre-justified at that point, which is
     invariant to the symbol's rotation/mirror (preferred).
-    ref_pos/val_pos: legacy top-left anchor (left-top justify); used only as a
-    fallback when no centre is available.
     unit: 1-based unit number for multi-unit symbols.
     mirror_x: if True, emit (mirror x) to flip the symbol horizontally.
     """
@@ -3774,8 +3761,6 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
 
     if ref_center is not None:
         ref_x, ref_y = ref_center
-    elif ref_pos is not None:
-        ref_x, ref_y = ref_pos[0], ref_pos[1] + 0.5
     else:
         ref_x, ref_y = x + 2.54, y
         if angle == 90 or angle == 270:
@@ -3783,8 +3768,6 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
 
     if val_center is not None:
         val_x, val_y = val_center
-    elif val_pos is not None:
-        val_x, val_y = val_pos[0], val_pos[1] + 0.5
     else:
         val_x, val_y = x - 2.54, y
         if angle == 90 or angle == 270:
@@ -3816,10 +3799,6 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         return "".join(out)
 
     mirror_line = "\t\t(mirror y)\n" if mirror_x else ""
-    # KiCad transforms a field's justify by the symbol rotation+mirror; pick the
-    # token (per orientation + text rotation) that maps back to OrCAD's anchor.
-    ref_just = _justify_for(angle, mirror_x, ref_text_angle)
-    val_just = _justify_for(angle, mirror_x, val_text_angle)
     parts = [
         f"\t(symbol\n"
         f"\t\t(lib_id \"{lib_id}\")\n"
@@ -3835,16 +3814,12 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
         f"\t\t\t(at {ref_x:.2f} {ref_y:.2f} {ref_angle})\n"
         f"\t\t\t(effects\n"
         + _font_block("\t\t\t\t")
-        + (f"\t\t\t\t(justify {ref_just})\n"
-           if ref_center is None and ref_pos is not None else "")
         + f"\t\t\t)\n"
         f"\t\t)\n"
         f"\t\t(property \"Value\" \"{val_esc}\"\n"
         f"\t\t\t(at {val_x:.2f} {val_y:.2f} {val_angle})\n"
         f"\t\t\t(effects\n"
         + _font_block("\t\t\t\t")
-        + (f"\t\t\t\t(justify {val_just})\n"
-           if val_center is None and val_pos is not None else "")
         + f"\t\t\t)\n"
         f"\t\t)\n"
     ]
@@ -4237,8 +4212,6 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             pin_nums = sorted(set(p[0] for p in comp['pins']))
         else:
             pin_nums = [1, 2]
-        rp = comp.get('ref_pos')
-        vp = comp.get('val_pos')
         comp_value = comp['cell']
         if comp.get('value_idx') is not None:
             resolved = lookup_component_value(comp['value_idx'])
@@ -4251,15 +4224,16 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         if comp['cell'] in _multi_unit_cell_map:
             _, comp_unit = _multi_unit_cell_map[comp['cell']]
         mirror_x = bool(comp['orient'] & 0x04)
-        # NOTE: the centre-anchor model (_text_center_mm, driven by the authoritative
-        # OrCAD display-prop) is parked — translating the stored (x≡0, y, rotation)
-        # into the *rendered* position still needs the rotation/mirror-dependent
-        # horizontal anchor worked out (see STATE.md). Emit the baseline
-        # (heuristic offset + left-top), which is correct for un-rotated parts.
+        ref_center = _text_center_mm(
+            comp.get('text_origin'), comp.get('ref_off'), ref,
+            comp.get('ref_text_angle'), rv_size, rv_face, rv_bold, rv_italic)
+        val_center = _text_center_mm(
+            comp.get('text_origin'), comp.get('val_off'), comp_value,
+            comp.get('val_text_angle'), rv_size, rv_face, rv_bold, rv_italic)
         parts.append(sch_component(ref, lib_id, x, y, angle, comp_value,
                                    pin_numbers=pin_nums,
-                                   ref_pos=(dsn_to_mm(rp[0]), dsn_to_mm(rp[1])) if rp else None,
-                                   val_pos=(dsn_to_mm(vp[0]), dsn_to_mm(vp[1])) if vp else None,
+                                   ref_center=ref_center,
+                                   val_center=val_center,
                                    ref_text_angle=comp.get('ref_text_angle'),
                                    val_text_angle=comp.get('val_text_angle'),
                                    unit=comp_unit,
@@ -4504,12 +4478,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
 
     # Debug overlay for the ref/value text anchoring investigation:
     #   red circle+dot  = instance placement point (loc)
-    #   green circle+dot (slightly smaller) = Reference/Value display-prop anchor
-    #       (x=0, y rotated by the part orient), with a green number = the 2-bit
-    #       rotation. The differing radii stay readable when the two overlap.
+    #   lightgrey circle+dot = raw display-prop anchor before applying the
+    #       component rotation/mirror transform
+    # The differing radii stay readable when the two overlap.
     if debug_ref_val:
         red = _COLOR_RGBA['red']
-        green = _COLOR_RGBA['green']
+        lightgrey = _COLOR_RGBA['lightgrey']
         for comp in components:
             torg = comp.get('text_origin')   # = loc (DSN units)
             if torg is None:
@@ -4525,16 +4499,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             if orient & 0x04:
                 parts.append(sch_text('H', lx - 2.6, ly + 0.7, size=1.6,
                                       justify='right bottom', rgba=red))
-            for off, rot in ((comp.get('ref_off'), comp.get('ref_text_angle')),
-                             (comp.get('val_off'), comp.get('val_text_angle'))):
+            for off in (comp.get('ref_off'), comp.get('val_off')):
                 if off is None:
                     continue
-                vx, vy = _forward_rotate(0, off[1], orient)
-                ax, ay = dsn_to_mm(torg[0] + vx), dsn_to_mm(torg[1] + vy)
-                parts.append(_debug_marker(ax, ay, green, radius=0.9, dot=0.2))
-                parts.append(sch_text(
-                    str(rot if rot is not None else 0), ax + 1.6, ay,
-                    size=1.0, justify='left bottom', rgba=green))
+                ux, uy = dsn_to_mm(torg[0] + off[0]), dsn_to_mm(torg[1] + off[1])
+                parts.append(_debug_marker(ux, uy, lightgrey,
+                                           radius=1.75, dot=0.34))
 
     # Debug overlay: the OrCAD symbol bounding box (body extent) as a lightblue
     # rectangle. The bbox is in cache units (pin frame); transform its corners by

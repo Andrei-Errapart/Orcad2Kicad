@@ -3995,21 +3995,33 @@ def _clearance_shift_for_axis(text_box, body_box, dx, dy):
     return 0.0
 
 
-def _move_rc_value_clear_of_body(cell_name, center, value, text_angle,
-                                 x, y, angle, mirror_x,
-                                 size_mm, face, bold, italic):
-    """Move Device R/C value text just far enough to clear the body drawing."""
+def _rc_text_clearance_body(cell_name):
+    if _use_kicad_rc:
+        return {
+            'R': (-1.016, -2.54, 1.016, 2.54),
+            'C': (-2.032, -0.762, 2.032, 0.762),
+        }.get(cell_name)
+    return {
+        'R': (-2.54, -0.762, 2.54, 0.762),
+        'C': (-1.27, -1.27, 1.27, 1.27),
+    }.get(cell_name)
+
+
+def _move_rc_text_clear_of_body(cell_name, center, text, text_angle,
+                                x, y, angle, mirror_x,
+                                size_mm, face, bold, italic,
+                                padding=0.35):
+    """Move R/C text just far enough to clear the symbol drawing."""
     if center is None or cell_name not in ('R', 'C'):
         return center
-    local_body = {
-        'R': (-1.016, -2.54, 1.016, 2.54),
-        'C': (-2.032, -0.762, 2.032, 0.762),
-    }[cell_name]
+    local_body = _rc_text_clearance_body(cell_name)
+    if local_body is None:
+        return center
     body_box = _expanded_bbox(
         _transformed_bbox_mm(local_body, x, y, angle, mirror_x),
-        0.35)
+        padding)
     text_box = _text_bbox_from_center_mm(
-        center, value, text_angle, size_mm, face, bold, italic)
+        center, text, text_angle, size_mm, face, bold, italic)
     if text_box is None or not _bboxes_overlap(text_box, body_box):
         return center
 
@@ -4039,6 +4051,14 @@ def _move_rc_value_clear_of_body(cell_name, center, value, text_angle,
         return center
     distance, dx, dy = min(candidates, key=lambda c: c[0])
     return (cx + dx * distance, cy + dy * distance)
+
+
+def _move_rc_value_clear_of_body(cell_name, center, value, text_angle,
+                                 x, y, angle, mirror_x,
+                                 size_mm, face, bold, italic):
+    return _move_rc_text_clear_of_body(
+        cell_name, center, value, text_angle, x, y, angle, mirror_x,
+        size_mm, face, bold, italic)
 
 
 def _kicad_rc_pin_position(comp, pin_num):
@@ -4628,7 +4648,14 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         val_center = _text_center_mm(
             comp.get('text_origin'), comp.get('val_off'), comp_value,
             comp.get('val_text_angle'), rv_size, rv_face, rv_bold, rv_italic)
-        if _use_kicad_rc and comp['cell'] in ('R', 'C'):
+        if _use_kicad_rc and comp['cell'] == 'R':
+            ref_center = _move_rc_text_clear_of_body(
+                comp['cell'], ref_center, ref,
+                comp.get('ref_text_angle') if comp.get('ref_text_angle') is not None else angle,
+                x, y, angle, mirror_x,
+                rv_size, rv_face, rv_bold, rv_italic,
+                padding=0.05)
+        if _use_kicad_rc and comp['cell'] == 'R':
             val_center = _move_rc_value_clear_of_body(
                 comp['cell'], val_center, comp_value,
                 comp.get('val_text_angle') if comp.get('val_text_angle') is not None else angle,

@@ -492,9 +492,9 @@ def parse_components(data, net_table=None):
             data, cell_end, search_end, net_table)
 
         # Parse ref/val text position offset records BEFORE origin refinement.
-        # Two records with zeros==0 and type<0x100 precede the ref text tag:
-        #   first  = reference position offset
-        #   second = value position offset
+        # Records with zeros==0 and name_idx<0x100 precede the ref text tag.
+        # The record order is usually Reference then Value, but some instances
+        # store them reversed; classify by the SymbolDisplayProp nameIdx.
         # Record format: MARKER(4) + zeros(4) + type_le32(4) + x(int16) + y(int16)
         #                + rotFontId(uint16) + ...
         # Per OpenOrCadParser StructSymbolDisplayProp, the uint16 at offset 16 is
@@ -517,15 +517,20 @@ def parse_components(data, net_table=None):
                 b16 = data[ri + 16]
                 b17 = data[ri + 17]
                 rot = ((b17 >> 6) & 0x3) * 90
-                _pos_records.append((rx, ry, rot, b16, b17))
+                _pos_records.append((rx, ry, rot, b16, b17, rt))
             rp = ri + 4
 
         if os.environ.get('DSNDEBUG_POS') and _pos_records:
+            def _debug_prop_name(rec):
+                name = lookup_component_value(rec[5])
+                return f",name={name!r}" if name else ""
+
             sys.stderr.write(
                 f"POS\t{ref_name}\torient={orient_byte:#04x}\tcell={cell_name}\t"
                 f"raw=({raw_x},{raw_y})\tloc=({loc_x},{loc_y})\t"
                 + "\t".join(f"({r[0]},{r[1]},rot{r[2]},b16={r[3]:#04x},"
-                            f"b17={r[4]:#04x})" for r in _pos_records)
+                            f"b17={r[4]:#04x},idx={r[5]}"
+                            f"{_debug_prop_name(r)})" for r in _pos_records)
                 + "\n")
 
         # Refine component position from pin matching.
@@ -589,6 +594,15 @@ def parse_components(data, net_table=None):
         ref_off = None
         val_off = None
         if len(_pos_records) >= 2:
+            def _prop_with_name(name, fallback_index):
+                for rec in _pos_records:
+                    if lookup_component_value(rec[5]) == name:
+                        return rec
+                return _pos_records[fallback_index]
+
+            ref_record = _prop_with_name('Part Reference', 0)
+            val_record = _prop_with_name('Value', 1)
+
             ox = origin_x if origin_x is not None else raw_x
             oy = origin_y if origin_y is not None else raw_y
             # Text anchor: OrCAD stores ref/value offsets relative to loc, but for
@@ -596,27 +610,27 @@ def parse_components(data, net_table=None):
             # the body may be pin-matched a half-grid away. For 0/180 loc == origin
             # either way, so this only matters for the rotated family.
             text_origin = (loc_x, loc_y)
-            ref_off = (_pos_records[0][0], _pos_records[0][1])
-            val_off = (_pos_records[1][0], _pos_records[1][1])
+            ref_off = (ref_record[0], ref_record[1])
+            val_off = (val_record[0], val_record[1])
             # For 90/270 parts OrCAD stores horizontal ref/value text against
             # the instance loc, while the pin-matched body origin may be
             # grid-snapped away from it. Using the body origin shifts horizontal
             # labels by the body snap vector (notably inductors and mirrored
             # capacitor banks).
             if ((orient_byte & 0x03) in (0x01, 0x03)
-                    and _pos_records[0][2] == 0):
+                    and ref_record[2] == 0):
                 rtx, rty = loc_x, loc_y
             else:
                 rtx, rty = ox, oy
             if ((orient_byte & 0x03) in (0x01, 0x03)
-                    and _pos_records[1][2] == 0):
+                    and val_record[2] == 0):
                 vtx, vty = loc_x, loc_y
             else:
                 vtx, vty = ox, oy
             ref_pos = (rtx + ref_off[0], rty + ref_off[1])
             val_pos = (vtx + val_off[0], vty + val_off[1])
-            ref_text_angle = _pos_records[0][2]
-            val_text_angle = _pos_records[1][2]
+            ref_text_angle = ref_record[2]
+            val_text_angle = val_record[2]
 
         components.append({
             'cell': cell_name,

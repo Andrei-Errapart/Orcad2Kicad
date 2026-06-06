@@ -16,8 +16,9 @@ Generates KiCad schematic files (.kicad_sch) with:
   - Text annotations
 
 Usage:
-    scripts/dsn2kicad [--kicad-power] [--debug-bbox] [--debug-ref-val]
-                      [--debug-symbol] <file.DSN> [output_dir]
+    scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--no-worksheet]
+                      [--debug-bbox] [--debug-ref-val] [--debug-symbol]
+                      <file.DSN> [output_dir]
 """
 
 import json
@@ -5130,10 +5131,51 @@ def generate_root_sch(page_filenames, page_names, project_name=""):
     return "".join(parts)
 
 
-def generate_project(name):
+def generate_worksheet():
+    return (
+        "(page_layout\n"
+        "    (setup (textsize 1.5 1.5) (linewidth 0.15) (textlinewidth 0.15)\n"
+        "      (left_margin 0) (right_margin 0) (top_margin 0) (bottom_margin 0))\n"
+        "    (rect (comment \"rect around the title block\") (linewidth 0.15) (start 110 34) (end 2 2))\n"
+        "    (rect (start 0 0 ltcorner) (end 0 0 rbcorner) (repeat 2) (incrx 2) (incry 2))\n"
+        "    (line (start 50 2 ltcorner) (end 50 0 ltcorner) (repeat 30) (incrx 50))\n"
+        "    (tbtext \"1\" (pos 25 1 ltcorner) (font (size 1.3 1.3)) (repeat 100) (incrx 50))\n"
+        "    (line (start 50 2 lbcorner) (end 50 0 lbcorner) (repeat 30) (incrx 50))\n"
+        "    (tbtext \"1\" (pos 25 1 lbcorner) (font (size 1.3 1.3)) (repeat 100) (incrx 50))\n"
+        "    (line (start 0 50 ltcorner) (end 2 50 ltcorner) (repeat 30) (incry 50))\n"
+        "    (tbtext \"A\" (pos 1 25 ltcorner) (font (size 1.3 1.3)) (justify center) (repeat 100) (incry 50))\n"
+        "    (line (start 0 50 rtcorner) (end 2 50 rtcorner) (repeat 30) (incry 50))\n"
+        "    (tbtext \"A\" (pos 1 25 rtcorner) (font (size 1.3 1.3)) (justify center) (repeat 100) (incry 50))\n"
+        "    (tbtext \"Date: %D\" (pos 87 6.9))\n"
+        "    (line (start 110 5.5) (end 2 5.5))\n"
+        "    (tbtext \"%K\" (pos 109 4.1) (comment \"KiCad version\"))\n"
+        "    (line (start 110 8.5) (end 2 8.5))\n"
+        "    (tbtext \"Rev: %R\" (pos 24 6.9) (font bold) (justify left))\n"
+        "    (tbtext \"Size: %Z\" (comment \"Paper format name\") (pos 109 6.9))\n"
+        "    (tbtext \"Id: %S/%N\" (comment \"Sheet id\") (pos 24 4.1))\n"
+        "    (line (start 110 12.5) (end 2 12.5))\n"
+        "    (tbtext \"Title: %T\" (pos 109 10.7) (font bold italic (size 2 2)))\n"
+        "    (tbtext \"File: %F\" (pos 109 14.3))\n"
+        "    (line (start 110 18.5) (end 2 18.5))\n"
+        "    (tbtext \"Sheet: %P\" (pos 109 17))\n"
+        "    (tbtext \"%Y\" (comment \"Company name\") (pos 109 20) (font bold))\n"
+        "    (tbtext \"%C0\" (comment \"Comment 0\") (pos 109 23))\n"
+        "    (tbtext \"%C1\" (comment \"Comment 1\") (pos 109 26))\n"
+        "    (tbtext \"%C2\" (comment \"Comment 2\") (pos 109 29))\n"
+        "    (tbtext \"%C3\" (comment \"Comment 3\") (pos 109 32))\n"
+        "    (line (start 90 8.5) (end 90 5.5))\n"
+        "    (line (start 26 8.5) (end 26 2))\n"
+        ")\n"
+    )
+
+
+def generate_project(name, worksheet_name=None):
+    schematic = {"drawing": {}, "meta": {"version": 1}}
+    if worksheet_name:
+        schematic["page_layout_descr_file"] = worksheet_name
     proj = {
         "meta": {"filename": f"{name}.kicad_pro", "version": 2},
-        "schematic": {"drawing": {}, "meta": {"version": 1}},
+        "schematic": schematic,
     }
     return json.dumps(proj, indent=2) + "\n"
 
@@ -6197,6 +6239,10 @@ def main():
     if "--debug-symbol" in argv:
         debug_symbol = True
         argv.remove("--debug-symbol")
+    emit_worksheet = True
+    if "--no-worksheet" in argv:
+        emit_worksheet = False
+        argv.remove("--no-worksheet")
     global _use_kicad_power, _use_kicad_rc
     if "--kicad-power" in argv:
         _use_kicad_power = True
@@ -6207,7 +6253,7 @@ def main():
     if not argv:
         print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
               f"[--debug-symbol] [--kicad-power] [--kicad-rc] "
-              f"<file.DSN> [output_dir]",
+              f"[--no-worksheet] <file.DSN> [output_dir]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -6469,9 +6515,15 @@ def main():
     )
     (output_dir / "sym-lib-table").write_text(sym_lib_table, encoding='utf-8')
 
+    # Worksheet
+    worksheet_name = None
+    if emit_worksheet:
+        worksheet_name = f"{safe_project}.kicad_wks"
+        (output_dir / worksheet_name).write_text(generate_worksheet(), encoding='utf-8')
+
     # Project file
     (output_dir / f"{safe_project}.kicad_pro").write_text(
-        generate_project(safe_project), encoding='utf-8')
+        generate_project(safe_project, worksheet_name), encoding='utf-8')
 
     pwr_totals = {k[4:]: v for k, v in total_stats.items() if k.startswith('pwr_')}
     pwr_total_summary = ", ".join(f"{c} {n}" for n, c in sorted(pwr_totals.items()))

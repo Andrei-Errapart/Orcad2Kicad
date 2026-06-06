@@ -22,12 +22,16 @@ pip install olefile
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--no-worksheet] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
-references, a symbol library, and a KiCad project file. Output defaults to a
-directory named after the DSN file.
+references, a symbol library, a KiCad project file, and, by default, a
+project-local zero-margin worksheet (`.kicad_wks`). The worksheet keeps KiCad's
+standard border, coordinate markers, and title block, but uses page-corner
+anchors with zero margins so it follows the original sheet size instead of
+applying KiCad's default drawing-sheet inset. Output defaults to a directory
+named after the DSN file.
 
 The `scripts/dsn2kicad` wrapper creates a small Python virtualenv on first use
 under the user's cache directory, falling back to the temp directory if needed.
@@ -47,6 +51,8 @@ Options:
   nudged just enough to avoid overlapping the shorter KiCad resistor body, and
   wires are extended to the native pin hotpoints. Capacitor Reference/Value
   placement remains the OrCAD-derived placement.
+- `--no-worksheet` — Do not emit or reference the project-local worksheet; KiCad
+  will use its configured/default drawing sheet instead.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
 - `--debug-ref-val` — Overlay text-placement markers on every component: a red
   circle at the instance origin (`loc`) tagged with the mirror flag (`H`), plus

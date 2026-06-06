@@ -997,21 +997,22 @@ def parse_page_graphics(data, paper='A3'):
     Rectangle-only fields (+46..+61, total record = 62 bytes):
       +46..+49  u32 LineStyle (0=solid, 1=dash, 2=dot, 3=dash-dot, 4=dash-dot-dot)
       +50..+53  u32 LineWidth (0=thin, 1=medium, 2=wide, 3=default)
-      +54..+57  u32 FillStyle (0=no fill, 1=solid/outline, 2=diagonal hatch)
+      +54..+57  u32 FillStyle (0=solid color fill, 1=no fill,
+                2=diagonal hatch)
       +58..+61  s32 HatchStyle (-1=invalid, 0=horiz, 1=vert, 2=diag-left,
                 3=diag-right, 4=checkerboard, 5=mesh)
 
     Line records are 54 bytes; the +46 fields overlap the next record's
-    marker, so style/fill can only be read for rectangles.
+    marker, so style/fill can only be read for rectangles and ellipses.
 
     Records that fall entirely inside the title-block region at the
     bottom-right corner of the page are filtered out (KiCad redraws the
     title-block frame from the (title_block ...) data).
 
     Returns (rects, lines, ellipses, polygons). Each rect is a dict with
-    keys {x1, y1, x2, y2, rgba, width, fill, stroke_type}. Lines/ellipses
-    have {x1, y1, x2, y2, rgba, width}. Polygons have {points, rgba, fill}
-    (see _parse_page_polygon).
+    keys {x1, y1, x2, y2, rgba, width, fill, stroke_type}. Lines have
+    {x1, y1, x2, y2, rgba, width}. Ellipses have the rectangle fields except
+    stroke_type. Polygons have {points, rgba, fill} (see _parse_page_polygon).
     """
     page_w, page_h = ORCAD_PAGE_SIZE.get(paper, (1654, 1170))
     tb_x = page_w - TB_REGION_W
@@ -1052,7 +1053,7 @@ def parse_page_graphics(data, paper='A3'):
         width_mm = 0.15
         fill = 'none'
         stroke_type = 'default'
-        if tag == PAGE_RECT_TYPE_WORD and m + 62 <= len(data):
+        if tag in (PAGE_RECT_TYPE_WORD, PAGE_ELLIPSE_TYPE_WORD) and m + 62 <= len(data):
             line_style = struct.unpack_from('<I', data, m + 46)[0]
             if line_style == 1:
                 stroke_type = 'dash'
@@ -1629,7 +1630,8 @@ def sch_rectangle(x1, y1, x2, y2, color='black', width=0.15, fill='none',
     )
 
 
-def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None):
+def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None,
+                fill='none', fill_color=None):
     """KiCad ellipse as a circle or polyline approximation on a schematic page."""
     cx = (x1 + x2) / 2
     cy = (y1 + y2) / 2
@@ -1637,6 +1639,10 @@ def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None):
     ry = abs(y2 - y1) / 2
     if rgba is None:
         rgba = _COLOR_RGBA.get(color, _COLOR_RGBA['black'])
+    fill_part = f"(fill (type {fill})"
+    if fill_color:
+        fill_part += f" (color {fill_color})"
+    fill_part += ")"
     if abs(rx - ry) < 0.01:
         uid = new_uuid()
         return (
@@ -1648,7 +1654,7 @@ def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None):
             f"\t\t\t(type default)\n"
             f"\t\t\t(color {rgba})\n"
             f"\t\t)\n"
-            f"\t\t(fill (type none))\n"
+            f"\t\t{fill_part}\n"
             f"\t\t(uuid \"{uid}\")\n"
             f"\t)\n"
         )
@@ -1656,6 +1662,9 @@ def sch_ellipse(x1, y1, x2, y2, color='black', width=0.15, n=32, rgba=None):
     for i in range(n + 1):
         angle = 2 * math.pi * i / n
         pts.append((cx + rx * math.cos(angle), cy + ry * math.sin(angle)))
+    if fill != 'none':
+        return sch_filled_polygon(
+            pts, rgba=rgba, width=width, fill=fill, fill_color=fill_color)
     return sch_polyline(pts, color=color, width=width, rgba=rgba)
 
 
@@ -3298,6 +3307,9 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
         parts.append('\t\t\t(pin_names\n')
         parts.append('\t\t\t\t(offset 1.016)\n')
         parts.append('\t\t\t\thide)\n')
+    dark_body_symbol = name in {'SWITCH'}
+    dark_body_color = '0 0 0 1'
+    dark_body_foreground = '255 255 255 1'
     parts.append(f'\t\t\t(property "Reference" "U"\n')
     parts.append(f'\t\t\t\t(at 0 {ref_y:.2f} 0)\n')
     parts.append('\t\t\t\t(effects\n')
@@ -3323,8 +3335,14 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     else:
         rects_to_emit = []
     if rects_to_emit:
-        for rx1, ry1, rx2, ry2 in rects_to_emit:
-            _emit_symbol_rectangle(parts, rx1, ry1, rx2, ry2)
+        for idx, (rx1, ry1, rx2, ry2) in enumerate(rects_to_emit):
+            if dark_body_symbol and idx == 0:
+                _emit_symbol_rectangle(
+                    parts, rx1, ry1, rx2, ry2,
+                    stroke_color=dark_body_color,
+                    fill_type='color', fill_color=dark_body_color)
+            else:
+                _emit_symbol_rectangle(parts, rx1, ry1, rx2, ry2)
     if body_polygons:
         for poly in body_polygons:
             _emit_filled_polygon(parts, poly)
@@ -3338,6 +3356,9 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t\t(stroke\n')
             parts.append('\t\t\t\t\t\t(width 0.254)\n')
             parts.append('\t\t\t\t\t\t(type default)\n')
+            if dark_body_symbol:
+                parts.append(
+                    f'\t\t\t\t\t\t(color {dark_body_foreground})\n')
             parts.append('\t\t\t\t\t)\n')
             parts.append('\t\t\t\t\t(fill\n')
             parts.append('\t\t\t\t\t\t(type none)\n')
@@ -3345,7 +3366,9 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t)\n')
     if body_lines:
         for lx1, ly1, lx2, ly2 in body_lines:
-            _emit_symbol_line(parts, lx1, ly1, lx2, ly2)
+            _emit_symbol_line(
+                parts, lx1, ly1, lx2, ly2,
+                stroke_color=dark_body_foreground if dark_body_symbol else None)
     if text_annotations:
         for ann_entry in text_annotations:
             tx, ty, text = ann_entry[0], ann_entry[1], ann_entry[2]
@@ -3374,6 +3397,9 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
                 parts.append('\t\t\t\t\t(stroke\n')
                 parts.append('\t\t\t\t\t\t(width 0.254)\n')
                 parts.append('\t\t\t\t\t\t(type default)\n')
+                if dark_body_symbol:
+                    parts.append(
+                        f'\t\t\t\t\t\t(color {dark_body_foreground})\n')
                 parts.append('\t\t\t\t\t)\n')
                 parts.append('\t\t\t\t\t(fill\n')
                 parts.append('\t\t\t\t\t\t(type none)\n')
@@ -4827,10 +4853,13 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         ))
 
     for el in page_ellipses or []:
+        el_fill = el.get('fill', 'none')
+        fill_rgba = el.get('rgba', '0 0 0 1') if el_fill == 'color' else None
         parts.append(sch_ellipse(
             dsn_to_mm(el['x1']), dsn_to_mm(el['y1']),
             dsn_to_mm(el['x2']), dsn_to_mm(el['y2']),
             rgba=el.get('rgba', '0 0 0 1'), width=el.get('width', 0.15),
+            fill=el_fill, fill_color=fill_rgba,
         ))
 
     # Decorative filled polygons (LED indicator triangles on block
@@ -5213,7 +5242,7 @@ def _emit_filled_polygon(parts, poly, indent='\t\t\t\t'):
     )
 
 
-def _emit_symbol_line(parts, x1, y1, x2, y2):
+def _emit_symbol_line(parts, x1, y1, x2, y2, stroke_color=None):
     parts.append(f'\t\t\t\t(polyline\n')
     parts.append(f'\t\t\t\t\t(pts\n')
     parts.append(f'\t\t\t\t\t\t(xy {x1:.2f} {y1:.2f})\n')
@@ -5222,6 +5251,8 @@ def _emit_symbol_line(parts, x1, y1, x2, y2):
     parts.append('\t\t\t\t\t(stroke\n')
     parts.append('\t\t\t\t\t\t(width 0.254)\n')
     parts.append('\t\t\t\t\t\t(type default)\n')
+    if stroke_color:
+        parts.append(f'\t\t\t\t\t\t(color {stroke_color})\n')
     parts.append('\t\t\t\t\t)\n')
     parts.append('\t\t\t\t\t(fill\n')
     parts.append('\t\t\t\t\t\t(type none)\n')
@@ -5229,16 +5260,21 @@ def _emit_symbol_line(parts, x1, y1, x2, y2):
     parts.append('\t\t\t\t)\n')
 
 
-def _emit_symbol_rectangle(parts, x1, y1, x2, y2):
+def _emit_symbol_rectangle(parts, x1, y1, x2, y2, stroke_color=None,
+                           fill_type='background', fill_color=None):
     parts.append(f'\t\t\t\t(rectangle\n')
     parts.append(f'\t\t\t\t\t(start {x1:.2f} {y1:.2f})\n')
     parts.append(f'\t\t\t\t\t(end {x2:.2f} {y2:.2f})\n')
     parts.append('\t\t\t\t\t(stroke\n')
     parts.append('\t\t\t\t\t\t(width 0.254)\n')
     parts.append('\t\t\t\t\t\t(type default)\n')
+    if stroke_color:
+        parts.append(f'\t\t\t\t\t\t(color {stroke_color})\n')
     parts.append('\t\t\t\t\t)\n')
     parts.append('\t\t\t\t\t(fill\n')
-    parts.append('\t\t\t\t\t\t(type background)\n')
+    parts.append(f'\t\t\t\t\t\t(type {fill_type})\n')
+    if fill_color:
+        parts.append(f'\t\t\t\t\t\t(color {fill_color})\n')
     parts.append('\t\t\t\t\t)\n')
     parts.append('\t\t\t\t)\n')
 

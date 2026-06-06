@@ -46,9 +46,12 @@ Options:
 - `--debug-ref-val` — Overlay text-placement markers on every component: a red
   circle at the instance origin (`loc`) tagged with the mirror flag (`H`), plus
   smaller light-grey circles at the raw OrCAD Reference/Value display-prop
-  corners before rotation/mirror.
+  corners before rotation/mirror. For power symbols, the light-grey marker is
+  the raw Value display-prop corner interpreted relative to the upper-left
+  corner of the OrCAD power-port record bbox.
 - `--debug-symbol` — Draw each symbol's bounding box (the Cache `SymbolBBox`, the
-  pivot for ref/value placement) as a light-blue rectangle.
+  pivot for ref/value placement) as a light-blue rectangle. Power-symbol
+  records use their page-record bbox for this overlay.
 
 Reference and Value text is placed from OrCAD display-property records. Each
 record gives the raw page-space top-left corner of the rendered text box. The
@@ -58,13 +61,16 @@ rotated and mirrored parts aligned with the OrCAD PDF without
 orientation-specific KiCad justification tables.
 Visible power-symbol Values use the same extracted schematic text style (size,
 face, bold, italic) as component Reference/Value fields, so KiCad renders their
-net names at the same visual size. Power-symbol instances are placed from OrCAD
-power-port records, including analog-ground (`AG`) records and unmatched stray
-records; the converter does not synthesize extra power symbols from wire
-endpoints. Whether a power symbol's Value (net name) is shown is taken from the
-record itself — a port whose value carries a display-prop shows it, one without
-(typically a plain `GND` triangle) hides it — rather than from a net-name match,
-so a `GND` that OrCAD does label still shows its text.
+net names at the same visual size. For power symbols, OrCAD stores the Value
+display-prop offset relative to the upper-left corner of the power-port record
+bbox; the converter uses that corner as the raw text-box top-left and then
+emits a centre-justified KiCad Value field. Power-symbol instances are placed
+from OrCAD power-port records, including analog-ground (`AG`) records and
+unmatched stray records; the converter does not synthesize extra power symbols
+from wire endpoints. Whether a power symbol's Value (net name) is shown is
+taken from the record itself — a port whose value carries a display-prop shows
+it, one without (typically a plain `GND` triangle) hides it — rather than from a
+net-name match, so a `GND` that OrCAD does label still shows its text.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the

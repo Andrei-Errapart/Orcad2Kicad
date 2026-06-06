@@ -923,6 +923,36 @@ built-in GND, rail/bar, or circle glyphs. Ground-like Cache glyph names such
 as `GND2` and `GND_SIGNAL` are accepted as GND-style power ports. GND-style
 symbols still use the controlled KiCad GND triangle path.
 
+Extracted power `GlobalSymbol` primitive coordinates are emitted with the page
+coordinate scale, 10 mil per unit (`0.254 mm`). This matches the 20-by-10
+power-port logical box stored in page records. Treating those primitives as
+5-mil units makes the VCC_BAR T-shape half-height and leaves a visible gap to
+the value text.
+
+##### Power-symbol Value display properties
+
+Power-symbol value placement is encoded in display-property records following
+the page power-port record. When present, the first display-property record is
+the visible Value placement. Its `(x, y)` offset is relative to the upper-left
+corner of the power-port record bbox:
+
+```
+bbox = (min(n4, n3), min(n5, n2), max(n4, n3), max(n5, n2))
+value_text_top_left = (bbox.left + value_prop.x, bbox.top + value_prop.y)
+```
+
+The converter interprets this point as the OrCAD rendered text-box top-left,
+measures the value text with the extracted schematic Reference/Value font style,
+converts the top-left corner to a centre anchor, and emits the KiCad Value as a
+centre-justified property. This is intentionally separate from electrical
+hotpoint placement; using the hotpoint plus the display-property offset gives
+wrong visual placement.
+
+Whether the Value is visible is also record-derived. Power-port records with a
+display-property value show the Value, while records without one hide it. This
+keeps ordinary `GND` triangles unlabeled but preserves named GND-style symbols
+such as `ADAVSS`, and any `GND` record that OrCAD explicitly labels.
+
 `scripts/dsn2kicad` matches these hotpoints to parsed wire endpoints and
 component pin coordinates. A match resolves the page-local `net_id` and marks
 that net as an object-derived power net. This replaces the earlier behavior
@@ -969,8 +999,9 @@ parser. So a power-symbol definition embedded in a per-page
 symbol as long as it contains `(power)` — KiCad's stock `power`
 library does not have to be installed system-wide.
 
-`scripts/dsn2kicad` emits two synthesized power-symbol shapes,
-modelled after OrCAD/Capsym conventions:
+When an extracted OrCAD `GlobalSymbol` glyph is unavailable,
+`scripts/dsn2kicad` falls back to synthesized power-symbol shapes modelled after
+OrCAD/Capsym conventions:
 
 - `power:GND` — KiCad's standard triangle-down glyph (the standard
   KiCad shape; OrCAD's GND triangle is similar enough).
@@ -978,9 +1009,9 @@ modelled after OrCAD/Capsym conventions:
   short horizontal cross-bar, with the rail name shown above the
   bar. This matches OrCAD's `VCC_BAR`-style rail symbol.
 
-Both shapes are emitted into both the page's inline `(lib_symbols)`
-block and the project-wide `.kicad_sym` so that resolution doesn't
-depend on `sym-lib-table` lookups outside the project directory.
+Extracted and fallback shapes are emitted into both the page's inline
+`(lib_symbols)` block and the project-wide `.kicad_sym` so that resolution
+doesn't depend on `sym-lib-table` lookups outside the project directory.
 
 #### Free-text records
 

@@ -1,25 +1,7 @@
 # Power Net Detection in OrCAD DSN Files
 
-Investigation notes for replacing the `is_power_net()` heuristic in `scripts/dsn2kicad`
-with data-driven power net classification.
-
-## Current Approach
-
-`is_power_net()` at line 2797 decides whether a wire endpoint gets a power symbol
-glyph (GND triangle / VCC bar) or a text label. It uses prefix/suffix matching:
-
-```python
-prefixes: VDD, GND, AGND, PGND, AVDD, DVDD, ADAVDD, ADAVSS, VIO, VCC, VBUS, VSS, +, -
-suffixes: _VDD, _VCC, _VSS, _GND, _VBUS
-regex:    _VBUS_(IN|OUT)\w*$
-regex:    \d[\d.]*V\d*$   (e.g. "3V3", "5V0", "1.8V")
-```
-
-Called at 7 locations (lines 2985, 2991, 3185, 3204, 3228, 4685, 4691).
-
-For test 0001 (CPU), this heuristic correctly identifies all 41 power nets and
-produces zero false positives — but it relies on naming conventions that may not hold
-for all OrCAD designs.
+Investigation notes for data-driven power net classification from OrCAD
+power-port records in `scripts/dsn2kicad`.
 
 ## Binary Format Investigation
 
@@ -150,6 +132,19 @@ OrCAD `GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
 Ground-like Cache glyph names are also accepted; `board 0005` uses `GND2` for
 the resolved net `GROUND_POWER` and `GND_SIGNAL` for the resolved net of the
 same name. GND-style symbols still use the controlled KiCad GND triangle path.
+
+The extracted power `GlobalSymbol` primitive coordinates use the same 10-mil
+unit scale as the page-record bbox. Using a 5-mil scale makes the VCC_BAR
+T-shape visibly too short inside the OrCAD power-port box.
+
+Visible power-symbol values are not placed from the electrical hotpoint. The
+page record can carry a display-property record for the Value; its `(x, y)`
+offset is relative to the upper-left corner of the power-port record bbox. The
+converter treats `bbox_upper_left + value_offset` as the OrCAD text-box
+top-left, applies the same measured-text centre/nudge conversion used for
+component Reference/Value fields, and emits a centre-justified KiCad Value.
+Records without a Value display-prop hide the Value, which covers ordinary GND
+triangles while still allowing named GND-style symbols such as `ADAVSS`.
 
 Use raw coordinates for matching to `parse_wires()` output. Multiply by 10 only when
 comparing to the DSN-unit values implied by generated KiCad output.
@@ -289,15 +284,9 @@ These nets exist ONLY as:
 2. Net table entries (name-to-id mapping)
 3. Library str_lst strings
 
-They do NOT have explicit text annotation records. OrCAD renders their labels
-implicitly from the wire's net name when displaying the VCC_BAR glyph.
-
-**Open question:** What determines whether OrCAD stores a text record for a power
-net label vs. rendering it implicitly? Possible factors:
-- Manual text placement vs. automatic labeling
-- Whether the label was edited/moved after placement
-- OrCAD version differences
-- Some other property of the VCC_BAR instance record
+They do NOT have explicit free-text annotation records. OrCAD renders their labels
+from the power-symbol instance's visible Value display-property record. The value
+text is therefore part of the power-port record, not a separate page text object.
 
 ## OrCAD Power Symbol Architecture (from manual)
 
@@ -376,20 +365,20 @@ Scattered throughout str_lst as component values (following INS instance IDs):
 
 These are indistinguishable from regular component values by structure alone.
 
-## Proposed Detection Strategy
+## Detection Strategy
 
-### Layer 1: Power-symbol hotpoint + wire endpoint match (primary)
+### Power-symbol hotpoint + wire endpoint match
 
 Parse `GND`/`VCC_BAR` records, compute hotpoints, and match those hotpoints to parsed
 wire endpoints. This directly identifies the page-local `net_id` connected to the
-power object and should replace name-based classification wherever the match exists.
+power object.
 
-### Layer 2: Text record + net table intersection (~73% coverage, high precision)
+### Text record + net table intersection
 
 Parse text records from all pages, intersect with net tables. This is the only
-method that extracts power net names directly from page-level data without heuristics.
+method that extracts some power net names directly from page-level text data.
 
-### Layer 3: Library str_lst extraction (~5% additional)
+### Library str_lst extraction
 
 - Entries following `POWER.OLB` paths → ADAVSS, ADAVDD_18_SOC
 - Entries 223-232 between "Name" and "SDTSourceLibName" keywords → VDD1G_1p8, etc.
@@ -401,19 +390,15 @@ name block when `ADAVSS` is present in the page net table.
 
 When emitting named GND-style symbols such as `ADAVSS`, use a `power:<name>` symbol
 with GND triangle geometry and keep the visible `Value` text outside the triangle.
-For generated schematic instances, the positive-Y side is visually below the symbol
-in KiCad sheet coordinates; `y + 3.81 mm` gives the text enough clearance. Plain
-`GND` still hides its value text.
+Use the same bbox-relative Value display-property placement as other power
+symbols. Plain `GND` records normally have no visible Value display-prop and
+therefore hide their value text, but a `GND` record that does carry one remains
+visible.
 
-### Layer 4: GND family (hardcoded, small fixed set)
+### GND family
 
 GND, AGND, PGND, DGND, SGND, VSS — these always use the GND triangle glyph.
 GND records in page streams never carry text records with the net name.
-
-### Layer 5: Name heuristic fallback
-
-For unmatched or malformed records, fall back to the existing pattern-matching
-heuristic and log that the classification was not object-derived.
 
 ## Ruled Out
 
@@ -453,8 +438,8 @@ These approaches were investigated and confirmed not viable:
 
 5. **Wire-to-glyph edge cases:** Hotpoint extraction solves the main attachment
    problem. Remaining cases need explanation: some symbols do not land exactly on a
-   parsed wire endpoint, and some object-derived VCC_BAR anchors appear to be absent
-   from the current heuristic-generated expected output.
+   parsed wire endpoint, usually because they connect directly to a component pin
+   or are intentionally floating.
 
 6. **GND/VCC_BAR binary structure in Cache:** These cells have a different record
    format from regular cells — preceded by `RECORD_MARKER + zeros(4) + name_len(2)`
@@ -465,24 +450,7 @@ These approaches were investigated and confirmed not viable:
 
 Test case: `board 0001`
 
-Legacy expected output classified these 42 names as power nets:
-```
-ADAVDD_18_SOC, ADAVSS, D3.3V, D3.5V, D5.0V1, D5.0V2, DDR_VDDQLP_0.6V,
-DDR_VDDQ_1.1V, DSI_VREG_0P4V, GND, LDO3_1P2, MICROSD0_1833V,
-MICROSD0_3.3V, MICROSD1_1833V, MICROSD1_3.3V, PCIE_12V0, PCIE_3V3,
-S1.2V, S1.8V, UPD_1V8, UPD_3V3, USBC_VBUS_IN, USBC_VBUS_OUT,
-USBC_VBUS_OUT1, USB_OTG_5V, VDD08_DDR, VDD09_CA55, VDD1833_SD0,
-VDD1833_SD1, VDD1G_0P8, VDD1G_1P8, VDD2G_1P8, VDD3G_0P8, VDD4G_0P8,
-VDD4G_3P3, VDD5G_1P8, VDD5G_1P8_EN, VDD6G_1P2, VDD6G_1P2_EN,
-VDD_BUCK1, VIO1.8V, VPROG_22V
-```
-
-After hotpoint-based classification, the following previously heuristic-only names
-are considered non-power unless another OrCAD power object proves otherwise:
-`DSI_VREG_0P4V`, `VDD5G_1P8_EN`, `VDD6G_1P2_EN`.
-
-Hotpoint-based classification additionally confirms these VCC_BAR-style power nets
-that the legacy heuristic expected as labels:
+Hotpoint-based classification confirms these VCC_BAR-style power nets:
 ```
 ETH0_AVDDH, ETH0_AVDDL, ETH0_AVDDL_PLL, ETH0_DVDDH, ETH0_DVDDL,
 ETH1_AVDDH, ETH1_AVDDL, ETH1_AVDDL_PLL, ETH1_DVDDH, ETH1_DVDDL,

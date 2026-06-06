@@ -22,7 +22,7 @@ pip install olefile
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
@@ -42,6 +42,11 @@ Options:
   Without this flag, the converter extracts the original OrCAD power symbol
   glyphs (VCC_BAR, VCC_CIRCLE, GND variants) and embeds them in the symbol
   library, preserving the schematic's visual appearance.
+- `--kicad-rc` — Use KiCad's standard `Device:R` and `Device:C` symbols for
+  OrCAD resistor and capacitor cells. Resistor Reference/Value fields may be
+  nudged just enough to avoid overlapping the shorter KiCad resistor body, and
+  wires are extended to the native pin hotpoints. Capacitor Reference/Value
+  placement remains the OrCAD-derived placement.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
 - `--debug-ref-val` — Overlay text-placement markers on every component: a red
   circle at the instance origin (`loc`) tagged with the mirror flag (`H`), plus

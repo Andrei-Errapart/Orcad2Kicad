@@ -1255,7 +1255,8 @@ def sch_lib_symbols(symbols_needed):
     parts = ["\t(lib_symbols\n"]
 
     for sym_id, sym_def in symbols_needed.items():
-        parts.append(sym_def)
+        if sym_def:
+            parts.append(sym_def)
 
     parts.append("\t)\n")
     return "".join(parts)
@@ -1757,6 +1758,8 @@ def is_power_symbol_record_name(name):
 
 _kicad_native_power = {}
 _use_kicad_power = False
+_kicad_native_device = {}
+_use_kicad_rc = False
 _orcad_power_glyphs = {}
 
 
@@ -1822,6 +1825,73 @@ def load_kicad_power_library():
         pos = end
         count += 1
     print(f"  Loaded {count} symbols from {lib_path.name}")
+
+
+def _load_kicad_symbol_library(lib_filename, lib_prefix, names):
+    """Load selected symbols from an installed KiCad symbol library."""
+    search_paths = [
+        Path('/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols') / lib_filename,
+        Path('/usr/share/kicad/symbols') / lib_filename,
+        Path(os.environ.get('KICAD8_SYMBOL_DIR', '')) / lib_filename,
+        Path(os.environ.get('KICAD_SYMBOL_DIR', '')) / lib_filename,
+    ]
+    lib_path = next((p for p in search_paths if p.exists()), None)
+    if not lib_path:
+        return {}
+
+    content = lib_path.read_text(encoding='utf-8')
+    wanted = set(names)
+    loaded = {}
+    pos = 0
+    while True:
+        idx = content.find('\t(symbol "', pos)
+        if idx < 0:
+            break
+        name_start = idx + len('\t(symbol "')
+        name_end = content.index('"', name_start)
+        name = content[name_start:name_end]
+        depth = 0
+        end = idx
+        for i in range(idx, len(content)):
+            if content[i] == '(':
+                depth += 1
+            elif content[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if name in wanted:
+            body = content[idx:end]
+            lines = body.split('\n')
+            rebuilt = [f'\t\t(symbol "{lib_prefix}:{name}"']
+            for line in lines[1:]:
+                rebuilt.append('\t' + line)
+            loaded[name] = '\n'.join(rebuilt) + '\n'
+        pos = end
+    if loaded:
+        print(f"  Loaded {len(loaded)} symbols from {lib_path.name}")
+    return loaded
+
+
+def _local_symbol_with_lib_id(symbol_text, lib_id):
+    lines = symbol_text.splitlines()
+    if not lines:
+        return symbol_text
+    lines[0] = f'\t\t(symbol "{lib_id}"'
+    return "\n".join(lines) + "\n"
+
+
+def load_kicad_device_library():
+    """Load KiCad Device:R/C symbols for --kicad-rc, with local fallback."""
+    global _kicad_native_device
+    _kicad_native_device = _load_kicad_symbol_library(
+        'Device.kicad_sym', 'Device', {'R', 'C'})
+    if 'R' not in _kicad_native_device:
+        _kicad_native_device['R'] = _local_symbol_with_lib_id(
+            lib_symbol_R(), 'Device:R')
+    if 'C' not in _kicad_native_device:
+        _kicad_native_device['C'] = _local_symbol_with_lib_id(
+            lib_symbol_C(), 'Device:C')
 
 
 def _parse_global_symbol_head(data, offset):
@@ -3717,6 +3787,10 @@ def get_lib_symbol(cell_name):
     For multi-unit cells, returns the base name as lib_id so all units
     share one symbol definition.
     """
+    if _use_kicad_rc and cell_name in ('R', 'C'):
+        lib_id = f'Device:{cell_name}'
+        return (lib_id, cell_name,
+                lambda name=cell_name: _kicad_native_device.get(name))
     if cell_name in CELL_TO_KICAD:
         return CELL_TO_KICAD[cell_name]
     if cell_name in _multi_unit_cell_map:
@@ -3770,8 +3844,7 @@ def get_lib_symbol(cell_name):
             lambda name=cell_name: lib_symbol_generic_fallback(name))
 
 
-# Empty: R/C now use their OrCAD (horizontal) Cache drawing, so no vertical-body
-# remap is needed. (KiCad's built-in R/C were vertical, which is why this existed.)
+# Empty by default: R/C use their OrCAD Cache drawing unless --kicad-rc is set.
 VERTICAL_BODY_CELLS = set()
 
 def orient_to_angle(orient_byte, cell_name):
@@ -3788,6 +3861,9 @@ def orient_to_angle(orient_byte, cell_name):
     """
     orcad_angle = {0x01: 90, 0x05: 90, 0x02: 180, 0x06: 180,
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
+
+    if _use_kicad_rc and cell_name in ('R', 'C'):
+        return (90 - orcad_angle) % 360
 
     if orient_byte & 0x04:
         orcad_angle = (360 - orcad_angle) % 360
@@ -3861,6 +3937,135 @@ def _text_center_from_top_left_mm(x, y, text, text_angle,
     nudge = 0.416 * size_mm
     return (x + box_w / 2.0 + nudge * pdx,
             y + box_h / 2.0 + nudge * pdy)
+
+
+def _text_bbox_from_center_mm(center, text, text_angle,
+                              size_mm, face, bold, italic):
+    if center is None:
+        return None
+    width = (measure_text_width(text, size_mm, face or 'Arial', bold, italic)
+             * KICAD_FONT_SIZE_COMPENSATION)
+    height = (measure_text_height(text, size_mm, face or 'Arial', bold, italic)
+              * KICAD_FONT_SIZE_COMPENSATION)
+    angle = int(text_angle or 0) % 360
+    if angle in (90, 270):
+        width, height = height, width
+    cx, cy = center
+    return (cx - width / 2.0, cy - height / 2.0,
+            cx + width / 2.0, cy + height / 2.0)
+
+
+def _transform_symbol_point_mm(px, py, x, y, angle, mirror_x=False):
+    if mirror_x:
+        px = -px
+    a = math.radians(angle % 360)
+    ca, sa = math.cos(a), math.sin(a)
+    return (x + px * ca - py * sa, y + px * sa + py * ca)
+
+
+def _transformed_bbox_mm(local_bbox, x, y, angle, mirror_x=False):
+    x1, y1, x2, y2 = local_bbox
+    pts = [
+        _transform_symbol_point_mm(px, py, x, y, angle, mirror_x)
+        for px, py in ((x1, y1), (x1, y2), (x2, y1), (x2, y2))
+    ]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _bboxes_overlap(a, b):
+    return not (a[2] <= b[0] or a[0] >= b[2] or
+                a[3] <= b[1] or a[1] >= b[3])
+
+
+def _expanded_bbox(b, padding):
+    return (b[0] - padding, b[1] - padding, b[2] + padding, b[3] + padding)
+
+
+def _clearance_shift_for_axis(text_box, body_box, dx, dy):
+    if dx > 0:
+        return max(0.0, body_box[2] - text_box[0])
+    if dx < 0:
+        return max(0.0, text_box[2] - body_box[0])
+    if dy > 0:
+        return max(0.0, body_box[3] - text_box[1])
+    if dy < 0:
+        return max(0.0, text_box[3] - body_box[1])
+    return 0.0
+
+
+def _move_rc_value_clear_of_body(cell_name, center, value, text_angle,
+                                 x, y, angle, mirror_x,
+                                 size_mm, face, bold, italic):
+    """Move Device R/C value text just far enough to clear the body drawing."""
+    if center is None or cell_name not in ('R', 'C'):
+        return center
+    local_body = {
+        'R': (-1.016, -2.54, 1.016, 2.54),
+        'C': (-2.032, -0.762, 2.032, 0.762),
+    }[cell_name]
+    body_box = _expanded_bbox(
+        _transformed_bbox_mm(local_body, x, y, angle, mirror_x),
+        0.35)
+    text_box = _text_bbox_from_center_mm(
+        center, value, text_angle, size_mm, face, bold, italic)
+    if text_box is None or not _bboxes_overlap(text_box, body_box):
+        return center
+
+    text_angle = int(text_angle or 0) % 180
+    if text_angle == 90:
+        along = (0, 1)
+    else:
+        along = (1, 0)
+    perp = (-along[1], along[0])
+    cx, cy = center
+    bx = (body_box[0] + body_box[2]) / 2.0
+    by = (body_box[1] + body_box[3]) / 2.0
+
+    def _ordered(axis):
+        ax, ay = axis
+        sign = 1 if (cx - bx) * ax + (cy - by) * ay >= 0 else -1
+        return [(ax * sign, ay * sign), (-ax * sign, -ay * sign)]
+
+    candidates = []
+    for dx, dy in _ordered(along) + _ordered(perp):
+        distance = _clearance_shift_for_axis(text_box, body_box, dx, dy)
+        moved = (text_box[0] + dx * distance, text_box[1] + dy * distance,
+                 text_box[2] + dx * distance, text_box[3] + dy * distance)
+        if not _bboxes_overlap(moved, body_box):
+            candidates.append((distance, dx, dy))
+    if not candidates:
+        return center
+    distance, dx, dy = min(candidates, key=lambda c: c[0])
+    return (cx + dx * distance, cy + dy * distance)
+
+
+def _kicad_rc_pin_position(comp, pin_num):
+    """Return standard Device R/C pin hotpoint in DSN page units."""
+    if comp.get('cell') not in ('R', 'C'):
+        return None
+    pin_num = str(pin_num)
+    mirror_x = bool(comp['orient'] & 0x04)
+    if mirror_x and pin_num in ('1', '2'):
+        pin_num = '2' if pin_num == '1' else '1'
+    local = {'1': (0.0, 3.81), '2': (0.0, -3.81)}.get(pin_num)
+    if local is None:
+        return None
+    x = dsn_to_mm(comp['x'])
+    y = dsn_to_mm(comp['y'])
+    angle = orient_to_angle(comp['orient'], comp['cell'])
+    px, py = _transform_symbol_point_mm(
+        local[0], local[1], x, y, angle, mirror_x)
+    return (round(px / UNIT_TO_MM), round(py / UNIT_TO_MM))
+
+
+def _rect_contains_dsn_point(rect, point, margin=5):
+    x1, x2 = sorted((rect['x1'], rect['x2']))
+    y1, y2 = sorted((rect['y1'], rect['y2']))
+    px, py = point
+    return (x1 - margin <= px <= x2 + margin
+            and y1 - margin <= py <= y2 + margin)
 
 
 def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
@@ -4238,8 +4443,22 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # For each extended pin that has a wire, maps the old endpoint
     # position to the new (extended) position.
     pin_adjust = {}
+    rc_pin_bridges = {}
+    rc_internal_pin_wires = set()
     for comp in components:
         cell = comp['cell']
+        if _use_kicad_rc and cell in ('R', 'C'):
+            old_pins = []
+            for pn, old_x, old_y in comp.get('pins') or []:
+                old_pos = (old_x, old_y)
+                old_pins.append(old_pos)
+                new_pos = _kicad_rc_pin_position(comp, pn)
+                if new_pos and old_pos != new_pos:
+                    pin_adjust[old_pos] = new_pos
+                    rc_pin_bridges[old_pos] = new_pos
+            if len(old_pins) == 2:
+                rc_internal_pin_wires.add(frozenset(old_pins))
+
         deltas = _pin_extension_deltas.get(cell)
         if not deltas:
             continue
@@ -4271,8 +4490,21 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # pins.  The DSN-unit wire data stays untouched so labels, junctions,
     # and power-symbol logic see the original positions.
     regular_wires = []
+    regular_input_wires = [w for w in wires if not w.get('bus')]
+    bridge_input_wires = [
+        w for w in regular_input_wires
+        if frozenset(((w['x1'], w['y1']), (w['x2'], w['y2'])))
+        not in rc_internal_pin_wires
+    ]
+    direct_power_hotpoints = {
+        (sym.get('x'), sym.get('y'))
+        for sym in power_syms or []
+        if sym.get('x') is not None and sym.get('y') is not None
+    }
+    rc_pin_adjusted = set()
     bus_points = defaultdict(set)
     for w in wires:
+        original_points = frozenset(((w['x1'], w['y1']), (w['x2'], w['y2'])))
         x1 = dsn_to_mm(w['x1'])
         y1 = dsn_to_mm(w['y1'])
         x2 = dsn_to_mm(w['x2'])
@@ -4282,6 +4514,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             bus_points[w['net']].add((w['x1'], w['y1']))
             bus_points[w['net']].add((w['x2'], w['y2']))
         else:
+            if original_points in rc_internal_pin_wires:
+                continue
             new_pos = pin_adjust.get((w['x1'], w['y1']))
             if new_pos:
                 sdx = new_pos[0] - w['x1']
@@ -4291,6 +4525,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 if sdx * wdy - sdy * wdx == 0:
                     x1 = dsn_to_mm(new_pos[0])
                     y1 = dsn_to_mm(new_pos[1])
+                    rc_pin_adjusted.add((w['x1'], w['y1']))
             new_pos = pin_adjust.get((w['x2'], w['y2']))
             if new_pos:
                 sdx = new_pos[0] - w['x2']
@@ -4300,8 +4535,21 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 if sdx * wdy - sdy * wdx == 0:
                     x2 = dsn_to_mm(new_pos[0])
                     y2 = dsn_to_mm(new_pos[1])
+                    rc_pin_adjusted.add((w['x2'], w['y2']))
             parts.append(sch_wire(x1, y1, x2, y2))
             regular_wires.append(w)
+
+    if _use_kicad_rc:
+        for old_pos, new_pos in sorted(rc_pin_bridges.items()):
+            if old_pos in rc_pin_adjusted:
+                continue
+            if (old_pos not in direct_power_hotpoints
+                    and not any(_point_on_wire_segment(old_pos, w)
+                                for w in bridge_input_wires)):
+                continue
+            parts.append(sch_wire(
+                dsn_to_mm(old_pos[0]), dsn_to_mm(old_pos[1]),
+                dsn_to_mm(new_pos[0]), dsn_to_mm(new_pos[1])))
 
     # Synthesize bus entries: for each individual wire whose net is a
     # member of a bus, create a diagonal bus_entry connecting the wire
@@ -4380,6 +4628,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         val_center = _text_center_mm(
             comp.get('text_origin'), comp.get('val_off'), comp_value,
             comp.get('val_text_angle'), rv_size, rv_face, rv_bold, rv_italic)
+        if _use_kicad_rc and comp['cell'] in ('R', 'C'):
+            val_center = _move_rc_value_clear_of_body(
+                comp['cell'], val_center, comp_value,
+                comp.get('val_text_angle') if comp.get('val_text_angle') is not None else angle,
+                x, y, angle, mirror_x,
+                rv_size, rv_face, rv_bold, rv_italic)
         parts.append(sch_component(ref, lib_id, x, y, angle, comp_value,
                                    pin_numbers=pin_nums,
                                    ref_center=ref_center,
@@ -4511,9 +4765,22 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # hatch areas). Stroke width mirrors the OrCAD PDF convention
     # (0.36 pt black vs 1.08 pt red). Dashed stroke and hatch fill
     # are preserved from the binary record fields.
+    dnp_rc_points = []
+    if _use_kicad_rc:
+        for comp in components:
+            if comp.get('cell') not in ('R', 'C'):
+                continue
+            if comp.get('value_idx') is None:
+                continue
+            value = lookup_component_value(comp.get('value_idx'))
+            if value.endswith(' *DNP'):
+                dnp_rc_points.append((comp['x'], comp['y']))
     for r in page_rects or []:
         r_rgba = r.get('rgba', '0 0 0 1')
         r_fill = r.get('fill', 'none')
+        if (dnp_rc_points and r_fill == 'hatch'
+                and any(_rect_contains_dsn_point(r, p) for p in dnp_rc_points)):
+            continue
         fill_rgba = r_rgba if r_fill in ('hatch', 'color') else None
         stroke_rgba = '0 0 0 1' if r_fill == 'color' else r_rgba
         parts.append(sch_rectangle(
@@ -5867,13 +6134,17 @@ def main():
     if "--debug-symbol" in argv:
         debug_symbol = True
         argv.remove("--debug-symbol")
-    global _use_kicad_power
+    global _use_kicad_power, _use_kicad_rc
     if "--kicad-power" in argv:
         _use_kicad_power = True
         argv.remove("--kicad-power")
+    if "--kicad-rc" in argv:
+        _use_kicad_rc = True
+        argv.remove("--kicad-rc")
     if not argv:
         print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
-              f"[--debug-symbol] [--kicad-power] <file.DSN> [output_dir]",
+              f"[--debug-symbol] [--kicad-power] [--kicad-rc] "
+              f"<file.DSN> [output_dir]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -5895,6 +6166,9 @@ def main():
     if _use_kicad_power:
         print("Loading KiCad power library...")
         load_kicad_power_library()
+    if _use_kicad_rc:
+        print("Loading KiCad Device R/C symbols...")
+        load_kicad_device_library()
 
     print(f"Opening {dsn_path.name}...")
     if not _HAS_FREETYPE:

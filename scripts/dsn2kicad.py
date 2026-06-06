@@ -54,9 +54,12 @@ POWER_SYMBOL_UNIT_TO_MM = UNIT_TO_MM
 # renders ~1.4*H tall. Divide a target rendered height by it when emitting (size).
 KICAD_FONT_SIZE_COMPENSATION = 1.4
 
-# OrCAD net labels use the same visible text size as the ref/value display
-# records in the CPU fixture.
-SCHEMATIC_LABEL_FONT_SIZE_MM = 1.6329
+# OrCAD local net labels use the same visible text size as the ref/value
+# display records in the CPU fixture. KiCad global labels also draw a
+# hexagon around the text, so keep their default size to preserve 2.54 mm
+# pitch between adjacent globals.
+LOCAL_LABEL_FONT_SIZE_MM = 1.6329
+GLOBAL_LABEL_FONT_SIZE_MM = 1.27
 
 # Record marker in DSN page streams
 RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
@@ -1656,7 +1659,7 @@ def sch_junction(x, y):
 def sch_label(name, x, y, angle=0):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
-    size = SCHEMATIC_LABEL_FONT_SIZE_MM
+    size = LOCAL_LABEL_FONT_SIZE_MM
     if angle in (180, 270):
         justify = "right bottom"
     else:
@@ -1678,7 +1681,7 @@ def sch_label(name, x, y, angle=0):
 def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
-    size = SCHEMATIC_LABEL_FONT_SIZE_MM
+    size = GLOBAL_LABEL_FONT_SIZE_MM
     justify = "right" if angle == 180 else "left"
     return (
         f"\t(global_label \"{name_esc}\"\n"

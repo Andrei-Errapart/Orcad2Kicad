@@ -54,6 +54,10 @@ POWER_SYMBOL_UNIT_TO_MM = UNIT_TO_MM
 # renders ~1.4*H tall. Divide a target rendered height by it when emitting (size).
 KICAD_FONT_SIZE_COMPENSATION = 1.4
 
+# OrCAD net labels use the same visible text size as the ref/value display
+# records in the CPU fixture.
+SCHEMATIC_LABEL_FONT_SIZE_MM = 1.6329
+
 # Record marker in DSN page streams
 RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
 
@@ -1652,6 +1656,7 @@ def sch_junction(x, y):
 def sch_label(name, x, y, angle=0):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
+    size = SCHEMATIC_LABEL_FONT_SIZE_MM
     if angle in (180, 270):
         justify = "right bottom"
     else:
@@ -1661,7 +1666,7 @@ def sch_label(name, x, y, angle=0):
         f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
         f"\t\t(effects\n"
         f"\t\t\t(font\n"
-        f"\t\t\t\t(size 1.27 1.27)\n"
+        f"\t\t\t\t(size {size:.4f} {size:.4f})\n"
         f"\t\t\t)\n"
         f"\t\t\t(justify {justify})\n"
         f"\t\t)\n"
@@ -1673,6 +1678,7 @@ def sch_label(name, x, y, angle=0):
 def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
     uid = new_uuid()
     name_esc = _esc_kicad_str(name)
+    size = SCHEMATIC_LABEL_FONT_SIZE_MM
     justify = "right" if angle == 180 else "left"
     return (
         f"\t(global_label \"{name_esc}\"\n"
@@ -1680,7 +1686,7 @@ def sch_global_label(name, x, y, angle=0, shape="bidirectional"):
         f"\t\t(at {x:.2f} {y:.2f} {angle})\n"
         f"\t\t(effects\n"
         f"\t\t\t(font\n"
-        f"\t\t\t\t(size 1.27 1.27)\n"
+        f"\t\t\t\t(size {size:.4f} {size:.4f})\n"
         f"\t\t\t)\n"
         f"\t\t\t(justify {justify})\n"
         f"\t\t)\n"

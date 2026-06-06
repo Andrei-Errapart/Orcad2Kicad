@@ -4015,6 +4015,38 @@ def point_touches_wire(point, wires):
     return False
 
 
+def _point_on_wire_segment(point, wire):
+    px, py = point
+    x1, y1 = wire['x1'], wire['y1']
+    x2, y2 = wire['x2'], wire['y2']
+    if x1 == x2:
+        return px == x1 and min(y1, y2) <= py <= max(y1, y2)
+    if y1 == y2:
+        return py == y1 and min(x1, x2) <= px <= max(x1, x2)
+    return False
+
+
+def _wire_component_finder(wires):
+    """Return a union-find `find` function for connected wire groups."""
+    parent = list(range(len(wires)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, wi in enumerate(wires):
+        endpoints_i = [(wi['x1'], wi['y1']), (wi['x2'], wi['y2'])]
+        for j in range(i + 1, len(wires)):
+            wj = wires[j]
+            endpoints_j = [(wj['x1'], wj['y1']), (wj['x2'], wj['y2'])]
+            if (any(_point_on_wire_segment(p, wj) for p in endpoints_i)
+                    or any(_point_on_wire_segment(p, wi) for p in endpoints_j)):
+                parent[find(i)] = find(j)
+    return find
+
+
 def compute_wire_endpoints(wires):
     """Find endpoints of wire segments — points that appear an odd number of times."""
     point_count = defaultdict(int)
@@ -4392,6 +4424,15 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     endpoints = compute_wire_endpoints(regular_wires)
     labels = place_net_labels(regular_wires, net_table, endpoints)
     emitted_label_keys = set()
+    wire_group_for = _wire_component_finder(regular_wires)
+    explicit_local_alias_groups = defaultdict(set)
+    for alias in net_aliases or []:
+        if (alias['x'], alias['y']) in power_positions:
+            continue
+        alias_point = (alias['x'], alias['y'])
+        for i, w in enumerate(regular_wires):
+            if w.get('net') == alias['name'] and _point_on_wire_segment(alias_point, w):
+                explicit_local_alias_groups[alias['name']].add(wire_group_for(i))
 
     def append_label_once(kind, name, raw_x, raw_y, x, y, angle):
         key = (kind, name, raw_x, raw_y, angle)
@@ -4416,6 +4457,11 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             append_label_once('global', lbl['name'], lbl['x'], lbl['y'],
                               x, y, lbl['angle'])
         else:
+            if any(_point_on_wire_segment((lbl['x'], lbl['y']), w)
+                   and wire_group_for(i) in explicit_local_alias_groups[lbl['name']]
+                   for i, w in enumerate(regular_wires)
+                   if w.get('net') == lbl['name']):
+                continue
             local_angle = (lbl['angle'] + 180) % 360
             append_label_once('label', lbl['name'], lbl['x'], lbl['y'],
                               x, y, local_angle)

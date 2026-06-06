@@ -46,8 +46,9 @@ except ImportError:
 # OrCAD coordinate unit: 10 mils = 0.254 mm
 UNIT_TO_MM = 0.254
 
-# OrCAD GlobalSymbol primitive coordinates use 5 mil units.
-POWER_SYMBOL_UNIT_TO_MM = 0.127
+# OrCAD power GlobalSymbol primitive coordinates use the same 10 mil units as
+# the page record bbox that places the symbol.
+POWER_SYMBOL_UNIT_TO_MM = UNIT_TO_MM
 
 # KiCad's outline-font renderer scales glyphs by this factor, so a `(size H H)`
 # renders ~1.4*H tall. Divide a target rendered height by it when emitting (size).
@@ -784,6 +785,25 @@ def _transform_power_symbol_anchor(sym, anchor_x, anchor_y, width, height):
         y = y1 + anchor_x
 
     return (int(round(x)), int(round(y)))
+
+
+def _power_symbol_record_bbox(sym):
+    coords = sym.get('coords')
+    if not coords or len(coords) != 6:
+        return None
+    _loc_y, _loc_x, y2, x2, x1, y1 = coords
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def _power_value_center_mm(sym, text, size_mm, face, bold, italic):
+    off = sym.get('value_off') if sym is not None else None
+    record_bbox = _power_symbol_record_bbox(sym) if sym is not None else None
+    if off is None or record_bbox is None:
+        return None
+    return _text_center_from_top_left_mm(
+        dsn_to_mm(record_bbox[0] + off[0]),
+        dsn_to_mm(record_bbox[1] + off[1]),
+        text, sym.get('value_text_angle'), size_mm, face, bold, italic)
 
 
 def _power_symbol_hotpoint_candidates(sym):
@@ -2339,8 +2359,6 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
         lib_id = f"power:{name_esc}"
         pin_name = name
 
-    val_x, val_y, val_angle = _automatic_power_value_position(
-        name, x, y, is_ground, angle)
     # Hide the Value from the OrCAD record itself: a power port whose value text
     # is hidden carries no value display-prop, so `value_visible` is False (GND
     # symbols, which show only the triangle). When the caller has no record
@@ -2350,10 +2368,16 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
     else:
         hide_value = not value_visible
     val_hide = '\t\t\t\t(hide yes)\n' if hide_value else ''
+    val_x, val_y = val_center if val_center is not None else (x, y)
+    val_angle = 0
+    if val_text_angle is not None:
+        val_angle = (int(val_text_angle) - angle) % 360
+        if val_angle >= 180:
+            val_angle -= 180
+    if val_center is None and not hide_value:
+        val_hide = '\t\t\t\t(hide yes)\n'
     if val_center is not None and not val_hide:
         val_x, val_y = val_center
-        if val_text_angle is not None:
-            val_angle = int(val_text_angle) % 360
 
     def _font_block(indent):
         out = [f"{indent}(font\n"]
@@ -2404,31 +2428,6 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
         f"\t\t)\n"
         f"\t)\n"
     )
-
-
-def _automatic_power_value_position(name, x, y, is_ground=False, angle=0):
-    # TODO: document the magic offsets below (5.72, 3.81, 2.54 mm). They were
-    # tuned to match OrCAD's power-symbol value placement; record where each
-    # comes from (glyph extent / font baseline) instead of leaving bare numbers.
-    angle = int(round(angle)) % 360
-    if angle in (90, 270):
-        text_offset = 5.72
-        val_x = x + (text_offset if angle == 270 else -text_offset)
-        val_y = y
-        val_angle = angle
-    elif is_ground:
-        val_x = x
-        val_y = y + 3.81
-        val_angle = 0
-    elif _use_kicad_power:
-        val_x = x
-        val_y = y - 3.81
-        val_angle = 0
-    else:
-        val_x = x
-        val_y = y - 2.54
-        val_angle = 0
-    return val_x, val_y, val_angle
 
 
 def _esc_kicad_str(s):
@@ -3813,8 +3812,14 @@ def _text_center_mm(origin, off, text, text_angle,
     """
     if origin is None or off is None:
         return None
-    x = dsn_to_mm(origin[0] + off[0])
-    y = dsn_to_mm(origin[1] + off[1])
+    return _text_center_from_top_left_mm(
+        dsn_to_mm(origin[0] + off[0]), dsn_to_mm(origin[1] + off[1]),
+        text, text_angle, size_mm, face, bold, italic)
+
+
+def _text_center_from_top_left_mm(x, y, text, text_angle,
+                                  size_mm, face, bold, italic):
+    """Convert an OrCAD text-box top-left corner to a KiCad centre anchor."""
     width = (measure_text_width(text, size_mm, face or 'Arial', bold, italic)
              * KICAD_FONT_SIZE_COMPENSATION)
     height = (measure_text_height(text, size_mm, face or 'Arial', bold, italic)
@@ -4340,12 +4345,16 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         # Value visibility comes from the OrCAD record: a hidden value has no
         # display-prop (GND triangles); a shown value (named rails, AGND) has one.
         value_visible = bool(sym.get('display_props')) if sym is not None else None
+        val_center = (_power_value_center_mm(
+            sym, net_name, rv_size, rv_face, rv_bold, rv_italic)
+            if sym is not None else None)
         parts.append(sch_power_symbol(
             net_name, dsn_to_mm(px), dsn_to_mm(py),
             _is_gnd_power_name(net_name), angle=angle,
             text_size_mm=rv_size, text_face=rv_face,
             text_bold=rv_bold, text_italic=rv_italic,
-            val_center=None, val_text_angle=None,
+            val_center=val_center,
+            val_text_angle=(sym.get('value_text_angle') if sym is not None else None),
             value_visible=value_visible))
         power_positions.add((px, py))
 
@@ -4577,7 +4586,6 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # The differing radii stay readable when the two overlap.
     if debug_ref_val:
         red = _COLOR_RGBA['red']
-        yellow = _COLOR_RGBA['yellow']
         lightgrey = _COLOR_RGBA['lightgrey']
         for comp in components:
             torg = comp.get('text_origin')   # = loc (DSN units)
@@ -4606,16 +4614,13 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             px, py = sym.get('x'), sym.get('y')
             if px is None or py is None or not net_name or net_name == 'GND':
                 continue
-            angle = _power_symbol_angle_from_record(sym)
-            auto_x, auto_y, _auto_angle = _automatic_power_value_position(
-                net_name, dsn_to_mm(px), dsn_to_mm(py),
-                _is_gnd_power_name(net_name), angle)
-            parts.append(_debug_marker(auto_x, auto_y, yellow,
-                                       radius=1.45, dot=0.28))
             if off is None:
                 continue
-            ux = dsn_to_mm(px + off[0])
-            uy = dsn_to_mm(py + off[1])
+            record_bbox = _power_symbol_record_bbox(sym)
+            if record_bbox is None:
+                continue
+            ux = dsn_to_mm(record_bbox[0] + off[0])
+            uy = dsn_to_mm(record_bbox[1] + off[1])
             parts.append(_debug_marker(ux, uy, lightgrey,
                                        radius=1.75, dot=0.34))
 
@@ -4640,13 +4645,12 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 dsn_to_mm(max(xs)), dsn_to_mm(max(ys)),
                 color='lightblue', width=0.1))
         for sym in power_syms or []:
-            coords = sym.get('coords')
-            if not coords or len(coords) != 6:
+            record_bbox = _power_symbol_record_bbox(sym)
+            if record_bbox is None:
                 continue
-            _loc_y, _loc_x, y2, x2, x1, y1 = coords
             parts.append(sch_rectangle(
-                dsn_to_mm(min(x1, x2)), dsn_to_mm(min(y1, y2)),
-                dsn_to_mm(max(x1, x2)), dsn_to_mm(max(y1, y2)),
+                dsn_to_mm(record_bbox[0]), dsn_to_mm(record_bbox[1]),
+                dsn_to_mm(record_bbox[2]), dsn_to_mm(record_bbox[3]),
                 color='lightblue', width=0.1))
 
     parts.append(sch_footer())

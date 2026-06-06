@@ -4469,14 +4469,16 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # Net-alias labels — explicit labels from OrCAD net-alias records.
     # These may repeat the same net name at multiple wire segments; keep
     # each explicit OrCAD placement instead of suppressing by net name.
-    # Unlike wire-endpoint labels, alias labels are placed ON the wire
-    # and their text should extend along the wire toward the far end.
+    # The DSN alias location is the rendered text origin.  Do not infer a
+    # label angle from the owning wire: in stacked short stubs that makes
+    # labels in one visual column flip independently when the alias point is
+    # slightly closer to one wire end than the other.
     for alias in net_aliases or []:
         if (alias['x'], alias['y']) in power_positions:
             continue
         x = dsn_to_mm(alias['x'])
         y = dsn_to_mm(alias['y'])
-        angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
+        angle = 0
         append_label_once('label', alias['name'], alias['x'], alias['y'],
                           x, y, angle)
 

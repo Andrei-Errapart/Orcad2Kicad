@@ -61,7 +61,10 @@ face, bold, italic) as component Reference/Value fields, so KiCad renders their
 net names at the same visual size. Power-symbol instances are placed from OrCAD
 power-port records, including analog-ground (`AG`) records and unmatched stray
 records; the converter does not synthesize extra power symbols from wire
-endpoints.
+endpoints. Whether a power symbol's Value (net name) is shown is taken from the
+record itself — a port whose value carries a display-prop shows it, one without
+(typically a plain `GND` triangle) hides it — rather than from a net-name match,
+so a `GND` that OrCAD does label still shows its text.
 
 Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the

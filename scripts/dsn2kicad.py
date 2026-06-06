@@ -802,6 +802,10 @@ def _power_symbol_hotpoint_candidates(sym):
 def resolve_power_symbol_nets(power_syms, wires, components):
     """Resolve OrCAD power-port records to page-local net names.
 
+    TODO: unit test — cover hotpoint matching (wire-endpoint and pin), the
+    unmatched-stray fallback, and AG handling, deferred until the power-symbol
+    conversion work is settled.
+
     A power port may attach to a wire endpoint or directly to a component pin.
     The DSN power-port record itself has no net_id, so the net is recovered by
     matching the derived hotpoint against those two connectivity indexes.
@@ -876,19 +880,13 @@ def power_symbol_styles(power_syms):
 
 
 def _power_symbol_angle_from_record(sym):
-    """Convert an OrCAD power-port record orientation to a KiCad angle."""
+    """Convert an OrCAD power-port record orientation to a KiCad angle.
+
+    TODO: unit test — cover all four orient>>8 rotations once the power-symbol
+    conversion work is settled (deferred until then).
+    """
     rot = (sym.get('orient', 0) >> 8) & 0x03
     return {0: 0, 1: 90, 2: 180, 3: 270}.get(rot, 0)
-
-
-def _power_symbol_angles_by_hotpoint(power_syms):
-    angles = {}
-    for sym in power_syms or []:
-        if not sym.get('matched') or not sym.get('net'):
-            continue
-        angles[(sym.get('x'), sym.get('y'), sym.get('net'))] = (
-            _power_symbol_angle_from_record(sym))
-    return angles
 
 
 TEXT_RECORD_TYPE_WORD = b'\x01\x00\x2e\x2e'
@@ -2325,7 +2323,8 @@ def lib_symbol_for_power_name(name, power_symbol_styles=None):
 def sch_power_symbol(name, x, y, is_ground=False, angle=0,
                      text_size_mm=1.27, text_face=None,
                      text_bold=False, text_italic=False,
-                     val_center=None, val_text_angle=None):
+                     val_center=None, val_text_angle=None,
+                     value_visible=None):
     """Generate a KiCad power symbol instance."""
     uid = new_uuid()
     pin_uid = new_uuid()
@@ -2342,7 +2341,15 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
 
     val_x, val_y, val_angle = _automatic_power_value_position(
         name, x, y, is_ground, angle)
-    val_hide = '\t\t\t\t(hide yes)\n' if is_ground and name == 'GND' else ''
+    # Hide the Value from the OrCAD record itself: a power port whose value text
+    # is hidden carries no value display-prop, so `value_visible` is False (GND
+    # symbols, which show only the triangle). When the caller has no record
+    # information (value_visible is None) fall back to the GND-name heuristic.
+    if value_visible is None:
+        hide_value = is_ground and name == 'GND'
+    else:
+        hide_value = not value_visible
+    val_hide = '\t\t\t\t(hide yes)\n' if hide_value else ''
     if val_center is not None and not val_hide:
         val_x, val_y = val_center
         if val_text_angle is not None:
@@ -2400,6 +2407,9 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
 
 
 def _automatic_power_value_position(name, x, y, is_ground=False, angle=0):
+    # TODO: document the magic offsets below (5.72, 3.81, 2.54 mm). They were
+    # tuned to match OrCAD's power-symbol value placement; record where each
+    # comes from (glyph extent / font baseline) instead of leaving bare numbers.
     angle = int(round(angle)) % 360
     if angle in (90, 270):
         text_offset = 5.72
@@ -2922,7 +2932,15 @@ def _min_pin_length_for_numbers(classified):
 
 
 def _symbol_pin_visibility(classified, cell_name=None):
-    """Return (hide_pin_names, hide_pin_numbers) for generated symbols."""
+    """Return (hide_pin_names, hide_pin_numbers) for generated symbols.
+
+    TODO: unit test — cover the 2-pin capacitor branches and the cache /
+    per-pin-flag paths (deferred until the placement/visibility work is settled).
+    Note: the bare-primitive capacitor cell 'C' has no Cache LibraryPart and its
+    per-pin records do not flag hidden numbers, so the _is_capacitor_cell_name
+    heuristic is currently required; cells with a Cache entry (R, POL) are driven
+    by the real pin_number_visible flag.
+    """
     if cell_name and cell_name in _cache_pin_visibility:
         pnv, pnumv = _cache_pin_visibility[cell_name]
         if len(classified) == 2 and _is_capacitor_cell_name(cell_name):
@@ -3808,6 +3826,10 @@ def _text_center_mm(origin, off, text, text_angle,
         box_w, box_h = width, height
     pdx, pdy = {0: (0, 1), 90: (1, 0), 180: (0, -1),
                 270: (-1, 0)}.get(angle, (0, 1))
+    # TODO: document the 0.416 nudge factor. It is the empirical fraction of the
+    # font size between the em-box top and the cap-height top that aligns the
+    # converted text box with OrCAD's; derive it from font metrics (ascender /
+    # units_per_EM) instead of the bare constant. Mirrors tests/kicad_pdf_join.py.
     nudge = 0.416 * size_mm
     return (x + box_w / 2.0 + nudge * pdx,
             y + box_h / 2.0 + nudge * pdy)
@@ -4315,12 +4337,16 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     power_positions = set()
 
     def _append_power_symbol(net_name, px, py, angle, sym=None):
+        # Value visibility comes from the OrCAD record: a hidden value has no
+        # display-prop (GND triangles); a shown value (named rails, AGND) has one.
+        value_visible = bool(sym.get('display_props')) if sym is not None else None
         parts.append(sch_power_symbol(
             net_name, dsn_to_mm(px), dsn_to_mm(py),
             _is_gnd_power_name(net_name), angle=angle,
             text_size_mm=rv_size, text_face=rv_face,
             text_bold=rv_bold, text_italic=rv_italic,
-            val_center=None, val_text_angle=None))
+            val_center=None, val_text_angle=None,
+            value_visible=value_visible))
         power_positions.add((px, py))
 
     for sym in power_syms or []:

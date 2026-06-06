@@ -4382,45 +4382,48 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     # Labels for regular (non-bus) wires
     endpoints = compute_wire_endpoints(regular_wires)
     labels = place_net_labels(regular_wires, net_table, endpoints)
-    labeled_nets = set()
+    emitted_label_keys = set()
+
+    def append_label_once(kind, name, raw_x, raw_y, x, y, angle):
+        key = (kind, name, raw_x, raw_y, angle)
+        if key in emitted_label_keys:
+            return
+        emitted_label_keys.add(key)
+        if kind == 'global':
+            parts.append(sch_global_label(name, x, y, angle=angle))
+        else:
+            parts.append(sch_label(name, x, y, angle=angle))
+
     for lbl in labels:
         if (lbl['x'], lbl['y']) in power_positions:
             continue
         if (lbl['x'], lbl['y']) in pin_positions:
             continue
-        labeled_nets.add(lbl['name'])
         x = dsn_to_mm(lbl['x'])
         y = dsn_to_mm(lbl['y'])
         if _is_power_net_for_page(lbl['name'], power_net_names):
             continue
         elif lbl['name'] in global_nets and lbl['name'] not in bus_member_nets:
-            parts.append(sch_global_label(lbl['name'], x, y, angle=lbl['angle']))
+            append_label_once('global', lbl['name'], lbl['x'], lbl['y'],
+                              x, y, lbl['angle'])
         else:
             local_angle = (lbl['angle'] + 180) % 360
-            parts.append(sch_label(lbl['name'], x, y, angle=local_angle))
+            append_label_once('label', lbl['name'], lbl['x'], lbl['y'],
+                              x, y, local_angle)
 
     # Net-alias labels — explicit labels from OrCAD net-alias records.
-    # These provide labels for nets where wire-endpoint labels were
-    # filtered (e.g. pin-to-pin wires with no free endpoint).
+    # These may repeat the same net name at multiple wire segments; keep
+    # each explicit OrCAD placement instead of suppressing by net name.
     # Unlike wire-endpoint labels, alias labels are placed ON the wire
     # and their text should extend along the wire toward the far end.
     for alias in net_aliases or []:
-        if alias['name'] in labeled_nets:
-            continue
         if (alias['x'], alias['y']) in power_positions:
             continue
-        labeled_nets.add(alias['name'])
         x = dsn_to_mm(alias['x'])
         y = dsn_to_mm(alias['y'])
         angle = _alias_label_angle(alias['x'], alias['y'], regular_wires)
-        if _is_power_net_for_page(alias['name'], power_net_names):
-            continue
-        elif is_bus_net(alias['name']):
-            parts.append(sch_label(alias['name'], x, y, angle=angle))
-        elif alias['name'] in global_nets and alias['name'] not in bus_member_nets:
-            parts.append(sch_global_label(alias['name'], x, y, angle=angle))
-        else:
-            parts.append(sch_label(alias['name'], x, y, angle=angle))
+        append_label_once('label', alias['name'], alias['x'], alias['y'],
+                          x, y, angle)
 
     # Bus labels — placed at free endpoints of bus wires.
     bus_wires = [w for w in wires if w.get('bus')]

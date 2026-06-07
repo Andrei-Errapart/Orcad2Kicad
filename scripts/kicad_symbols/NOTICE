@@ -21,7 +21,9 @@ License: Creative Commons CC-BY-SA 4.0 with the KiCad Library Exception.
          the CC-BY-SA terms propagating to the design; redistribution of the
          library files themselves (as here) remains under CC-BY-SA 4.0.
 
-The embedded font advance tables (../text_metrics_data.py) are derived metrics,
-not font outlines. The Newstroke-derived figures come from KiCad's
-newstroke_font.cpp (KiCad, GPL-2.0-or-later); the Arial-family/Courier figures
-are advance widths measured from metric-compatible fonts (see gen_text_metrics.py).
+The embedded font advance tables (../text_metrics_data.py) are derived metrics
+(numbers), not font outlines. The Arial / Arial Narrow / Courier New figures are
+measured from the metric-compatible Liberation fonts (Liberation Sans / Sans
+Narrow / Mono; OFL-1.1, the Narrow face GPL-2.0 + font exception) — no proprietary
+font is used. The Newstroke figures come from KiCad's newstroke_font.cpp (KiCad,
+GPL-2.0-or-later). See gen_text_metrics.py.

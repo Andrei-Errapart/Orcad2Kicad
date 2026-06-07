@@ -8,11 +8,13 @@ from precomputed per-glyph tables in ``text_metrics_data.py`` (advance / top /
 bot in font units), so the converter runs anywhere CPython runs — including
 Pyodide in a browser, where ctypes and system fonts are unavailable.
 
-The tables were generated (see ``gen_text_metrics.py``) from the *same* freetype
-``FT_LOAD_NO_SCALE`` advances the old code measured, so for the printable-ASCII
-text the converter emits these functions return identical values — placement is
-unchanged. Faces covered: Arial, Arial Narrow, Courier New (regular/bold/italic/
-bold-italic) and KiCad's built-in Newstroke stroke font.
+The tables are generated (see ``gen_text_metrics.py``) from the metric-compatible
+**Liberation** fonts (Liberation Sans / Sans Narrow / Mono ≡ Arial / Arial Narrow
+/ Courier New), whose advance widths are bit-identical to Arial's. So the metrics
+carry no proprietary-font dependency while horizontal placement stays exact; the
+handful of glyphs whose vertical extent differs shift placement by <0.1 mm, far
+inside the test tolerance. Faces covered: Arial, Arial Narrow, Courier New
+(regular/bold/italic/bold-italic) and KiCad's built-in Newstroke stroke font.
 """
 
 try:

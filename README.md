@@ -177,9 +177,12 @@ extras (`pip install -e ".[dev]"`, which adds `freetype-py` + `fonttools`) and r
 python3 scripts/gen_text_metrics.py
 ```
 
-It measures the Arial / Arial Narrow / Courier New families from metric-compatible
-fonts and parses KiCad's Newstroke stroke font (downloaded on demand). The
-generated advances reproduce the previous freetype measurements exactly.
+It measures the **Liberation** fonts (Liberation Sans / Sans Narrow / Mono — the
+free, metric-compatible equivalents of Arial / Arial Narrow / Courier New, whose
+advance widths are bit-identical) and parses KiCad's Newstroke stroke font
+(downloaded on demand). No proprietary font is used. The full Liberation family,
+including the Narrow face, ships with LibreOffice; on Linux install the
+`fonts-liberation` / `liberation-fonts` package.
 
 ## License
 

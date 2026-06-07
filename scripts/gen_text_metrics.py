@@ -14,11 +14,12 @@ It is NOT imported at runtime and is NOT needed to run the converter. It needs
 Sources
 -------
 * Outline faces (Arial / Arial Narrow / Courier New, 4 styles each): measured
-  with freetype from the same TTF candidates ``dsn2kicad`` historically used
-  (macOS system fonts, with Liberation as the metric-compatible Linux stand-in).
-  Reusing the same freetype ``FT_LOAD_NO_SCALE`` advances means the emitted
-  table reproduces the old ``measure_text_width`` output exactly — no placement
-  regression.
+  with freetype from the **Liberation** family (Liberation Sans / Sans Narrow /
+  Mono), which is metric-compatible with those faces and free (OFL-1.1; the
+  Narrow variant is GPL-2.0 + font exception). Liberation's advance widths are
+  bit-identical to Arial's, so the emitted widths match exactly while sourcing
+  the metrics from a free font avoids any proprietary-Arial licensing question.
+  The full family — including the Narrow face — ships with LibreOffice.
 * KiCad built-in stroke font (Newstroke): advances parsed from KiCad's
   ``newstroke_font.cpp`` (each glyph encodes left/right bearing; advance =
   right - left; design grid is 21 units per em, matching KiCad's
@@ -46,70 +47,40 @@ NEWSTROKE_URL = (
     'https://gitlab.com/kicad/code/kicad/-/raw/master/common/newstroke_font.cpp'
 )
 
-# Same (face_lc, bold, italic) -> candidate TTF paths the converter used before
-# the freetype dependency was removed. The first existing file wins, so the
-# committed table reflects whatever metric-compatible font is installed.
+# Metric source: the Liberation family only. Liberation Sans ≡ Arial,
+# Liberation Sans Narrow ≡ Arial Narrow, Liberation Mono ≡ Courier New, with
+# bit-identical advance widths — so the committed metrics carry no proprietary
+# (Arial) font dependency. The first existing file per face wins. The full family
+# (including the Narrow face, dropped from Liberation 2.x) ships with LibreOffice.
+_LIBERATION_DIRS = [
+    '/Applications/LibreOffice.app/Contents/Resources/fonts/truetype',  # macOS
+    '/usr/share/fonts/truetype/liberation',                             # Debian/Ubuntu
+    '/usr/share/fonts/truetype/liberation2',
+    '/usr/share/fonts/liberation',                                      # Fedora/RHEL
+    '/usr/share/fonts/liberation-sans-narrow',
+    '/opt/homebrew/share/fonts',                                        # Homebrew
+    '/Library/Fonts',
+    str(Path.home() / 'Library' / 'Fonts'),
+]
+
+_FACE_FILES = {
+    ('arial', False, False): 'LiberationSans-Regular.ttf',
+    ('arial', True, False): 'LiberationSans-Bold.ttf',
+    ('arial', False, True): 'LiberationSans-Italic.ttf',
+    ('arial', True, True): 'LiberationSans-BoldItalic.ttf',
+    ('arial narrow', False, False): 'LiberationSansNarrow-Regular.ttf',
+    ('arial narrow', True, False): 'LiberationSansNarrow-Bold.ttf',
+    ('arial narrow', False, True): 'LiberationSansNarrow-Italic.ttf',
+    ('arial narrow', True, True): 'LiberationSansNarrow-BoldItalic.ttf',
+    ('courier new', False, False): 'LiberationMono-Regular.ttf',
+    ('courier new', True, False): 'LiberationMono-Bold.ttf',
+    ('courier new', False, True): 'LiberationMono-Italic.ttf',
+    ('courier new', True, True): 'LiberationMono-BoldItalic.ttf',
+}
+
 FONT_PATH_CANDIDATES = {
-    ('arial', False, False): [
-        '/System/Library/Fonts/Supplemental/Arial.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    ],
-    ('arial', True, False): [
-        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-    ],
-    ('arial', False, True): [
-        '/System/Library/Fonts/Supplemental/Arial Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
-    ],
-    ('arial', True, True): [
-        '/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Bold_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf',
-    ],
-    ('arial narrow', False, False): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf',
-    ],
-    ('arial narrow', True, False): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf',
-    ],
-    ('arial narrow', False, True): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Italic.ttf',
-    ],
-    ('arial narrow', True, True): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Bold Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-BoldItalic.ttf',
-    ],
-    ('courier new', False, False): [
-        '/System/Library/Fonts/Supplemental/Courier New.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
-    ],
-    ('courier new', True, False): [
-        '/System/Library/Fonts/Supplemental/Courier New Bold.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
-    ],
-    ('courier new', False, True): [
-        '/System/Library/Fonts/Supplemental/Courier New Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf',
-    ],
-    ('courier new', True, True): [
-        '/System/Library/Fonts/Supplemental/Courier New Bold Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Bold_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf',
-    ],
+    key: [str(Path(d) / fn) for d in _LIBERATION_DIRS]
+    for key, fn in _FACE_FILES.items()
 }
 
 # Printable ASCII plus a few symbols that show up in component values/labels.

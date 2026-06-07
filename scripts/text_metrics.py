@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Pure-Python text measurement — no native font library, no font files.
 
 Drop-in replacement for the freetype-backed ``measure_text_width`` /

@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 def test_esc_kicad_plain(dsn2kicad):
     assert dsn2kicad._esc_kicad_str("hello") == "hello"
 

@@ -5,6 +5,10 @@ description = "Convert OrCAD Capture .DSN schematics to KiCad format"
 requires-python = ">=3.9"
 dependencies = ["olefile>=0.46"]
 readme = "README.md"
+license = { text = "GPL-2.0-or-later" }
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+]
 
 [project.optional-dependencies]
 # Runtime needs only olefile (pure Python). freetype-py + fonttools are

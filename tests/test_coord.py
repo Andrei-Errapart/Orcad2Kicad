@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 def test_unit_to_mm_constant(dsn2kicad):
     assert dsn2kicad.UNIT_TO_MM == 0.254
 

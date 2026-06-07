@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Convert OrCAD Capture DSN schematics to KiCad format.
 
 Parses the OLE compound document (.DSN file) to extract:

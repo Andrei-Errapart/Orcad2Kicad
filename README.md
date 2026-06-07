@@ -183,7 +183,10 @@ generated advances reproduce the previous freetype measurements exactly.
 
 ## License
 
-The converter is [MIT](LICENSE).
+The converter is licensed under **GPL-2.0-or-later** — see [LICENSE](LICENSE).
+This matches KiCad's own application licensing, so the code can be reused or
+upstreamed within the KiCad ecosystem. Each source file carries an
+`SPDX-License-Identifier: GPL-2.0-or-later` header.
 
 Bundled third-party data carries its own license — see
 [`scripts/kicad_symbols/NOTICE`](scripts/kicad_symbols/NOTICE): the KiCad symbol

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Dev-only generator for ``text_metrics_data.py``.
 
 The runtime converter must measure text widths *without* any native font
@@ -281,7 +283,9 @@ def main():
         '',
         'FONT_METRICS = {',
     ]
-    out = "\n".join(header) + "\n" + "\n".join(entries) + "\n}\n"
+    spdx = ("# Copyright (C) 2026 Andrei Errapart\n"
+            "# SPDX-License-Identifier: GPL-2.0-or-later\n")
+    out = spdx + "\n".join(header) + "\n" + "\n".join(entries) + "\n}\n"
     OUT_PATH.write_text(out, encoding='utf-8')
     print(f"wrote {OUT_PATH} ({len(entries)} face variants, "
           f"{len(out)} bytes)")

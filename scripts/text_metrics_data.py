@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Embedded font advance/extent tables. AUTO-GENERATED — do not edit.
 
 Regenerate with: python3 gen_text_metrics.py

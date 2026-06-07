@@ -3308,9 +3308,6 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
         parts.append('\t\t\t(pin_names\n')
         parts.append('\t\t\t\t(offset 1.016)\n')
         parts.append('\t\t\t\thide)\n')
-    dark_body_symbol = name in {'SWITCH'}
-    dark_body_color = '0 0 0 1'
-    dark_body_foreground = '255 255 255 1'
     parts.append(f'\t\t\t(property "Reference" "U"\n')
     parts.append(f'\t\t\t\t(at 0 {ref_y:.2f} 0)\n')
     parts.append('\t\t\t\t(effects\n')
@@ -3336,14 +3333,8 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
     else:
         rects_to_emit = []
     if rects_to_emit:
-        for idx, (rx1, ry1, rx2, ry2) in enumerate(rects_to_emit):
-            if dark_body_symbol and idx == 0:
-                _emit_symbol_rectangle(
-                    parts, rx1, ry1, rx2, ry2,
-                    stroke_color=dark_body_color,
-                    fill_type='color', fill_color=dark_body_color)
-            else:
-                _emit_symbol_rectangle(parts, rx1, ry1, rx2, ry2)
+        for rx1, ry1, rx2, ry2 in rects_to_emit:
+            _emit_symbol_rectangle(parts, rx1, ry1, rx2, ry2)
     if body_polygons:
         for poly in body_polygons:
             _emit_filled_polygon(parts, poly)
@@ -3357,9 +3348,6 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t\t(stroke\n')
             parts.append('\t\t\t\t\t\t(width 0.254)\n')
             parts.append('\t\t\t\t\t\t(type default)\n')
-            if dark_body_symbol:
-                parts.append(
-                    f'\t\t\t\t\t\t(color {dark_body_foreground})\n')
             parts.append('\t\t\t\t\t)\n')
             parts.append('\t\t\t\t\t(fill\n')
             parts.append('\t\t\t\t\t\t(type none)\n')
@@ -3367,9 +3355,7 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
             parts.append('\t\t\t\t)\n')
     if body_lines:
         for lx1, ly1, lx2, ly2 in body_lines:
-            _emit_symbol_line(
-                parts, lx1, ly1, lx2, ly2,
-                stroke_color=dark_body_foreground if dark_body_symbol else None)
+            _emit_symbol_line(parts, lx1, ly1, lx2, ly2)
     if text_annotations:
         for ann_entry in text_annotations:
             tx, ty, text = ann_entry[0], ann_entry[1], ann_entry[2]
@@ -3398,9 +3384,6 @@ def lib_symbol_from_pins(name, pin_positions, body_rects=None,
                 parts.append('\t\t\t\t\t(stroke\n')
                 parts.append('\t\t\t\t\t\t(width 0.254)\n')
                 parts.append('\t\t\t\t\t\t(type default)\n')
-                if dark_body_symbol:
-                    parts.append(
-                        f'\t\t\t\t\t\t(color {dark_body_foreground})\n')
                 parts.append('\t\t\t\t\t)\n')
                 parts.append('\t\t\t\t\t(fill\n')
                 parts.append('\t\t\t\t\t\t(type none)\n')

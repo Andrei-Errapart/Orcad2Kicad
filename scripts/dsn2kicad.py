@@ -4023,14 +4023,11 @@ def _clearance_shift_for_axis(text_box, body_box, dx, dy):
 
 
 def _rc_text_clearance_body(cell_name):
-    if _use_kicad_rc:
-        return {
-            'R': (-1.016, -2.54, 1.016, 2.54),
-            'C': (-2.032, -0.762, 2.032, 0.762),
-        }.get(cell_name)
+    # Only reached under --kicad-rc (every caller is guarded), so these are the
+    # KiCad Device:R / Device:C body extents.
     return {
-        'R': (-2.54, -0.762, 2.54, 0.762),
-        'C': (-1.27, -1.27, 1.27, 1.27),
+        'R': (-1.016, -2.54, 1.016, 2.54),
+        'C': (-2.032, -0.762, 2.032, 0.762),
     }.get(cell_name)
 
 
@@ -4078,14 +4075,6 @@ def _move_rc_text_clear_of_body(cell_name, center, text, text_angle,
         return center
     distance, dx, dy = min(candidates, key=lambda c: c[0])
     return (cx + dx * distance, cy + dy * distance)
-
-
-def _move_rc_value_clear_of_body(cell_name, center, value, text_angle,
-                                 x, y, angle, mirror_x,
-                                 size_mm, face, bold, italic):
-    return _move_rc_text_clear_of_body(
-        cell_name, center, value, text_angle, x, y, angle, mirror_x,
-        size_mm, face, bold, italic)
 
 
 def _kicad_rc_pin_position(comp, pin_num):
@@ -4358,35 +4347,6 @@ def _label_angle_from_wire(endpoint, wires):
             dx, dy = ex - w['x1'], ey - w['y1']
         else:
             continue
-        if abs(dx) >= abs(dy):
-            return 0 if dx > 0 else 180
-        else:
-            return 270 if dy > 0 else 90
-    return 0
-
-
-def _alias_label_angle(ax, ay, wires):
-    """Determine label angle for a net alias placed ON a wire.
-
-    Finds the wire passing through (ax, ay) and returns the KiCad label
-    angle that makes the text extend toward the far end of the wire
-    (away from the nearest component pin).
-    """
-    for w in wires:
-        x1, y1, x2, y2 = w['x1'], w['y1'], w['x2'], w['y2']
-        on_h = (y1 == y2 == ay and min(x1, x2) <= ax <= max(x1, x2))
-        on_v = (x1 == x2 == ax and min(y1, y2) <= ay <= max(y1, y2))
-        if not (on_h or on_v):
-            continue
-        dx = x2 - x1
-        dy = y2 - y1
-        # Point toward the farther endpoint of the wire.
-        d1 = abs(ax - x1) + abs(ay - y1)
-        d2 = abs(ax - x2) + abs(ay - y2)
-        if d1 > d2:
-            dx, dy = x1 - ax, y1 - ay
-        else:
-            dx, dy = x2 - ax, y2 - ay
         if abs(dx) >= abs(dy):
             return 0 if dx > 0 else 180
         else:
@@ -4682,8 +4642,7 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
                 x, y, angle, mirror_x,
                 rv_size, rv_face, rv_bold, rv_italic,
                 padding=0.05)
-        if _use_kicad_rc and comp['cell'] == 'R':
-            val_center = _move_rc_value_clear_of_body(
+            val_center = _move_rc_text_clear_of_body(
                 comp['cell'], val_center, comp_value,
                 comp.get('val_text_angle') if comp.get('val_text_angle') is not None else angle,
                 x, y, angle, mirror_x,

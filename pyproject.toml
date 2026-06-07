@@ -7,5 +7,8 @@ dependencies = ["olefile>=0.46"]
 readme = "README.md"
 
 [project.optional-dependencies]
-freetype = ["freetype-py"]
-dev = ["pytest>=7", "olefile>=0.46"]
+# Runtime needs only olefile (pure Python). freetype-py + fonttools are
+# dev-only — used by scripts/gen_text_metrics.py to regenerate the embedded
+# font tables (text_metrics_data.py). They are NOT required to run the
+# converter, which uses the precomputed tables.
+dev = ["pytest>=7", "olefile>=0.46", "freetype-py", "fonttools"]

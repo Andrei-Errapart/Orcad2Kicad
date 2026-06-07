@@ -43,6 +43,11 @@ except ImportError:
           file=sys.stderr)
     sys.exit(1)
 
+# Pure-Python text measurement (no native font library / no font files) so the
+# converter runs anywhere, including Pyodide in a browser. Tables in
+# text_metrics_data.py reproduce the old freetype advances exactly.
+from text_metrics import measure_text_width, measure_text_height
+
 
 # OrCAD coordinate unit: 10 mils = 0.254 mm
 UNIT_TO_MM = 0.254
@@ -1382,150 +1387,11 @@ _ORCAD_PALETTE_RGBA = [
 _ORCAD_LINE_WIDTH_MM = {0: 0.15, 1: 0.30, 2: 0.50, 3: 0.15}
 
 
-# Optional: use freetype-py to measure exact text widths, so we can size
-# each free-text record to fit its OrCAD bounding box. Falls back to a
-# fixed-ratio heuristic if freetype-py isn't installed or the font file
-# isn't found on the system.
-try:
-    import freetype as _freetype
-    _HAS_FREETYPE = True
-except ImportError:
-    _freetype = None
-    _HAS_FREETYPE = False
-
-
-_FONT_PATH_CANDIDATES = {
-    # (face_lc, bold, italic) → list of TTF candidate paths (macOS + Linux)
-    ('arial', False, False): [
-        '/System/Library/Fonts/Supplemental/Arial.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    ],
-    ('arial', True, False): [
-        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-    ],
-    ('arial', False, True): [
-        '/System/Library/Fonts/Supplemental/Arial Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
-    ],
-    ('arial', True, True): [
-        '/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Arial_Bold_Italic.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf',
-    ],
-    ('arial narrow', False, False): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow.ttf',
-    ],
-    ('arial narrow', True, False): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Bold.ttf',
-    ],
-    ('arial narrow', False, True): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Italic.ttf',
-    ],
-    ('arial narrow', True, True): [
-        '/System/Library/Fonts/Supplemental/Arial Narrow Bold Italic.ttf',
-    ],
-    ('courier new', False, False): [
-        '/System/Library/Fonts/Supplemental/Courier New.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New.ttf',
-    ],
-    ('courier new', True, False): [
-        '/System/Library/Fonts/Supplemental/Courier New Bold.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Bold.ttf',
-    ],
-    ('courier new', False, True): [
-        '/System/Library/Fonts/Supplemental/Courier New Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Italic.ttf',
-    ],
-    ('courier new', True, True): [
-        '/System/Library/Fonts/Supplemental/Courier New Bold Italic.ttf',
-        '/usr/share/fonts/truetype/msttcorefonts/Courier_New_Bold_Italic.ttf',
-    ],
-}
-
-
-# Cache: {(face_lc, bold, italic): freetype.Face}
-_font_cache = {}
-
-
-def _get_font_face(face_name, bold, italic):
-    """Load a freetype Face for (face_name, bold, italic). Returns None
-    if freetype is unavailable or no candidate TTF was found."""
-    if not _HAS_FREETYPE:
-        return None
-    key = ((face_name or 'arial').lower(), bool(bold), bool(italic))
-    if key in _font_cache:
-        return _font_cache[key]
-    paths = _FONT_PATH_CANDIDATES.get(key) or _FONT_PATH_CANDIDATES.get(
-        ('arial', bool(bold), bool(italic)), [])
-    face = None
-    for p in paths:
-        if os.path.exists(p):
-            try:
-                face = _freetype.Face(p)
-                break
-            except Exception:
-                continue
-    _font_cache[key] = face
-    return face
-
-
-def measure_text_width(s, size_mm, face_name='Arial', bold=False, italic=False):
-    """Return the rendered width of `s` in mm at the given KiCad `size_mm`.
-
-    Falls back to `0.6 * size_mm * len(s)` if no font face is available.
-    """
-    if not s:
-        return 0.0
-    face = _get_font_face(face_name, bold, italic)
-    if face is None:
-        return 0.6 * size_mm * len(s)
-    # 1 em in freetype is `units_per_EM` font units (typically 2048 for Arial)
-    # and KiCad's `(size H H)` corresponds to the em height = H mm.
-    # Sum advance widths in font units, then scale by H / units_per_EM.
-    upem = face.units_per_EM
-    total = 0
-    face.set_char_size(int(upem))   # 1-em horizontal size in fontunits
-    for ch in s:
-        face.load_char(ch, _freetype.FT_LOAD_NO_BITMAP | _freetype.FT_LOAD_NO_SCALE)
-        total += face.glyph.metrics.horiAdvance
-    return total / upem * size_mm
-
-
-def measure_text_height(s, size_mm, face_name='Arial', bold=False, italic=False):
-    """Return the rendered glyph-bbox height of `s` in mm at KiCad `size_mm`.
-
-    The height is the vertical extent of the inked glyphs (max ascent above the
-    baseline minus min descent below), so e.g. an all-caps/digit string reports
-    its cap height. Falls back to `size_mm` if no font face is available.
-    """
-    if not s:
-        return 0.0
-    face = _get_font_face(face_name, bold, italic)
-    if face is None:
-        return size_mm
-    upem = face.units_per_EM
-    face.set_char_size(int(upem))
-    top, bot = None, None
-    for ch in s:
-        if ch == ' ':
-            continue
-        face.load_char(ch, _freetype.FT_LOAD_NO_BITMAP | _freetype.FT_LOAD_NO_SCALE)
-        m = face.glyph.metrics
-        gtop = m.horiBearingY               # above baseline (+)
-        gbot = m.horiBearingY - m.height    # below baseline (can be -)
-        top = gtop if top is None else max(top, gtop)
-        bot = gbot if bot is None else min(bot, gbot)
-    if top is None:
-        return size_mm
-    return (top - bot) / upem * size_mm
+# Text measurement (advance widths / glyph extents) lives in the standalone,
+# dependency-free `text_metrics` module imported at the top of this file. It
+# uses precomputed per-glyph tables (text_metrics_data.py) instead of a native
+# font library, so the converter runs unchanged under Pyodide. The tables
+# reproduce the old freetype advances exactly for the text the converter emits.
 
 
 def sch_polyline(points, color='black', width=0.15, rgba=None):
@@ -1788,6 +1654,9 @@ def load_kicad_power_library():
     The definitions are re-indented to match the inline lib_symbols format.
     """
     search_paths = [
+        # Bundled copy first, so --kicad-power works with no KiCad install
+        # (e.g. in a browser). Install paths remain a desktop fallback.
+        SCRIPT_DIR / 'kicad_symbols' / 'power.kicad_sym',
         Path('/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols/power.kicad_sym'),
         Path('/usr/share/kicad/symbols/power.kicad_sym'),
         Path(os.environ.get('KICAD8_SYMBOL_DIR', ''), 'power.kicad_sym'),
@@ -1840,6 +1709,8 @@ def load_kicad_power_library():
 def _load_kicad_symbol_library(lib_filename, lib_prefix, names):
     """Load selected symbols from an installed KiCad symbol library."""
     search_paths = [
+        # Bundled copy first (browser/no-install); install paths fall back.
+        SCRIPT_DIR / 'kicad_symbols' / lib_filename,
         Path('/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols') / lib_filename,
         Path('/usr/share/kicad/symbols') / lib_filename,
         Path(os.environ.get('KICAD8_SYMBOL_DIR', '')) / lib_filename,
@@ -1883,25 +1754,20 @@ def _load_kicad_symbol_library(lib_filename, lib_prefix, names):
     return loaded
 
 
-def _local_symbol_with_lib_id(symbol_text, lib_id):
-    lines = symbol_text.splitlines()
-    if not lines:
-        return symbol_text
-    lines[0] = f'\t\t(symbol "{lib_id}"'
-    return "\n".join(lines) + "\n"
-
-
 def load_kicad_device_library():
-    """Load KiCad Device:R/C symbols for --kicad-rc, with local fallback."""
+    """Load KiCad Device:R/C symbols for --kicad-rc from the bundled library.
+
+    Device.kicad_sym is vendored under scripts/kicad_symbols/, so R and C are
+    always present; a missing one is a packaging error, not a runtime fallback.
+    """
     global _kicad_native_device
     _kicad_native_device = _load_kicad_symbol_library(
         'Device.kicad_sym', 'Device', {'R', 'C'})
-    if 'R' not in _kicad_native_device:
-        _kicad_native_device['R'] = _local_symbol_with_lib_id(
-            lib_symbol_R(), 'Device:R')
-    if 'C' not in _kicad_native_device:
-        _kicad_native_device['C'] = _local_symbol_with_lib_id(
-            lib_symbol_C(), 'Device:C')
+    missing = {'R', 'C'} - set(_kicad_native_device)
+    if missing:
+        raise RuntimeError(
+            f"bundled Device.kicad_sym missing {sorted(missing)} (expected at "
+            f"{SCRIPT_DIR / 'kicad_symbols' / 'Device.kicad_sym'})")
 
 
 def _parse_global_symbol_head(data, offset):
@@ -2624,185 +2490,6 @@ def sch_text(txt, x, y, size=1.27, angle=0, justify="left bottom",
         f"\t\t)\n"
         f"\t\t(uuid \"{uid}\")\n"
         f"\t)\n"
-    )
-
-
-# ---------------------------------------------------------------------------
-# KiCad symbol definitions for inline lib_symbols
-# ---------------------------------------------------------------------------
-
-def lib_symbol_R():
-    return (
-        '\t\t(symbol "R"\n'
-        '\t\t\t(pin_numbers hide)\n'
-        '\t\t\t(pin_names\n'
-        '\t\t\t\t(offset 0)\n'
-        '\t\t\t\thide)\n'
-        '\t\t\t(exclude_from_sim no)\n'
-        '\t\t\t(in_bom yes)\n'
-        '\t\t\t(on_board yes)\n'
-        '\t\t\t(property "Reference" "R"\n'
-        '\t\t\t\t(at 2.032 0 90)\n'
-        '\t\t\t\t(effects\n'
-        '\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(property "Value" "R"\n'
-        '\t\t\t\t(at -2.032 0 90)\n'
-        '\t\t\t\t(effects\n'
-        '\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(symbol "R_0_1"\n'
-        '\t\t\t\t(rectangle\n'
-        '\t\t\t\t\t(start -1.016 -3.81)\n'
-        '\t\t\t\t\t(end 1.016 3.81)\n'
-        '\t\t\t\t\t(stroke\n'
-        '\t\t\t\t\t\t(width 0.254)\n'
-        '\t\t\t\t\t\t(type default)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(fill\n'
-        '\t\t\t\t\t\t(type none)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(symbol "R_1_1"\n'
-        '\t\t\t\t(pin passive line\n'
-        '\t\t\t\t\t(at 0 5.08 270)\n'
-        '\t\t\t\t\t(length 1.27)\n'
-        '\t\t\t\t\t(name "~"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(number "1"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t\t(pin passive line\n'
-        '\t\t\t\t\t(at 0 -5.08 90)\n'
-        '\t\t\t\t\t(length 1.27)\n'
-        '\t\t\t\t\t(name "~"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(number "2"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t)\n'
-    )
-
-
-def lib_symbol_C():
-    return (
-        '\t\t(symbol "C"\n'
-        '\t\t\t(pin_numbers hide)\n'
-        '\t\t\t(pin_names\n'
-        '\t\t\t\t(offset 0.254)\n'
-        '\t\t\t\thide)\n'
-        '\t\t\t(exclude_from_sim no)\n'
-        '\t\t\t(in_bom yes)\n'
-        '\t\t\t(on_board yes)\n'
-        '\t\t\t(property "Reference" "C"\n'
-        '\t\t\t\t(at 2.54 0 90)\n'
-        '\t\t\t\t(effects\n'
-        '\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(property "Value" "C"\n'
-        '\t\t\t\t(at -2.54 0 90)\n'
-        '\t\t\t\t(effects\n'
-        '\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(symbol "C_0_1"\n'
-        '\t\t\t\t(polyline\n'
-        '\t\t\t\t\t(pts\n'
-        '\t\t\t\t\t\t(xy -2.032 -0.762) (xy 2.032 -0.762)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(stroke\n'
-        '\t\t\t\t\t\t(width 0.508)\n'
-        '\t\t\t\t\t\t(type default)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(fill\n'
-        '\t\t\t\t\t\t(type none)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t\t(polyline\n'
-        '\t\t\t\t\t(pts\n'
-        '\t\t\t\t\t\t(xy -2.032 0.762) (xy 2.032 0.762)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(stroke\n'
-        '\t\t\t\t\t\t(width 0.508)\n'
-        '\t\t\t\t\t\t(type default)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(fill\n'
-        '\t\t\t\t\t\t(type none)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t\t(symbol "C_1_1"\n'
-        '\t\t\t\t(pin passive line\n'
-        '\t\t\t\t\t(at 0 3.81 270)\n'
-        '\t\t\t\t\t(length 2.794)\n'
-        '\t\t\t\t\t(name "~"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(number "1"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t\t(pin passive line\n'
-        '\t\t\t\t\t(at 0 -3.81 90)\n'
-        '\t\t\t\t\t(length 2.794)\n'
-        '\t\t\t\t\t(name "~"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t\t(number "2"\n'
-        '\t\t\t\t\t\t(effects\n'
-        '\t\t\t\t\t\t\t(font\n'
-        '\t\t\t\t\t\t\t\t(size 1.27 1.27)\n'
-        '\t\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t\t)\n'
-        '\t\t\t\t\t)\n'
-        '\t\t\t\t)\n'
-        '\t\t\t)\n'
-        '\t\t)\n'
     )
 
 
@@ -6165,54 +5852,27 @@ def parse_hierarchy_nets(ole):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    # Minimal argv parsing: --debug-bbox is a flag, other args are
-    # the input DSN and optional output directory.
-    argv = list(sys.argv[1:])
-    debug_bbox = False
-    if "--debug-bbox" in argv:
-        debug_bbox = True
-        argv.remove("--debug-bbox")
-    debug_ref_val = False
-    if "--debug-ref-val" in argv:
-        debug_ref_val = True
-        argv.remove("--debug-ref-val")
-    debug_symbol = False
-    if "--debug-symbol" in argv:
-        debug_symbol = True
-        argv.remove("--debug-symbol")
-    emit_worksheet = True
-    if "--no-worksheet" in argv:
-        emit_worksheet = False
-        argv.remove("--no-worksheet")
+def convert_dsn(ole, dsn_bytes, *, project_name,
+                use_kicad_power=False, use_kicad_rc=False,
+                emit_worksheet=True, debug_bbox=False,
+                debug_ref_val=False, debug_symbol=False):
+    """Convert an opened OrCAD DSN into KiCad project files, in memory.
+
+    `ole` is an ``olefile.OleFileIO`` over the .DSN; `dsn_bytes` is its raw
+    bytes (used to seed the deterministic UUID RNG). Returns ``{filename: text}``
+    for the whole project with no disk I/O, so the same core serves both the CLI
+    (``main``) and the browser entry point (``convert_dsn_bytes``).
+
+    Note: ``use_kicad_power`` / ``use_kicad_rc`` set module-level flags read by
+    downstream helpers, so a single process should not run conversions with
+    different options concurrently.
+    """
     global _use_kicad_power, _use_kicad_rc
-    if "--kicad-power" in argv:
-        _use_kicad_power = True
-        argv.remove("--kicad-power")
-    if "--kicad-rc" in argv:
-        _use_kicad_rc = True
-        argv.remove("--kicad-rc")
-    if not argv:
-        print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
-              f"[--debug-symbol] [--kicad-power] [--kicad-rc] "
-              f"[--no-worksheet] <file.DSN> [output_dir]",
-              file=sys.stderr)
-        sys.exit(1)
+    _use_kicad_power = use_kicad_power
+    _use_kicad_rc = use_kicad_rc
 
-    dsn_path = Path(argv[0])
-    if not dsn_path.exists():
-        print(f"DSN not found: {dsn_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if len(argv) > 1:
-        output_dir = Path(argv[1])
-    else:
-        output_dir = Path(dsn_path.stem + "_kicad")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    project_name = dsn_path.stem
     safe_project = re.sub(r'[^A-Za-z0-9_.-]', '_', project_name)
+    out = {}
 
     if _use_kicad_power:
         print("Loading KiCad power library...")
@@ -6220,14 +5880,6 @@ def main():
     if _use_kicad_rc:
         print("Loading KiCad Device R/C symbols...")
         load_kicad_device_library()
-
-    print(f"Opening {dsn_path.name}...")
-    if not _HAS_FREETYPE:
-        print("  (freetype-py not installed — using rough 0.6 width "
-              "ratio for text sizing; install `freetype-py` and ensure "
-              "Arial TTF is available for exact measurements)")
-    ole = olefile.OleFileIO(str(dsn_path))
-    dsn_bytes = dsn_path.read_bytes()
 
     # Parse title-block fields (project-wide, applied to every page)
     title_block = parse_title_block(ole)
@@ -6400,7 +6052,7 @@ def main():
         )
         content, power_ref_index = annotate_power_references_in_schematic(
             content, power_ref_index)
-        (output_dir / filename).write_text(content, encoding='utf-8')
+        out[filename] = content
 
         page_filenames.append(filename)
         page_names.append(page_name)
@@ -6435,7 +6087,7 @@ def main():
     print("  Generating root schematic...")
     seed_uuid_rng(dsn_bytes, f"{safe_project}.kicad_sch")
     root_content = generate_root_sch(page_filenames, page_names, safe_project)
-    (output_dir / f"{safe_project}.kicad_sch").write_text(root_content, encoding='utf-8')
+    out[f"{safe_project}.kicad_sch"] = root_content
 
     # Symbol library
     print("  Generating symbol library...")
@@ -6443,7 +6095,7 @@ def main():
                                       power_names=project_power_names,
                                       used_cells=project_used_cells,
                                       power_symbol_styles=project_power_symbol_styles)
-    (output_dir / f"{safe_project}.kicad_sym").write_text(sym_lib, encoding='utf-8')
+    out[f"{safe_project}.kicad_sym"] = sym_lib
 
     # sym-lib-table
     sym_lib_table = (
@@ -6455,27 +6107,101 @@ def main():
         f"(options \"\")(descr \"\"))\n"
         f")\n"
     )
-    (output_dir / "sym-lib-table").write_text(sym_lib_table, encoding='utf-8')
+    out["sym-lib-table"] = sym_lib_table
 
     # Worksheet
     worksheet_name = None
     if emit_worksheet:
         worksheet_name = f"{safe_project}.kicad_wks"
-        (output_dir / worksheet_name).write_text(generate_worksheet(), encoding='utf-8')
+        out[worksheet_name] = generate_worksheet()
 
     # Project file
-    (output_dir / f"{safe_project}.kicad_pro").write_text(
-        generate_project(safe_project, worksheet_name), encoding='utf-8')
+    out[f"{safe_project}.kicad_pro"] = generate_project(safe_project, worksheet_name)
 
     pwr_totals = {k[4:]: v for k, v in total_stats.items() if k.startswith('pwr_')}
     pwr_total_summary = ", ".join(f"{c} {n}" for n, c in sorted(pwr_totals.items()))
     if not pwr_total_summary:
         pwr_total_summary = "0 power"
 
-    print(f"\nDone → {output_dir}/")
     print(f"  {len(page_streams)} pages, {total_stats['wires']} wires, "
           f"{total_stats['components']} components, {pwr_total_summary}, "
           f"{total_stats['nets']} nets")
+    return out
+
+
+def convert_dsn_bytes(data, *, project_name='schematic', **opts):
+    """Convert raw .DSN bytes to ``{filename: text}`` entirely in memory.
+
+    Intended for browser/Pyodide use: pass the uploaded file's bytes and get the
+    KiCad project files back as strings (zip/download them client-side). `opts`
+    forwards to :func:`convert_dsn` (``use_kicad_power``, ``use_kicad_rc``,
+    ``emit_worksheet``, ``debug_*``).
+    """
+    import io
+    ole = olefile.OleFileIO(io.BytesIO(data))
+    return convert_dsn(ole, data, project_name=project_name, **opts)
+
+
+def main():
+    # Minimal argv parsing: --debug-bbox is a flag, other args are
+    # the input DSN and optional output directory.
+    argv = list(sys.argv[1:])
+    debug_bbox = False
+    if "--debug-bbox" in argv:
+        debug_bbox = True
+        argv.remove("--debug-bbox")
+    debug_ref_val = False
+    if "--debug-ref-val" in argv:
+        debug_ref_val = True
+        argv.remove("--debug-ref-val")
+    debug_symbol = False
+    if "--debug-symbol" in argv:
+        debug_symbol = True
+        argv.remove("--debug-symbol")
+    emit_worksheet = True
+    if "--no-worksheet" in argv:
+        emit_worksheet = False
+        argv.remove("--no-worksheet")
+    use_kicad_power = False
+    if "--kicad-power" in argv:
+        use_kicad_power = True
+        argv.remove("--kicad-power")
+    use_kicad_rc = False
+    if "--kicad-rc" in argv:
+        use_kicad_rc = True
+        argv.remove("--kicad-rc")
+    if not argv:
+        print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
+              f"[--debug-symbol] [--kicad-power] [--kicad-rc] "
+              f"[--no-worksheet] <file.DSN> [output_dir]",
+              file=sys.stderr)
+        sys.exit(1)
+
+    dsn_path = Path(argv[0])
+    if not dsn_path.exists():
+        print(f"DSN not found: {dsn_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if len(argv) > 1:
+        output_dir = Path(argv[1])
+    else:
+        output_dir = Path(dsn_path.stem + "_kicad")
+
+    print(f"Opening {dsn_path.name}...")
+    ole = olefile.OleFileIO(str(dsn_path))
+    dsn_bytes = dsn_path.read_bytes()
+
+    out = convert_dsn(
+        ole, dsn_bytes, project_name=dsn_path.stem,
+        use_kicad_power=use_kicad_power, use_kicad_rc=use_kicad_rc,
+        emit_worksheet=emit_worksheet, debug_bbox=debug_bbox,
+        debug_ref_val=debug_ref_val, debug_symbol=debug_symbol)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for fname, content in out.items():
+        (output_dir / fname).write_text(content, encoding='utf-8')
+
+    print(f"\nDone → {output_dir}/")
 
 
 if __name__ == "__main__":

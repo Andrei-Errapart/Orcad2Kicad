@@ -8,12 +8,17 @@ component placements, and a symbol library. The converter is still incomplete, t
 ## Requirements
 
 - Python 3.9+
-- `olefile` (for reading OLE Compound Documents)
-- Optional: `freetype-py` (for accurate text width measurement)
+- `olefile` (for reading OLE Compound Documents) — the **only** runtime dependency
 
 ```
 pip install olefile
 ```
+
+Text widths are measured from precomputed pure-Python tables
+(`scripts/text_metrics.py` + `scripts/text_metrics_data.py`) — no native font
+library and no font files are needed at runtime, so the converter runs anywhere
+CPython runs, including in a browser via Pyodide. See
+[Browser / in-memory use](#browser--in-memory-use-pyodide).
 
 ## Usage
 
@@ -40,8 +45,8 @@ Set `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
 Options:
 
 - `--kicad-power` — Use KiCad-native power symbol graphics (VCC chevron, GND
-  triangle) instead of extracted OrCAD glyphs. Power nets that exist in
-  KiCad's installed `power.kicad_sym` library use the native definition directly;
+  triangle) instead of extracted OrCAD glyphs. Power nets that exist in the
+  bundled `power.kicad_sym` library use the native definition directly;
   all others are derived from the VCC/GND template with the OrCAD net name.
   Without this flag, the converter extracts the original OrCAD power symbol
   glyphs (VCC_BAR, VCC_CIRCLE, GND variants) and embeds them in the symbol
@@ -101,6 +106,38 @@ Only OrCAD Capture format version 3.x (files with `FF E4 5C 39` record
 markers, typically OrCAD 16.x and later) is supported. Older version 2.0
 files use a different binary layout and cannot be parsed.
 
+### Browser / in-memory use (Pyodide)
+
+The converter has no native dependencies and reads/writes nothing from disk in
+its core path, so it runs unchanged in a browser single-page app under
+[Pyodide](https://pyodide.org). Use the in-memory entry point instead of the CLI:
+
+```python
+import dsn2kicad
+
+# data: the uploaded .DSN file's bytes; returns {filename: text} for the whole
+# KiCad project (page .kicad_sch files, root .kicad_sch, .kicad_sym,
+# sym-lib-table, .kicad_wks, .kicad_pro). No filesystem access.
+files = dsn2kicad.convert_dsn_bytes(data, project_name="my_board")
+# Options forward to the converter, e.g.:
+#   convert_dsn_bytes(data, use_kicad_power=True, use_kicad_rc=True)
+```
+
+In a page, install the one pure-Python dependency and load the scripts:
+
+```js
+const pyodide = await loadPyodide();
+await pyodide.loadPackage("micropip");
+await pyodide.runPythonAsync(`import micropip; await micropip.install("olefile")`);
+// Put dsn2kicad.py, olb_parser.py, kicad_sexpr.py, text_metrics.py,
+// text_metrics_data.py (and scripts/kicad_symbols/ for --kicad-power/-rc) on
+// Pyodide's filesystem, then call convert_dsn_bytes with the uploaded bytes.
+```
+
+`--kicad-power` / `--kicad-rc` work without a KiCad install because the needed
+symbols are bundled (`scripts/kicad_symbols/`); the default mode needs no symbols
+at all (OrCAD power glyphs come from the DSN itself).
+
 ### dsn_dump
 
 Debug tool for inspecting DSN file internals:
@@ -130,6 +167,26 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Regenerating the font tables
+
+`scripts/text_metrics_data.py` is generated and committed; runtime never needs
+fonts. To rebuild it (e.g. after changing the character set), install the dev
+extras (`pip install -e ".[dev]"`, which adds `freetype-py` + `fonttools`) and run:
+
+```
+python3 scripts/gen_text_metrics.py
+```
+
+It measures the Arial / Arial Narrow / Courier New families from metric-compatible
+fonts and parses KiCad's Newstroke stroke font (downloaded on demand). The
+generated advances reproduce the previous freetype measurements exactly.
+
 ## License
 
-[MIT](LICENSE)
+The converter is [MIT](LICENSE).
+
+Bundled third-party data carries its own license — see
+[`scripts/kicad_symbols/NOTICE`](scripts/kicad_symbols/NOTICE): the KiCad symbol
+libraries (`power.kicad_sym`, `Device.kicad_sym`) are CC-BY-SA 4.0 with the KiCad
+Library Exception, and the Newstroke-derived font metrics originate from KiCad
+(GPL-2.0-or-later).

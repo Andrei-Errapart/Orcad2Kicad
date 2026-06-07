@@ -162,17 +162,19 @@ def test_sch_footer(dsn2kicad):
     assert f.endswith(")\n")
 
 
-def test_lib_symbol_R(dsn2kicad):
-    r = dsn2kicad.lib_symbol_R()
-    assert '"R"' in r
-    assert 'passive' in r
+def test_kicad_device_library_r_and_c(dsn2kicad):
+    # --kicad-rc R/C come from the vendored Device.kicad_sym (no procedural
+    # fallback). The bundled library must always supply both, lib_id-prefixed
+    # and with the two passive pins.
+    dsn2kicad.load_kicad_device_library()
+    dev = dsn2kicad._kicad_native_device
+    assert {"R", "C"} <= set(dev)
+    r = dev["R"]
+    assert '"Device:R"' in r
     assert '(number "1"' in r
     assert '(number "2"' in r
-
-
-def test_lib_symbol_C(dsn2kicad):
-    c = dsn2kicad.lib_symbol_C()
-    assert '"C"' in c
+    c = dev["C"]
+    assert '"Device:C"' in c
     assert '(number "1"' in c
     assert '(number "2"' in c
 

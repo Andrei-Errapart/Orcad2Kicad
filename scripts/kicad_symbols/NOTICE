@@ -1,0 +1,27 @@
+Third-party data bundled with orcad2kicad
+==========================================
+
+This directory contains symbol-library files redistributed from the KiCad
+project so that the `--kicad-power` and `--kicad-rc` conversion options work
+without a local KiCad installation (e.g. when the converter runs in a browser
+via Pyodide). The orcad2kicad code itself is MIT-licensed; these data files are
+NOT — they keep their upstream license below.
+
+power.kicad_sym
+    Verbatim copy of KiCad's power symbol library.
+
+Device.kicad_sym
+    A reduced copy containing only the "R" and "C" symbols extracted from
+    KiCad's Device symbol library (the only two the converter uses).
+
+Source:  KiCad Libraries — https://gitlab.com/kicad/libraries/kicad-symbols
+License: Creative Commons CC-BY-SA 4.0 with the KiCad Library Exception.
+         https://www.kicad.org/libraries/license/
+         The exception permits using these symbols in your own designs without
+         the CC-BY-SA terms propagating to the design; redistribution of the
+         library files themselves (as here) remains under CC-BY-SA 4.0.
+
+The embedded font advance tables (../text_metrics_data.py) are derived metrics,
+not font outlines. The Newstroke-derived figures come from KiCad's
+newstroke_font.cpp (KiCad, GPL-2.0-or-later); the Arial-family/Courier figures
+are advance widths measured from metric-compatible fonts (see gen_text_metrics.py).

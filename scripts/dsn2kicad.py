@@ -1666,6 +1666,24 @@ def _measure_face(face):
     return 'newstroke' if _use_kicad_fonts else (face or 'Arial')
 
 
+def _text_box_dims(text, size_mm, face, bold, italic):
+    """Rendered (width, height) in mm of a Reference/Value field, used to turn its
+    OrCAD top-left anchor into a centre.
+
+    Width is the actual rendered text width. For the height, --kicad-fonts uses a
+    consistent cap reference ('0') instead of the per-string ink extent: KiCad's
+    Newstroke '/' (and descenders) span well past the cap box, so centring on that
+    extent would drop slash-bearing values (e.g. "22/0603") below cap-only
+    designators (e.g. "R2"). Default (outline) mode keeps the per-string extent —
+    ~cap height for Arial, and what the PDF placement tests validate."""
+    mface = _measure_face(face)
+    comp = _font_size_comp()
+    width = measure_text_width(text, size_mm, mface, bold, italic) * comp
+    ref = '0' if _use_kicad_fonts else text
+    height = measure_text_height(ref, size_mm, mface, bold, italic) * comp
+    return width, height
+
+
 def _kicad_power_from_template(template_name, new_name):
     """Create a power symbol by renaming a native KiCad template (VCC or GND)."""
     tmpl = _kicad_native_power.get(template_name)
@@ -3643,10 +3661,7 @@ def _text_center_mm(origin, off, text, text_angle,
 def _text_center_from_top_left_mm(x, y, text, text_angle,
                                   size_mm, face, bold, italic):
     """Convert an OrCAD text-box top-left corner to a KiCad centre anchor."""
-    mface = _measure_face(face)
-    comp = _font_size_comp()
-    width = measure_text_width(text, size_mm, mface, bold, italic) * comp
-    height = measure_text_height(text, size_mm, mface, bold, italic) * comp
+    width, height = _text_box_dims(text, size_mm, face, bold, italic)
     angle = int(text_angle or 0) % 360
     if angle in (90, 270):
         box_w, box_h = height, width
@@ -3668,10 +3683,7 @@ def _text_bbox_from_center_mm(center, text, text_angle,
                               size_mm, face, bold, italic):
     if center is None:
         return None
-    mface = _measure_face(face)
-    comp = _font_size_comp()
-    width = measure_text_width(text, size_mm, mface, bold, italic) * comp
-    height = measure_text_height(text, size_mm, mface, bold, italic) * comp
+    width, height = _text_box_dims(text, size_mm, face, bold, italic)
     angle = int(text_angle or 0) % 360
     if angle in (90, 270):
         width, height = height, width

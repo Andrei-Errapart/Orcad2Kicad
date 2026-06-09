@@ -7,7 +7,7 @@ describes one decompressed stream that `olefile` extracts.
 
 Status: **sketches, not validated against the Kaitai Web IDE yet.** They
 encode the layouts inferred from `scripts/dsn2kicad`, `scripts/olb_parser.py`,
-and `ORCAD_FILE_FORMAT.md`.
+and `doc/ORCAD_FILE_FORMAT.md`.
 
 ## DSN files
 

@@ -63,7 +63,10 @@ Options:
   re-measured with Newstroke metrics and the size/centre adjusted accordingly
   (the stroke font is not inflated by KiCad's 1.4 outline compensation).
   Connectivity is unchanged; only text rendering differs. This is a deliberately
-  different appearance, so it is not checked against the OrCAD PDF.
+  different appearance, so it is not checked against the OrCAD PDF. Note that
+  Newstroke is wider than Arial (especially for digit/punctuation-heavy values),
+  so some text renders wider and may overlap nearby wires — nudge those in the
+  KiCad editor as in any native schematic.
 - `--no-worksheet` — Do not emit or reference the project-local worksheet; KiCad
   will use its configured/default drawing sheet instead.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.
@@ -158,8 +161,8 @@ Walks the OLE compound document and prints all parseable records from every stre
 
 ## Documentation
 
-- [ORCAD_FILE_FORMAT.md](ORCAD_FILE_FORMAT.md) — DSN binary format specification
-- [ORCAD_PDF_FORMAT.md](ORCAD_PDF_FORMAT.md) — OrCAD PDF format: colors and wire geometry
+- [ORCAD_FILE_FORMAT.md](doc/ORCAD_FILE_FORMAT.md) — DSN binary format specification
+- [ORCAD_PDF_FORMAT.md](doc/ORCAD_PDF_FORMAT.md) — OrCAD PDF format: colors and wire geometry
 - [scripts/ksy/](scripts/ksy/) — Kaitai Struct schema sketches for DSN and OLB streams
 
 ## Current Limitations

@@ -27,7 +27,7 @@ CPython runs, including in a browser via Pyodide. See
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--no-worksheet] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
@@ -56,6 +56,14 @@ Options:
   nudged just enough to avoid overlapping the shorter KiCad resistor body, and
   wires are extended to the native pin hotpoints. Capacitor Reference/Value
   placement remains the OrCAD-derived placement.
+- `--kicad-fonts` — Render all text in KiCad's built-in **Newstroke** stroke font
+  instead of reproducing the OrCAD typefaces (Arial / Arial Narrow / Courier
+  New). The output emits no `(face …)` token, so the `.kicad_sch` renders the
+  same on any machine with no font dependency, and looks native to KiCad. Text is
+  re-measured with Newstroke metrics and the size/centre adjusted accordingly
+  (the stroke font is not inflated by KiCad's 1.4 outline compensation).
+  Connectivity is unchanged; only text rendering differs. This is a deliberately
+  different appearance, so it is not checked against the OrCAD PDF.
 - `--no-worksheet` — Do not emit or reference the project-local worksheet; KiCad
   will use its configured/default drawing sheet instead.
 - `--debug-bbox` — Draw debug rectangles around component bounding boxes.

@@ -18,9 +18,9 @@ Generates KiCad schematic files (.kicad_sch) with:
   - Text annotations
 
 Usage:
-    scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--no-worksheet]
-                      [--debug-bbox] [--debug-ref-val] [--debug-symbol]
-                      <file.DSN> [output_dir]
+    scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts]
+                      [--no-worksheet] [--debug-bbox] [--debug-ref-val]
+                      [--debug-symbol] <file.DSN> [output_dir]
 """
 
 import json
@@ -61,6 +61,14 @@ POWER_SYMBOL_UNIT_TO_MM = UNIT_TO_MM
 # KiCad's outline-font renderer scales glyphs by this factor, so a `(size H H)`
 # renders ~1.4*H tall. Divide a target rendered height by it when emitting (size).
 KICAD_FONT_SIZE_COMPENSATION = 1.4
+
+# KiCad's built-in stroke font (Newstroke, used by --kicad-fonts) renders, for a
+# given (size), advance widths at ~1.0x and capital heights at ~1.12x of what the
+# embedded metrics (text_metrics_data.py, units_per_em=21) report. Measured by
+# rendering known strings via kicad-cli and reading the ink extents. The width
+# factor (≈1.0) means the placement box and the free-text width fit need no extra
+# scaling; the cap factor matters only for the free-text height fit.
+_NEWSTROKE_CAP_INFLATION = 1.12
 
 # OrCAD local net labels use the same visible text size as the ref/value
 # display records in the CPU fixture. KiCad global labels also draw a
@@ -1638,7 +1646,24 @@ _kicad_native_power = {}
 _use_kicad_power = False
 _kicad_native_device = {}
 _use_kicad_rc = False
+# When True (--kicad-fonts), drop the OrCAD typefaces: emit no (face …) so KiCad
+# renders text in its built-in Newstroke stroke font, and switch measurement and
+# size compensation to match (the stroke font is not inflated by KiCad's 1.4).
+_use_kicad_fonts = False
 _orcad_power_glyphs = {}
+
+
+def _font_size_comp():
+    """Size-compensation factor for the active text mode. KiCad inflates outline
+    fonts by KICAD_FONT_SIZE_COMPENSATION (1.4); its stroke font draws at nominal
+    size, so --kicad-fonts uses 1.0."""
+    return 1.0 if _use_kicad_fonts else KICAD_FONT_SIZE_COMPENSATION
+
+
+def _measure_face(face):
+    """Face to measure text with: KiCad's Newstroke stroke font under
+    --kicad-fonts (which emits no face token), else the OrCAD face (≈ Arial)."""
+    return 'newstroke' if _use_kicad_fonts else (face or 'Arial')
 
 
 def _kicad_power_from_template(template_name, new_name):
@@ -2352,7 +2377,7 @@ def sch_power_symbol(name, x, y, is_ground=False, angle=0,
 
     def _font_block(indent):
         out = [f"{indent}(font\n"]
-        if text_face:
+        if text_face and not _use_kicad_fonts:
             out.append(f'{indent}\t(face "{_esc_kicad_str(text_face)}")\n')
         out.append(f"{indent}\t(size {text_size_mm:.4f} {text_size_mm:.4f})\n")
         if text_bold:
@@ -2472,7 +2497,7 @@ def sch_text(txt, x, y, size=1.27, angle=0, justify="left bottom",
     uid = new_uuid()
     txt_esc = _esc_kicad_str(txt)
     font_inner_lines = [f"\t\t\t\t(size {size:.2f} {size:.2f})"]
-    if face:
+    if face and not _use_kicad_fonts:
         face_esc = _esc_kicad_str(face)
         font_inner_lines.insert(0, f"\t\t\t\t(face \"{face_esc}\")")
     if bold:
@@ -3618,10 +3643,10 @@ def _text_center_mm(origin, off, text, text_angle,
 def _text_center_from_top_left_mm(x, y, text, text_angle,
                                   size_mm, face, bold, italic):
     """Convert an OrCAD text-box top-left corner to a KiCad centre anchor."""
-    width = (measure_text_width(text, size_mm, face or 'Arial', bold, italic)
-             * KICAD_FONT_SIZE_COMPENSATION)
-    height = (measure_text_height(text, size_mm, face or 'Arial', bold, italic)
-              * KICAD_FONT_SIZE_COMPENSATION)
+    mface = _measure_face(face)
+    comp = _font_size_comp()
+    width = measure_text_width(text, size_mm, mface, bold, italic) * comp
+    height = measure_text_height(text, size_mm, mface, bold, italic) * comp
     angle = int(text_angle or 0) % 360
     if angle in (90, 270):
         box_w, box_h = height, width
@@ -3629,10 +3654,11 @@ def _text_center_from_top_left_mm(x, y, text, text_angle,
         box_w, box_h = width, height
     pdx, pdy = {0: (0, 1), 90: (1, 0), 180: (0, -1),
                 270: (-1, 0)}.get(angle, (0, 1))
-    # TODO: document the 0.416 nudge factor. It is the empirical fraction of the
-    # font size between the em-box top and the cap-height top that aligns the
-    # converted text box with OrCAD's; derive it from font metrics (ascender /
-    # units_per_EM) instead of the bare constant. Mirrors tests/kicad_pdf_join.py.
+    # Perpendicular offset from the OrCAD em-box top to the field centre: the
+    # empirical fraction of the font size between the em-box top and cap-height
+    # top that aligns with OrCAD's PDF. --kicad-fonts emits the same (size) as
+    # outline mode (KiCad renders both fonts at ~the same height), so the same
+    # nudge and centre apply.
     nudge = 0.416 * size_mm
     return (x + box_w / 2.0 + nudge * pdx,
             y + box_h / 2.0 + nudge * pdy)
@@ -3642,10 +3668,10 @@ def _text_bbox_from_center_mm(center, text, text_angle,
                               size_mm, face, bold, italic):
     if center is None:
         return None
-    width = (measure_text_width(text, size_mm, face or 'Arial', bold, italic)
-             * KICAD_FONT_SIZE_COMPENSATION)
-    height = (measure_text_height(text, size_mm, face or 'Arial', bold, italic)
-              * KICAD_FONT_SIZE_COMPENSATION)
+    mface = _measure_face(face)
+    comp = _font_size_comp()
+    width = measure_text_width(text, size_mm, mface, bold, italic) * comp
+    height = measure_text_height(text, size_mm, mface, bold, italic) * comp
     angle = int(text_angle or 0) % 360
     if angle in (90, 270):
         width, height = height, width
@@ -3824,7 +3850,7 @@ def sch_component(ref, lib_id, x, y, angle=0, value="", pin_numbers=None,
 
     def _font_block(indent):
         out = [f"{indent}(font\n"]
-        if text_face:
+        if text_face and not _use_kicad_fonts:
             out.append(f'{indent}\t(face "{_esc_kicad_str(text_face)}")\n')
         out.append(f"{indent}\t(size {text_size_mm:.4f} {text_size_mm:.4f})\n")
         if text_bold:
@@ -4531,9 +4557,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
         # KiCad's outline-font renderer (common/font/outline_font.cpp) applies
         # `m_outlineFontSizeCompensation = 1.4` when scaling glyphs — so a
         # `(size 10 10)` value in the .kicad_sch is rendered at 14 mm em-height.
-        # Divide our target size by this factor so the rendered text comes out
-        # at the size we actually want.
-        KICAD_FONT_SIZE_COMPENSATION = 1.4
+        # Divide our target size by this factor (1.0 under --kicad-fonts, where
+        # the stroke font is not inflated) so the rendered text is the size we want.
         size = 1.27
         body = t['text'].replace('\r\n', '\n').replace('\r', '\n')
         lines = [ln for ln in body.split('\n') if ln.strip()]
@@ -4547,14 +4572,25 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
             per_line_mm = bbox_h_mm / n_lines
             widest = max(lines, key=len) if lines else ''
             width_at_1mm = measure_text_width(
-                widest, 1.0, face_name=face or 'Arial',
+                widest, 1.0, face_name=_measure_face(face),
                 bold=bold, italic=italic)
             if width_at_1mm > 0:
                 width_limited_size = bbox_w_mm / width_at_1mm
             else:
                 width_limited_size = per_line_mm
-            target = min(per_line_mm, width_limited_size)
-            size = max(0.5, min(target / KICAD_FONT_SIZE_COMPENSATION, 32.0))
+            # Convert each fit constraint from a rendered dimension to an emitted
+            # (size) using that axis' render factor. Outline inflates both axes by
+            # 1.4; the Newstroke stroke font (--kicad-fonts) inflates advance
+            # widths ~1.0x but caps ~1.12x, so width and height need different
+            # divisors. For outline w_comp == h_comp == 1.4, leaving the default
+            # path identical to `min(per_line, width_limited) / 1.4`.
+            if _use_kicad_fonts:
+                w_comp = 1.0
+                h_comp = KICAD_FONT_SIZE_COMPENSATION * _NEWSTROKE_CAP_INFLATION
+            else:
+                w_comp = h_comp = KICAD_FONT_SIZE_COMPENSATION
+            size = max(0.5, min(width_limited_size / w_comp,
+                                per_line_mm / h_comp, 32.0))
         line_h = (abs(bbox[3] - bbox[1]) * UNIT_TO_MM / n_lines) if bbox and not rotated else (
                   (abs(bbox[2] - bbox[0]) * UNIT_TO_MM / n_lines) if bbox and rotated else (size * 1.2))
         descender_mm = 0.30 * size
@@ -5856,6 +5892,7 @@ def parse_hierarchy_nets(ole):
 
 def convert_dsn(ole, dsn_bytes, *, project_name,
                 use_kicad_power=False, use_kicad_rc=False,
+                use_kicad_fonts=False,
                 emit_worksheet=True, debug_bbox=False,
                 debug_ref_val=False, debug_symbol=False):
     """Convert an opened OrCAD DSN into KiCad project files, in memory.
@@ -5869,9 +5906,10 @@ def convert_dsn(ole, dsn_bytes, *, project_name,
     downstream helpers, so a single process should not run conversions with
     different options concurrently.
     """
-    global _use_kicad_power, _use_kicad_rc
+    global _use_kicad_power, _use_kicad_rc, _use_kicad_fonts
     _use_kicad_power = use_kicad_power
     _use_kicad_rc = use_kicad_rc
+    _use_kicad_fonts = use_kicad_fonts
 
     safe_project = re.sub(r'[^A-Za-z0-9_.-]', '_', project_name)
     out = {}
@@ -6172,9 +6210,13 @@ def main():
     if "--kicad-rc" in argv:
         use_kicad_rc = True
         argv.remove("--kicad-rc")
+    use_kicad_fonts = False
+    if "--kicad-fonts" in argv:
+        use_kicad_fonts = True
+        argv.remove("--kicad-fonts")
     if not argv:
         print(f"Usage: {sys.argv[0]} [--debug-bbox] [--debug-ref-val] "
-              f"[--debug-symbol] [--kicad-power] [--kicad-rc] "
+              f"[--debug-symbol] [--kicad-power] [--kicad-rc] [--kicad-fonts] "
               f"[--no-worksheet] <file.DSN> [output_dir]",
               file=sys.stderr)
         sys.exit(1)
@@ -6196,6 +6238,7 @@ def main():
     out = convert_dsn(
         ole, dsn_bytes, project_name=dsn_path.stem,
         use_kicad_power=use_kicad_power, use_kicad_rc=use_kicad_rc,
+        use_kicad_fonts=use_kicad_fonts,
         emit_worksheet=emit_worksheet, debug_bbox=debug_bbox,
         debug_ref_val=debug_ref_val, debug_symbol=debug_symbol)
 

@@ -80,6 +80,22 @@ def test_sch_text_bold_italic(dsn2kicad):
     assert "(italic yes)" in t
 
 
+def test_kicad_fonts_mode(dsn2kicad):
+    # --kicad-fonts: emit no (face …) so KiCad uses its Newstroke stroke font,
+    # measure with Newstroke, and drop the 1.4 outline-size compensation.
+    d = dsn2kicad
+    assert d._measure_face("Arial Narrow") == "Arial Narrow"
+    assert d._font_size_comp() == d.KICAD_FONT_SIZE_COMPENSATION
+    assert '(face "Arial")' in d.sch_text("R1", 0, 0, face="Arial")
+    try:
+        d._use_kicad_fonts = True
+        assert d._measure_face("Arial Narrow") == "newstroke"
+        assert d._font_size_comp() == 1.0
+        assert "(face" not in d.sch_text("R1", 0, 0, face="Arial")
+    finally:
+        d._use_kicad_fonts = False
+
+
 def test_sch_power_symbol_gnd(dsn2kicad):
     ps = dsn2kicad.sch_power_symbol("GND", 0, 0, True)
     assert "power:GND" in ps

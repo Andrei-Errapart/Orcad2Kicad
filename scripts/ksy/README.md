@@ -6,23 +6,33 @@ container (OLE Compound Document) is handled by `olefile`; each `.ksy` here
 describes one decompressed stream that `olefile` extracts.
 
 Status: **sketches, not validated against the Kaitai Web IDE yet.** They
-encode the layouts inferred from `scripts/dsn2kicad`, `scripts/olb_parser.py`,
-and `doc/ORCAD_FILE_FORMAT.md`.
+encode the layouts inferred from `scripts/dsn2kicad.py`, `scripts/olb_parser.py`,
+and `doc/ORCAD_FILE_FORMAT.md` (line numbers in some `.ksy` `doc:` blocks are
+stale — find converter functions by name).
+
+Note: `scripts/dsn2kicad` is a venv-bootstrap shell wrapper; the actual parser
+is `scripts/dsn2kicad.py`. The function-name references below are accurate, but
+line numbers that used to appear in the per-record `doc:` blocks have not been
+kept in sync as the parser grew — locate functions by name, not by line.
 
 ## DSN files
 
 | File | Stream(s) | Source |
 |------|-----------|--------|
 | `dsn_common.ksy` | shared types (record_marker, length_string) | n/a |
-| `dsn_stream.ksy` | `DsnStream` | docs only — JSON blob |
-| `dsn_page.ksy` | `Views/SCHEMATIC1/Pages/<page>` | `dsn2kicad`: `parse_page_header`, `parse_net_table`, `parse_wires`, `parse_components`, `_parse_pin_records`, `parse_power_symbols`, `parse_text_annotations`, `parse_page_graphics` |
-| `dsn_cache.ksy` | `Cache` | `dsn2kicad`: `parse_cache_cells`, `_parse_cache_graphics` |
-| `dsn_library.ksy` | `Library` | `dsn2kicad`: `parse_title_block` (heuristic) and 60-byte style records |
-| `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `dsn2kicad`: `parse_hierarchy_nets` |
-| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, etc. | all 104 Cells/Parts entries consumed on one larger-board example |
+| `dsn_stream.ksy` | `DsnStream` | **docs only** — JSON blob; not read by `dsn2kicad.py` |
+| `dsn_page.ksy` | `Views/SCHEMATIC1/Pages/<page>` | `dsn2kicad.py`: `parse_page_header`, `parse_net_table`, `parse_wires`, `parse_net_aliases`, `parse_components`, `_parse_pin_records`, `parse_power_symbols`, `parse_text_annotations`, `parse_page_graphics`, `_parse_page_polygon` |
+| `dsn_cache.ksy` | `Cache` | `dsn2kicad.py`: `parse_cache_cells`, `_parse_cache_graphics`, `_parse_cache_pin_numbers`, `parse_cache_pin_visibility`, `parse_cache_bboxes`, `extract_orcad_power_glyphs` |
+| `dsn_library.ksy` | `Library` | `dsn2kicad.py`: `parse_library_styles` (60-byte style records); `parse_title_block` and `parse_library_value_strings` (the latter via `olb_parser.parse_library_stream`) |
+| `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `dsn2kicad.py`: `parse_hierarchy_nets` |
+| `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, etc. | **docs only** — from external stream inspection; not parsed by `dsn2kicad.py` |
 
-DSN streams not modeled: `AdminData`, `NetBundleMapData`, `Packages/*`,
-`HSObjects`, `Symbols/*`, `Graphics/*`, `Views/SCHEMATIC1/Schematic`.
+`dsn2kicad.py` opens only these DSN streams: each `Views/SCHEMATIC1/Pages/<page>`,
+`Cache`, `Library`, and `Views/SCHEMATIC1/Hierarchy/Hierarchy`. Everything else
+(`AdminData`, `NetBundleMapData`, `Packages/*`, `HSObjects`, `Symbols/*`,
+`Graphics/*`, `Views/SCHEMATIC1/Schematic`, and the `*Directory` index streams)
+is unmodeled by the converter; `dsn_directory.ksy` and `dsn_stream.ksy` are
+docs-only sketches, not backed by converter code.
 
 ## OLB files
 
@@ -73,6 +83,11 @@ a starting grammar to refine in the Kaitai Web IDE against real samples.
 
 - DSN page streams: int16 or int32 LE, units of 10 mils = 0.254 mm. Y grows downward.
 - DSN Cache stream: int32 LE, same 10-mil units.
+- **Polygon/polyline vertex pairs are stored swapped as (y, x), not (x, y)** —
+  this applies to both the page-stream `0x2c2c` filled-polygon record and the
+  Cache `0x2c2c`/`0x2d2d` polygon/polyline records. Line/rectangle/ellipse
+  records store coordinates in normal (x, y) order. Vertex coordinates use
+  int16 LE even though the same streams use int32 for box corners.
 - OLB package streams: int32 LE for pin coordinates; int16 LE for point
   lists (polyline/polygon/bezier). Same 10-mil units.
 - The `.ksy` files leave coordinates as raw signed integers; conversion to

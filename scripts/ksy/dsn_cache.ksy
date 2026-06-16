@@ -9,19 +9,31 @@ meta:
 doc: |
   The `Cache` stream of an OrCAD Capture .DSN file. Contains the cached
   cell/symbol definitions imported from .OLB libraries, including:
-    - body rectangle
-    - graphic primitives (text annotations, bounding box)
+    - body rectangle(s)
+    - graphic primitives (lines, ellipses, arcs, filled polygons, open
+      polylines, internal text annotations)
     - pin records (name, body endpoint, hotpoint endpoint, label flags)
+    - per-cell physical pin-number lists (0x7f-separated)
+    - GlobalSymbol glyph definitions for power symbols
+    - LibraryPart structures carrying pin-name/number visibility and the
+      symbol body bounding box
 
-  Cell organisation: each cell name appears three times as
-  `CellName.Normal\0` (or `.Convert\0`). The second occurrence carries
-  the body rect, graphic primitives, and pin records. The first is a
-  header (no pins) and the third is a library back-reference (no pins).
+  Cell organisation: each cell name appears more than once as
+  `CellName.Normal\0` (or `.Convert\0`). The first occurrence is a header
+  (no graphics); later occurrences carry the body graphics and pins.
+  `parse_cache_cells` tracks a `seen_names` set and parses graphics only on
+  an occurrence after a name's first sighting; for those it reads a u16 OLB
+  path length immediately after the cell-name match, skips
+  `2 + path_len + 1` bytes, and begins primitive scanning there (`aps`).
+  Pin records are scanned over the whole region between consecutive
+  cell-name matches.
 
   As with page streams, records are located by scanning for the marker
   `FF E4 5C 39`; this schema cannot strictly auto-traverse the stream
   because there is no length field. The types below describe what the
-  scanner finds at each marker. Coordinates are int32 LE in 10-mil units.
+  scanner finds at each marker. Box/segment coordinates are int32 LE in
+  10-mil units; polygon/polyline vertex pairs are int16 LE and stored as
+  (y, x) — see `polygon_record` / `polyline_record`.
 
 seq:
   - id: data
@@ -115,8 +127,19 @@ types:
       The third coordinate pair —
       a near-duplicate of the first — is actually the text anchor and
       is what gives the giveaway. The trailing bytes carry the embedded
-      ASCII character. See ORCAD_FILE_FORMAT.md for the corrected
+      ASCII character. See doc/ORCAD_FILE_FORMAT.md for the corrected
       interpretation.
+
+      `_parse_cache_graphics` in dsn2kicad.py reads this record by
+      resyncing on the 2-byte type word `0x2e2e` (call that offset `tw`,
+      = marker+8) and then using these tw-relative offsets:
+        bbox_x1..bbox_y2  i32 × 4  at tw+10
+        anchor_x, anchor_y  i32 × 2  at tw+26
+        text_len(u16)               at tw+38
+        text                        at tw+40
+      (The byte-for-byte `seq` below frames the same fields from the marker
+      and differs by a couple of unknown bytes; prefer the tw-relative
+      offsets when matching the converter.)
     seq:
       - id: marker
         type: dsn_common::record_marker
@@ -333,8 +356,7 @@ types:
 
   pin_record:
     doc: |
-      Pin definition. Marker-framed (see `parse_cache_cells`, lines
-      1503–1525).
+      Pin definition. Marker-framed (see `parse_cache_cells` in dsn2kicad.py).
 
       Layout from marker:
         marker(4)
@@ -403,3 +425,179 @@ types:
         type: strz
         encoding: ASCII
         doc: '"Normal" or "Convert"; the strz consumes the trailing NUL.'
+
+  # -------------------------------------------------------------------------
+  # Filled polygon (graphic primitive, type word 0x2c2c)
+  # -------------------------------------------------------------------------
+
+  polygon_record:
+    doc: |
+      Filled polygon body primitive. Type word `0x2c2c`. Used by symbols
+      whose body is drawn as a closed filled shape rather than a rectangle
+      (see `_parse_cache_graphics` in dsn2kicad.py).
+
+      Layout from the type word (NOT preceded by the usual marker tail here;
+      `_parse_cache_graphics` resyncs on the 2-byte type word, then on the
+      next marker):
+        type_word(2)       == 0x2c2c
+        unknown(24)
+        vertex_count(2)    at type_word+26
+        vertices           at type_word+28: vertex_count × (y, x) i16 pairs
+
+      NOTE: vertices are stored (y, x), opposite to the (x, y) order of the
+      line/rect/ellipse records. The converter swaps them, collapses
+      collinear runs, and may split off near-degenerate spans as separate
+      line segments (`_normalize_cache_polygon`).
+    seq:
+      - id: type_word
+        contents: [0x2c, 0x2c]
+      - id: unknown
+        size: 24
+      - id: vertex_count
+        type: u2
+      - id: vertices
+        type: yx_point
+        repeat: expr
+        repeat-expr: vertex_count
+
+  # -------------------------------------------------------------------------
+  # Open polyline (graphic primitive, type word 0x2d2d)
+  # -------------------------------------------------------------------------
+
+  polyline_record:
+    doc: |
+      Open polyline body primitive. Type word `0x2d2d`. Carries an explicit
+      byte length, so this is one of the few self-delimiting Cache records.
+
+      Layout from the type word:
+        type_word(2)       == 0x2d2d
+        byte_length(u32)   at type_word+2; record continues for `byte_length`
+                           bytes past type_word+2
+        ...                a header whose size has two observed variants,
+                           selected by `byte_length`:
+                             variant A (remaining = byte_length-8, (remaining-10)%4==0):
+                               vertex_count(u16) at type_word+18, points at +20
+                             variant B (remaining = byte_length-8, (remaining-2)%4==0):
+                               vertex_count(u16) at type_word+10, points at +12
+        vertices           vertex_count × (y, x) i16 pairs
+
+      As with polygons, vertices are stored (y, x). Consecutive duplicates
+      are collapsed; the path is left open (not auto-closed).
+    seq:
+      - id: type_word
+        contents: [0x2d, 0x2d]
+      - id: byte_length
+        type: u4
+        doc: Record length in bytes counted from just after this field.
+
+  # -------------------------------------------------------------------------
+  # Per-cell physical pin-number list (0x7f-separated)
+  # -------------------------------------------------------------------------
+
+  pin_number_list:
+    doc: |
+      The physical (package) pin numbers for a cell, parallel to the cell's
+      marker-framed pin_record list at the same indices. Located by
+      `_parse_cache_pin_numbers` via the regex
+      `([A-Za-z0-9_.+/()-]{2,30})\0(..)` — a cell name, a NUL, then a u16
+      count — and validated by walking the entries.
+
+      Layout:
+        cell_name          ASCII, then a single 0x00
+        count(u2)          number of pin-number entries (2..500)
+        entries            count × { len(u2) + ASCII(len) + sep }
+                           where `sep` is 0x7f or 0x00; runs of 0x00/0x7f
+                           between entries are skipped.
+
+      Entry i is the physical pin number string for pin i of the cell.
+    seq:
+      - id: cell_name
+        type: strz
+        encoding: ASCII
+      - id: count
+        type: u2
+      - id: entries
+        type: pin_number_entry
+        repeat: expr
+        repeat-expr: count
+
+  pin_number_entry:
+    seq:
+      - id: len
+        type: u2
+      - id: value
+        type: str
+        size: len
+        encoding: ASCII
+      - id: separator
+        type: u1
+        doc: 0x7f or 0x00.
+
+  # -------------------------------------------------------------------------
+  # GlobalSymbol glyph record (power-symbol graphics)
+  # -------------------------------------------------------------------------
+
+  global_symbol_record:
+    doc: |
+      A GlobalSymbol definition embedded in the Cache, used for the
+      vector glyphs of OrCAD power symbols (GND, VCC, VCC_BAR,
+      VCC_CIRCLE, …). `extract_orcad_power_glyphs` finds candidates by
+      scanning for the prefix byte 0x21, then decodes the structure with
+      the OLB-format readers in `olb_parser.py`
+      (`auto_read_prefixes`, `read_preamble`, `read_primitive`, …) — the
+      layout is the OLB GlobalSymbol layout, not a DSN-specific one, so it
+      is described in `olb_*.ksy` rather than re-specified here.
+
+      Sketch of the head:
+        prefixes           auto_read_prefixes(stream, 0x21) → checkpoints
+        preamble
+        name               len+zero-terminated string (the symbol name)
+        source_library     len+zero-terminated string
+        (seek to checkpoint)
+        color(u32)
+        primitive_count(u16)   (<= 20)
+        primitives             read via olb_parser.read_primitive; an
+                               all-zero 8-byte separator may appear between
+                               primitives.
+    seq:
+      - id: note
+        size: 0
+        doc: Placeholder — decode via olb_parser; see olb_library.ksy.
+
+  # -------------------------------------------------------------------------
+  # LibraryPart locator (pin-name/number visibility + body bbox)
+  # -------------------------------------------------------------------------
+
+  library_part_locator:
+    doc: |
+      Cache also embeds OLB-format `LibraryPart` structures. `dsn2kicad`
+      finds them with the regex `(.{4})\1\x18\x00\x18` (four bytes repeated,
+      followed by `18 00 18`); the LibraryPart begins 10 bytes after the
+      match start. They are then decoded with `olb_parser.read_library_part`.
+
+      Used for:
+        - parse_cache_pin_visibility →
+            general_properties.pin_name_visible / pin_number_visible
+        - parse_cache_bboxes → the symbol body bounding box (cache units,
+            same frame as the pin hot-points)
+
+      The LibraryPart layout itself is the OLB one; see `olb_library.ksy` /
+      `olb_package.ksy`.
+    seq:
+      - id: note
+        size: 0
+        doc: Placeholder — locate via the regex above, decode via olb_parser.
+
+  # -------------------------------------------------------------------------
+  # Shared: polygon/polyline vertex stored y-first
+  # -------------------------------------------------------------------------
+
+  yx_point:
+    doc: |
+      A polygon/polyline vertex stored y-first, then x (int16 LE, 10-mil
+      units). Swap to (x, y) for use.
+    seq:
+      - id: y
+        type: s2
+      - id: x
+        type: s2

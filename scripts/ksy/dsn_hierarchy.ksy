@@ -50,7 +50,7 @@ types:
 
   net_record:
     doc: |
-      Per `parse_hierarchy_nets` (dsn2kicad lines 1603–1634), after the
+      Per `parse_hierarchy_nets` (in dsn2kicad.py), after the
       marker:
         +0  marker(4)
         +4  unknown(4)

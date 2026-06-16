@@ -23,11 +23,21 @@ doc: |
        the value/title-block string run (packed u16-length-prefixed strings).
 
   This sketch covers the font/style record structure. The title-block
-  field run is parsed by `scripts/dsn2kicad`'s `parse_title_block` using
-  a `SCHEMATIC1`-anchor heuristic; component values are parsed by
-  `parse_library_value_strings`. Some power-symbol names appear in this same
-  string table, including entries following paths containing `POWER.OLB`
-  (for example `ADAVSS` and `ADAVDD_18_SOC`). See ORCAD_FILE_FORMAT.md.
+  field run is parsed by `dsn2kicad.py`'s `parse_title_block`: it
+  enumerates the u16-length strings, finds the `SCHEMATIC1` sentinel
+  string, and walks backward for the last string matching the doc-number
+  pattern `EP\d[A-Z]{2}-AB(-\d{2,4})+` (the live one — DSNs may retain
+  stale doc-numbers from clones/renames). The string just before it is the
+  Title (unless it looks like a `{...}` UUID); the nearest `N.N` string in
+  the few entries after it is the Rev.
+
+  Component values are decoded by `parse_library_value_strings`, which does
+  NOT re-implement the string run — it calls `olb_parser.parse_library_stream`
+  and uses the resulting `str_lst`. A component's value is then a direct
+  index (`value_idx` from the page-stream component record) into that list;
+  no offset arithmetic. Some power-symbol names live in this same table,
+  including entries that follow paths containing `POWER.OLB` (for example
+  `ADAVSS` and `ADAVDD_18_SOC`). See doc/ORCAD_FILE_FORMAT.md.
 
 seq:
   - id: program_name
@@ -78,9 +88,14 @@ types:
         +25  u8    charset       LOGFONT lfCharSet
         +26  u8    flag          typically 0x01
         +27  u8    quality       LOGFONT lfQuality
-        +28  6B    face name (null-terminated ASCII, padded to 6 bytes
-                   on average — actually a packed null-term string).
-                   Common: "Arial", "Courier New", "Arial Narrow".
+        +28  ..    face name. `parse_library_styles` reads ASCII from +28
+                   up to +58, stopping at the first NUL or non-printable
+                   byte — so the face name is variable length, not a fixed
+                   6 bytes. Common: "Arial", "Courier New", "Arial Narrow".
+                   When the name is short it ends well before +34, leaving
+                   ext_word / the +38 region as distinct fields; when it is
+                   long (>5 chars) the name runs through +34 and those
+                   "fields" are just name bytes.
         +34  u32   ext_word      Originally suspected to encode color,
                                   but rules out: records 33 (bold-italic
                                   Arial, green title) and 35 (bold Arial,
@@ -133,7 +148,11 @@ types:
         type: u1
       - id: face_block
         size: 6
-        doc: Null-terminated ASCII face name, possibly padded.
+        doc: |
+          Start of the face name. `parse_library_styles` actually reads the
+          face name from +28 up to +58 (stopping at NUL/non-printable), so a
+          long name spills across the `ext_word`/`reserved2` fields below;
+          those fields are only independently meaningful for short names.
       - id: ext_word
         type: u4
         doc: |

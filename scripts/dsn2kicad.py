@@ -5029,7 +5029,7 @@ def _parse_cache_graphics(data, aps, scan_end):
     with individual lines rather than a rectangle record.
 
     The `0x2e2e` record is a text annotation, formerly misread as a
-    line segment. See doc/ORCAD_DSN_FILES.md for the format.
+    line segment. See doc/ORCAD_FILE_FORMAT.md for the format.
     """
     body_rects = []
     body_lines = []

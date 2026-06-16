@@ -14,9 +14,10 @@ doc: |
   component instance placements, the pin placements that follow each
   component, power-symbol placements, and text annotations.
 
-  Records are framed by a 4-byte marker (`FF E4 5C 39`). The byte
-  immediately after the marker is the start of a per-record header whose
-  type discriminator varies by record. `dsn2kicad` locates records by
+  Records are framed by a 4-byte marker (`FF E4 5C 39`). The bytes
+  immediately after the marker start a per-record header, but there is no
+  universal discriminator across all page-record families. `dsn2kicad`
+  locates records by
   scanning for the marker and unpacking known offsets relative to it; this
   schema mirrors that approach.
 
@@ -95,53 +96,54 @@ types:
           ASCII string, one of A0..A4 or A..E.
 
   # -------------------------------------------------------------------------
-  # Generic record envelope — discriminates on the byte/word after marker
+  # Generic record envelope — marker plus record-type-dependent words
   # -------------------------------------------------------------------------
 
   framed_record:
     doc: |
       A record begins at the next `FF E4 5C 39` marker. The 4 bytes that
-      follow the marker are typically zero (for the "real" structured
-      records used by dsn2kicad). After those 4 bytes, a per-record-type
-      discriminator follows.
+      follow the marker are record-type dependent: power-symbol and many
+      display/property records use zero here, while wire records may carry
+      a nonzero id/flag word. There is no single discriminator that works
+      for every page record.
 
       Note: this schema does NOT length-prefix records; consumers should
       treat `body` as parsed up to either the next marker or EOF. In
       practice `dsn2kicad` uses `data.find(MARKER, pos+4)` to advance.
+      Record-specific parsers should seek back to the marker and unpack the
+      documented offsets for that record type; do not rely on the generic
+      words below for dispatch.
     seq:
       - id: marker
         type: dsn_common::record_marker
-      - id: tag
+      - id: word0
         type: u4
         doc: |
-          Four bytes after the marker. For wire and power-symbol records
-          this is zero; for some non-zero values, the record is something
-          else (continuation, graphics, attributes — not modeled).
-      - id: discriminator
+          Bytes at marker+4. Zero for power-symbol, display-prop, and
+          pin-placement records. Wire records are accepted by the converter
+          without checking this word.
+      - id: word1
+        type: u4
+        doc: Bytes at marker+8; meaning is record-type dependent.
+      - id: word2
         type: u4
         doc: |
-          Reading the value at +12 (= marker + 8 after `tag`) which is used
-          by dsn2kicad as the record kind:
-            - wire records have `body_discriminator == 0x30` (at marker+16)
-          The actual discriminator location is record-type dependent; this
-          field is a heuristic anchor.
-      - id: body_kind
+          Bytes at marker+12. For wire records this is the page-local
+          net_id. For net aliases this is the label Y coordinate. For
+          power-symbol records this is a header word.
+      - id: word3
         type: u4
         doc: |
-          For wire records this is the literal value 0x30 found at offset
-          +16 from the marker. Other record types put different values
-          here. dsn2kicad branches on this.
+          Bytes at marker+16. For wire and net-alias records this is the
+          literal subtype 0x30. For power-symbol records this overlaps the
+          name_len field and the first bytes of the symbol name, so it is
+          not a generic body kind.
       - id: body
-        type:
-          switch-on: body_kind
-          cases:
-            0x30: wire_or_power_body
-            _: unknown_body
+        type: unknown_body
         doc: |
-          Discriminated body. 0x30 covers both wire segments and power
-          symbols (the converter splits them by inspecting subsequent
-          bytes: wires have nonzero `tag`, power symbols have zero `tag`
-          and a printable name immediately after).
+          Opaque remainder. Re-parse from the marker using one of the
+          record-specific layouts below (`wire_body`, `net_alias_record`,
+          `power_symbol_body`, etc.).
 
   # -------------------------------------------------------------------------
   # Wire record (parse_wires in dsn2kicad)
@@ -151,17 +153,18 @@ types:
     doc: |
       Layout (from `parse_wires` in dsn2kicad.py):
         marker(4)        FF E4 5C 39
-        zeros(4)         (4 zero bytes — note: 'zeros' here is not the same
-                         field as in power records; consumers treat tag!=0
-                         as a wire indicator)
-        record_id(4)     unique record id (at marker+4)  [Kaitai: tag]
+        word0(4)         record id / flags (not decoded by dsn2kicad)
+        word1(4)         record id / flags (not decoded by dsn2kicad)
         net_id(4)        at marker+12, references net table
         subtype(4)       at marker+16, == 0x30 for wires
         x1(4 signed)     at marker+20
         y1(4 signed)
         x2(4 signed)
         y2(4 signed)
-      Total: 36 bytes from marker start.
+      Total: 36 bytes from marker start. The `seq` below models only the
+      coordinate tail starting at marker+20; the marker and header words
+      are documented above because the converter unpacks them directly by
+      absolute offset.
     seq:
       - id: x1
         type: s4
@@ -198,6 +201,8 @@ types:
 
       The parser canonicalises the name against the page net table
       (case-insensitive) so the label matches the net it annotates.
+      The `seq` below starts at marker+8 (`x`), matching the useful
+      payload offsets after the marker and zero word.
     seq:
       - id: x
         type: u4
@@ -221,14 +226,15 @@ types:
       Power-symbol record (GND, VCC_BAR, VCC, VCC_CIRCLE, …).
       Distinguished from wire and
       component records by:
-        - `tag` (4 bytes after marker) is 0
+        - the marker+4 word is 0
         - The bytes after a 4-byte rec_type and 4-byte header form a
           length-prefixed null-terminated symbol name
         - The name does NOT end with ".Normal" / ".Convert" and does not
           contain TitleBlock / Border / OFFPAGE
         - The name matches a power-net prefix (GND, VCC, VDD, …)
 
-      Layout (from `parse_power_symbols`):
+      Layout (from `parse_power_symbols`). The `seq` below starts at
+      marker+8, after `marker(4) + zeros(4)`:
         marker(4)
         zeros(4)             at marker+4, == 0
         rec_type(4)          at marker+8
@@ -239,13 +245,22 @@ types:
         cell_id(4)           at name_end + 1, instance ID
         n0..n5(6 * s2)       coordinate-like fields
         orient(2)            e.g. 0x0030, 0x0130, 0x0330, 0x0430
+        unknown(2)           observed gap before display-prop count
+        prop_count(2)         at after_null+20, when present (<= 8)
+        display_props         marker-framed SymbolDisplayProp records:
+                                name_idx at marker+8
+                                x/y offset at marker+12/+14
+                                rot_font at marker+16
+                                color at marker+18
 
       The six int16 fields are not direct placement coordinates, but they
       encode a derivable electrical hotpoint in the same raw page coordinate
       space as wire endpoints and component pins. Application code derives
       the hotpoint from the extracted Cache GlobalSymbol glyph anchor and the
-      page instance transform. Observed power ports use a 20-by-10 logical box
-      with `n4,n5` as its origin:
+      page instance transform. The fallback logical box is 20-by-10 with
+      `n4,n5` as its origin; when an extracted Cache GlobalSymbol glyph is
+      available, `_power_symbol_logical_anchor` may expand width/height to
+      the glyph's primitive extents:
 
         GND/GND_POWER/etc.:  logical anchor (10, 0)
         VCC_BAR/VCC/CIRCLE: logical anchor (10, 10)
@@ -255,9 +270,9 @@ types:
         rot 2: x = n4 + (width - ax),  y = n5 + (height - ay)
         rot 3: x = n4 + (height - ay), y = n5 + ax
 
-      where `rot = (orient >> 8) & 3`, `width = 20`, and `height = 10`.
-      A hotpoint match resolves the connected page-local net_id and marks
-      that net as an object-derived power net.
+      where `rot = (orient >> 8) & 3`. A hotpoint match resolves the
+      connected page-local net_id and marks that net as an object-derived
+      power net.
 
       Each VCC_BAR record is followed by a secondary marker record with
       `rec_type = 0xE0`. Observed secondary records contain small coordinates
@@ -289,11 +304,12 @@ types:
 
   wire_or_power_body:
     doc: |
-      Both wires and power symbols share `body_kind == 0x30`. Application
-      code must choose between them after inspecting the `tag` field of
-      the enclosing record (wire: nonzero; power: zero followed by a
-      valid name). This schema models them as alternatives; pick one in
-      post-processing.
+      Historical placeholder. Wire and net-alias records have subtype
+      0x30 at marker+16; power-symbol records do not. Application code
+      chooses the parser by inspecting the marker-relative offsets directly
+      (wire: subtype 0x30 and valid coordinates; alias: subtype 0x30 with
+      marker+20 == 0 and a printable name; power: marker+4 == 0 and a
+      valid power symbol name at marker+18).
     seq:
       - id: raw
         size-eos: true
@@ -419,7 +435,7 @@ types:
       component_instance. Layout:
         0x18
         u2 ref_len
-        ref (ASCII, matching [A-Z]{1,3}\d+[A-Z]?)
+        ref (ASCII, matching [A-Z]{1,8}\d+[A-Z]?)
     seq:
       - id: tag
         contents: [0x18]
@@ -531,6 +547,11 @@ types:
       split on `\n` and distribute lines across the bbox by
       `bbox_height / line_count`.
 
+      `parse_text_annotations` stores the text anchor as the bbox top-left
+      `(p1, p2)` and preserves the full bbox. `generate_page_sch` later
+      emits one KiCad text item per non-empty line, converting each row
+      to a baseline-left anchor inside the preserved bbox.
+
       Visible labels next to some VCC_BAR power ports use this same page-text
       record format. Intersecting the text payload with the page net table can
       identify power-net names, but not all power ports have explicit text
@@ -569,11 +590,11 @@ types:
         type: u2
         doc: |
           1-based index into the Library stream's style table.
-          `library.style_records[style_id - 1]` is the font/weight/
-          italic record for this text. Previously misread as
-          "font_size" — the rendered point size comes from the
-          `bbox` height in the page-stream record itself (not from
-          the Library record).
+          `library.style_records[style_id - 1]` supplies face, weight,
+          italic, and escapement for this text. Previously misread as
+          "font_size" — the emitted KiCad size is fitted from the page
+          text bbox width/height and text metrics, not read directly from
+          the Library record.
       - id: unknown
         type: u2
         doc: |
@@ -612,7 +633,7 @@ types:
       - id: zeros1
         size: 8
       - id: subtype
-        contents: [0x30, 0x00]
+        contents: [0x30, 0x00, 0x00, 0x00]
       - id: zeros2
         size: 2
       - id: type_word
@@ -668,7 +689,7 @@ types:
       - id: zeros1
         size: 8
       - id: subtype
-        contents: [0x30, 0x00]
+        contents: [0x30, 0x00, 0x00, 0x00]
       - id: zeros2
         size: 2
       - id: type_word
@@ -685,7 +706,7 @@ types:
       - id: y2
         type: s4
       - id: trailer
-        size: 4
+        size: 8
 
   # -------------------------------------------------------------------------
   # Page-stream decorative ellipse (parse_page_graphics in dsn2kicad)
@@ -709,7 +730,7 @@ types:
       - id: zeros1
         size: 8
       - id: subtype
-        contents: [0x30, 0x00]
+        contents: [0x30, 0x00, 0x00, 0x00]
       - id: zeros2
         size: 2
       - id: type_word
@@ -771,7 +792,7 @@ types:
       - id: zeros1
         size: 8
       - id: subtype
-        contents: [0x30, 0x00]
+        contents: [0x30, 0x00, 0x00, 0x00]
       - id: zeros2
         size: 2
       - id: type_word

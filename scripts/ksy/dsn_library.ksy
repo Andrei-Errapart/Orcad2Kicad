@@ -15,7 +15,7 @@ doc: |
   Two regions:
 
     1. Header (32 bytes): the ASCII string `OrCAD Windows Design` (space
-       padded, null terminated), then 2 bytes of format version
+       padded, null terminated), then a 4-byte format/version word
        (`03 00 02 00`), then a 4-byte Unix `time_t` mtime, then 8 bytes
        of zeros.
 

@@ -8,8 +8,10 @@ meta:
 
 doc: |
   The Hierarchy stream contains cross-page net connectivity. dsn2kicad
-  uses it to decide which nets are global (appear on multiple pages →
-  global labels in KiCad) versus local.
+  parses it with `parse_hierarchy_nets` and logs the number of hierarchy
+  nets found, but the current converter does not use this stream to decide
+  which nets become KiCad global labels. Global labels are derived from the
+  per-page net tables by finding net names that appear on multiple pages.
 
   Header begins with `B1` (0x42 0x31) followed by the schematic name
   (`SCHEMATIC1`). After the header, net records follow, each framed by

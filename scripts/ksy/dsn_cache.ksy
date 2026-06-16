@@ -31,7 +31,8 @@ doc: |
   As with page streams, records are located by scanning for the marker
   `FF E4 5C 39`; this schema cannot strictly auto-traverse the stream
   because there is no length field. The types below describe what the
-  scanner finds at each marker. Box/segment coordinates are int32 LE in
+  scanner finds at each marker or at the type-word offset immediately after
+  a marker tail. Box/segment coordinates are int32 LE in
   10-mil units; polygon/polyline vertex pairs are int16 LE and stored as
   (y, x) — see `polygon_record` / `polyline_record`.
 
@@ -103,22 +104,19 @@ types:
       Carries a short ASCII label (typically a single character) along
       with a text-bounding rectangle and an anchor point. 
 
-      Layout from marker:
-        marker(4)              FF E4 5C 39
-        zeros(4)
+      Layout from the type-word offset `tw` (`_parse_cache_graphics`
+      reaches it as marker+8):
         type_word(2)           == 0x2e2e
-        subtype(1)             == 0x28
-        zeros(1)
-        zeros(4)
-        bbox_x1(4 signed)      text bounding rectangle, top-left
+        unknown(8)
+        bbox_x1(4 signed)      at tw+10, text bounding rectangle, top-left
         bbox_y1(4 signed)
         bbox_x2(4 signed)      bottom-right
         bbox_y2(4 signed)
-        anchor_x(4 signed)     anchor point, usually = (bbox_x1, bbox_y1)
+        anchor_x(4 signed)     at tw+26, usually = (bbox_x1, bbox_y1)
         anchor_y(4 signed)
-        flag_word(4)           varies (e.g. 0x00000003 or 0x00000008)
-        text_len(2)            1..4 ASCII bytes
-        text(text_len)
+        flag_word(4)           at tw+34, varies (e.g. 0x00000003 or 0x00000008)
+        text_len(2)            at tw+38, 1..100 ASCII bytes
+        text(text_len)         at tw+40
         null(1)
 
       The bbox is typically ~8×9 OrCAD units (~2.0×2.3 mm), i.e. one
@@ -131,29 +129,13 @@ types:
       interpretation.
 
       `_parse_cache_graphics` in dsn2kicad.py reads this record by
-      resyncing on the 2-byte type word `0x2e2e` (call that offset `tw`,
-      = marker+8) and then using these tw-relative offsets:
-        bbox_x1..bbox_y2  i32 × 4  at tw+10
-        anchor_x, anchor_y  i32 × 2  at tw+26
-        text_len(u16)               at tw+38
-        text                        at tw+40
-      (The byte-for-byte `seq` below frames the same fields from the marker
-      and differs by a couple of unknown bytes; prefer the tw-relative
-      offsets when matching the converter.)
+      resyncing on the 2-byte type word `0x2e2e`, not by parsing a
+      marker-framed structure from the marker start.
     seq:
-      - id: marker
-        type: dsn_common::record_marker
-      - id: zeros1
-        contents: [0x00, 0x00, 0x00, 0x00]
       - id: type_word
         contents: [0x2e, 0x2e]
-      - id: subtype
-        type: u1
-        doc: Observed 0x28.
-      - id: unknown1
-        size: 1
-      - id: zeros2
-        contents: [0x00, 0x00, 0x00, 0x00]
+      - id: unknown
+        size: 8
       - id: bbox_x1
         type: s4
       - id: bbox_y1
@@ -361,7 +343,7 @@ types:
       Layout from marker:
         marker(4)
         zeros(4)
-        name_len(2)        length of pin name (1..10)
+        name_len(2)        length of pin name (1..200; most are short)
         pin_name(name_len) ASCII
         null(1)
         body_x(4 signed)   X where pin meets body

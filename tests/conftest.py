@@ -28,6 +28,46 @@ def dsn2kicad():
     return _load_dsn2kicad()
 
 
+_ole_zip_mod = None
+
+
+def _load_ole_zip():
+    global _ole_zip_mod
+    if _ole_zip_mod is None:
+        path = str(SCRIPTS_DIR / "ole_zip.py")
+        loader = SourceFileLoader("ole_zip", path)
+        spec = importlib.util.spec_from_loader("ole_zip", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        _ole_zip_mod = mod
+    return _ole_zip_mod
+
+
+@pytest.fixture(scope="session")
+def ole_zip():
+    return _load_ole_zip()
+
+
+_dsn_fixtures_mod = None
+
+
+def _load_dsn_fixtures():
+    global _dsn_fixtures_mod
+    if _dsn_fixtures_mod is None:
+        path = str(Path(__file__).resolve().parent / "dsn_fixtures.py")
+        loader = SourceFileLoader("dsn_fixtures", path)
+        spec = importlib.util.spec_from_loader("dsn_fixtures", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        _dsn_fixtures_mod = mod
+    return _dsn_fixtures_mod
+
+
+@pytest.fixture(scope="session")
+def dsn_fixtures():
+    return _load_dsn_fixtures()
+
+
 @pytest.fixture(autouse=True)
 def reset_globals(dsn2kicad):
     dsn2kicad._cell_pin_defs.clear()

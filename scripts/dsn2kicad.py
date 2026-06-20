@@ -5914,8 +5914,10 @@ def convert_dsn(ole, dsn_bytes, *, project_name,
                 debug_ref_val=False, debug_symbol=False):
     """Convert an opened OrCAD DSN into KiCad project files, in memory.
 
-    `ole` is an ``olefile.OleFileIO`` over the .DSN; `dsn_bytes` is its raw
-    bytes (used to seed the deterministic UUID RNG). Returns ``{filename: text}``
+    `ole` is an opened stream container over the .DSN — an ``olefile.OleFileIO``
+    or the ZIP-backed ``ole_zip.ZipOleFile`` (see :func:`open_dsn_container`);
+    `dsn_bytes` is its raw bytes (used to seed the deterministic UUID RNG).
+    Returns ``{filename: text}``
     for the whole project with no disk I/O, so the same core serves both the CLI
     (``main``) and the browser entry point (``convert_dsn_bytes``).
 
@@ -6194,8 +6196,8 @@ def convert_dsn_bytes(data, *, project_name='schematic', **opts):
     forwards to :func:`convert_dsn` (``use_kicad_power``, ``use_kicad_rc``,
     ``emit_worksheet``, ``debug_*``).
     """
-    import io
-    ole = olefile.OleFileIO(io.BytesIO(data))
+    from ole_zip import open_dsn_container
+    ole = open_dsn_container(data)
     return convert_dsn(ole, data, project_name=project_name, **opts)
 
 
@@ -6249,8 +6251,9 @@ def main():
         output_dir = Path(dsn_path.stem + "_kicad")
 
     print(f"Opening {dsn_path.name}...")
-    ole = olefile.OleFileIO(str(dsn_path))
     dsn_bytes = dsn_path.read_bytes()
+    from ole_zip import open_dsn_container
+    ole = open_dsn_container(dsn_bytes)
 
     out = convert_dsn(
         ole, dsn_bytes, project_name=dsn_path.stem,

@@ -362,7 +362,9 @@ def read_preamble(ds: DataStream) -> bool:
 
 
 def read_prefixes(ds: DataStream, count: int) -> list:
-    """Read `count` prefixes. First count-1 are full (9 bytes), last is short (3 bytes).
+    """Read `count` prefixes. The first count-1 are full (9 bytes: type +
+    u32 offset + 4 unknown). The last is short: 3 bytes (type + int16 size)
+    plus, when size > 0, `8*size` further bytes (size name/value u32 index pairs).
     Returns list of (type_byte, offset_or_size) tuples.
     """
     prefixes = []
@@ -524,7 +526,8 @@ def read_prim_bezier(ds: DataStream) -> PrimBezier:
     # Version detection: version B has lineStyle+lineWidth (8 extra bytes)
     # Version A: byteLength = 10 + 4*pointCount
     # Version B: byteLength = 18 + 4*pointCount
-    # We detect by checking if (byteLength - 10) is divisible by 4 with valid point count
+    # Detect version B first ((byteLength - 18) divisible by 4 with >= 4 points),
+    # else version A ((byteLength - 10) divisible by 4 with >= 4 points).
     remaining_after_header = byte_length - 8  # after byteLength+zeros already read
     # Try version B first (more common in test files)
     has_style = False

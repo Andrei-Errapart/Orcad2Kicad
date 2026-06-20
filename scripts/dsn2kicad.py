@@ -1340,7 +1340,7 @@ _COLOR_RGBA = {
 }
 
 # OrCAD 48-color palette (index 0–48).  Maps palette index to KiCad RGBA.
-# Index 48 = Default → alpha 0 (use theme color).
+# Index 48 = Default → explicit black (0 0 0 1); OrCAD's default ink is black.
 # Source: open_orcad_parser Color.hpp.
 _ORCAD_PALETTE_RGBA = [
     '255 128 128 1',   # 0  VeryLightRed        #ff8080
@@ -5250,8 +5250,8 @@ def parse_cache_cells(ole):
     """Parse Cache stream to extract cell pin definitions, body rects, lines,
     ellipses, and text annotations.
 
-    Returns (cells, body_rects, body_lines, pin_numbers,
-             cell_text_annotations, body_ellipses) where:
+    Returns (cells, body_rects, body_lines, pin_numbers, cell_text_annotations,
+             body_ellipses, body_arcs, body_polygons, body_polylines) where:
       cells = {cell_name: [(pin_name, hot_x, hot_y, body_x, body_y,
                             pin_flags), ...]}
       body_rects = {cell_name: [(x1, y1, x2, y2), ...]}   rectangles in OrCAD units
@@ -5259,11 +5259,15 @@ def parse_cache_cells(ole):
       body_ellipses = {cell_name: [(x1, y1, x2, y2), ...]} bounding boxes in OrCAD units
       cell_text_annotations = {cell_name:
           [(bbox_x1, bbox_y1, bbox_x2, bbox_y2, anchor_x, anchor_y, text), ...]}
+      body_arcs = {cell_name: [(bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                                start_x, start_y, end_x, end_y), ...]}
+      body_polygons = {cell_name: [[(x1, y1), (x2, y2), ...], ...]}  filled polygons
+      body_polylines = {cell_name: [[(x1, y1), (x2, y2), ...], ...]} open paths
     """
     try:
         data = ole.openstream('Cache').read()
     except Exception:
-        return {}, {}, {}, {}, {}, {}, {}
+        return {}, {}, {}, {}, {}, {}, {}, {}, {}
 
     cell_regions = []
     for m in CELL_RE.finditer(data):
@@ -5420,8 +5424,9 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
 
     Each pin entry is (unique_name, hot_x_mm, hot_y_mm, orig_name,
                        body_x_mm, body_y_mm, pin_flags).
-    Each text annotation is (cx_mm, cy_mm, text) — center of the
-    bounding box in symbol-local mm and the annotation text.
+    Each text annotation is (cx_mm, cy_mm, text, angle) — center of the
+    bounding box in symbol-local mm, the annotation text, and the text
+    angle in tenths of a degree (900 for a vertical bbox, else 0).
     """
     if cache_body_rects is None:
         cache_body_rects = {}

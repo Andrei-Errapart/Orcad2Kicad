@@ -81,7 +81,9 @@ GLOBAL_LABEL_FONT_SIZE_MM = 1.27
 RECORD_MARKER = bytes([0xFF, 0xE4, 0x5C, 0x39])
 
 # Cell name pattern: name.Normal or name.Convert
-CELL_RE = re.compile(rb'([A-Za-z0-9_./+\-()]+)\.(Normal|Convert)\x00')
+# '#' is legal in OrCAD part names (package suffixes, e.g. BUCK_CONVERTER#A);
+# without it the match starts after the '#' and the name is silently truncated.
+CELL_RE = re.compile(rb'([A-Za-z0-9_./+#\-()]+)\.(Normal|Convert)\x00')
 
 # Reference designator pattern
 REF_RE = re.compile(r'^[A-Z]{1,8}\d+[A-Z]?$')

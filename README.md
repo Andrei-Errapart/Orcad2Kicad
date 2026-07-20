@@ -8,7 +8,8 @@ component placements, and a symbol library. The converter is still incomplete, t
 ## Requirements
 
 - Python 3.9+
-- `olefile` (for reading OLE Compound Documents) — the **only** runtime dependency
+- GHC / `runghc` (for the optional `scripts/dsn2kicad-hk` launcher)
+- `olefile` (for reading OLE Compound Documents) — the **only** Python runtime dependency
 
 ```
 pip install olefile
@@ -41,6 +42,12 @@ named after the DSN file.
 The `scripts/dsn2kicad` wrapper creates a small Python virtualenv on first use
 under the user's cache directory, falling back to the temp directory if needed.
 Set `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
+
+`scripts/dsn2kicad-hk` is the native Haskell implementation. It converts both
+the ZIP-backed synthetic DSN fixtures used by the unit tests and regular OLE
+`.DSN` files through its own Compound File reader. It emits complete KiCad
+projects and supports the options below, with real-design and exported-netlist
+regressions against the established Python converter.
 
 Options:
 

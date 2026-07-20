@@ -60,7 +60,11 @@ Everything happens in memory:
   S-expression emitters) → geometry/placement helpers → `generate_page_sch` /
   `generate_root_sch` / `generate_project` → `convert_dsn`. Find things by
   function name, not line number. The `scripts/dsn2kicad` CLI is a shell wrapper;
-  the parser is `dsn2kicad.py`.
+  `scripts/dsn2kicad-hk` is the native Haskell implementation. It reads both
+  ZIP-backed synthetic fixtures and regular OLE `.DSN` files, and emits complete
+  KiCad projects with sheets, symbols, graphics, connectivity, and worksheets.
+  Its focused regression suite compares real-design output and exported
+  netlists with the Python converter.
 - `olb_parser.py` — binary reader for OLB / DSN `Package` & `Library` streams
   (a Python port of OpenOrCadParser's prefix/checkpoint framework). Source of
   component values and pin-name/number visibility.

@@ -31,6 +31,8 @@ doc: |
     - wire_body                 (wire segments, type 0x30)
     - net_alias_record          (net-name labels, type 0x30 with x1==0)
     - power_symbol_body         (GND/VCC instances)
+    - off-page connector placements (decoded by dsn2kicad-hk from the
+                                      StructGraphicInst records)
     - net_table_entry           (per-page net id ↔ name table)
     - component_instance        (component placement)
     - display_prop_record       (ref/value text-offset records that
@@ -44,8 +46,10 @@ doc: |
     - page_ellipse_record       (decorative ellipses / circles)
     - page_polygon_record       (filled polygons, e.g. LED triangles)
 
-  Not yet modeled: hierarchical block references, off-page connectors,
-  the TitleBlock cell instance.
+  Not yet modeled: hierarchical block references and the TitleBlock cell
+  instance. Off-page connectors are not represented as a declarative type
+  below yet, but their record layout and electrical hotpoint transform are
+  implemented in dsn2kicad-hk.
 
   Graphic-primitive color: each rectangle / line / ellipse / polygon
   record (and each page_text_record) is preceded by a StructGraphicInst

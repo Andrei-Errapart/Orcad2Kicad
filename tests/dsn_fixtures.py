@@ -192,9 +192,33 @@ def _power_symbol(
     return bytes(result)
 
 
+def _off_page_connector(record_id, record_name, bbox, orientation=0):
+    """Build an off-page connector whose hotpoint is one edge of bbox."""
+    name = record_name.encode("ascii")
+    x1, y1, x2, y2 = bbox
+    coords = (y1, x1, y2, x2, x1, y1)
+    display_prop = (
+        RECORD_MARKER
+        + struct.pack("<IIhhH", 0, 0, 0, 0, 0)
+        + bytes(4)
+    )
+    return (
+        RECORD_MARKER
+        + struct.pack("<IIIH", 0, record_id, 0, len(name))
+        + name
+        + b"\x00"
+        + struct.pack("<I6h", record_id, *coords)
+        + bytes([0x30, orientation, 0x26, 0])
+        + struct.pack("<H", 1)
+        + display_prop
+        + b"\x23"
+        + bytes(5)
+    )
+
+
 def make_page(
     name, paper="A3", *, nets=None, wires=None, components=None,
-    power_symbols=None, texts=None, graphics=None,
+    power_symbols=None, off_page_connectors=None, texts=None, graphics=None,
 ):
     """Build a synthetic page stream.
 
@@ -213,6 +237,9 @@ def make_page(
         power_symbols: list of (record_name, hot_x, hot_y) or
             (record_name, hot_x, hot_y, quarter_turns, display_prop), where a
             display property is (x_offset, y_offset, text_quarter_turns).
+        off_page_connectors: list of (record_name, (x1, y1, x2, y2)), optionally
+            followed by an OrCAD orientation value (0..7). The connector's
+            electrical hotpoint is derived from the bbox and orientation.
         texts: list of (text, bbox), optionally followed by style and color IDs.
         graphics: dictionaries accepted by `_page_graphic`.
 
@@ -239,6 +266,12 @@ def make_page(
         display_prop = power_symbol[4] if len(power_symbol) > 4 else None
         parts.append(_power_symbol(
             record_name, hot_x, hot_y, rotation, display_prop,
+        ))
+    for record_id, connector in enumerate(off_page_connectors or [], start=1):
+        record_name, bbox = connector[:2]
+        orientation = connector[2] if len(connector) > 2 else 0
+        parts.append(_off_page_connector(
+            record_id, record_name, bbox, orientation,
         ))
     for text in texts or []:
         value, bbox = text[:2]

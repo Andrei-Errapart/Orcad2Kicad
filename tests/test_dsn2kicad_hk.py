@@ -601,6 +601,116 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_uses_explicit_off_page_connectors(
+    dsn_fixtures, tmp_path,
+):
+    page1 = dsn_fixtures.make_page(
+        "01_EXPLICIT",
+        nets={
+            1: "SHARED",
+            2: "SAME_NAME_ONLY",
+            3: "ROTATED",
+            4: "MIRRORED_INPUT",
+            5: "SLASH_RIGHT",
+        },
+        wires=[
+            (1, 0, 0, 20, 0),
+            (2, 0, 50, 20, 50),
+            (3, 50, 50, 50, 80),
+            (4, 80, 100, 100, 100),
+            (5, 300, 150, 320, 150),
+        ],
+        components=[
+            ("TP", "S1", 0, 20, 0, 0, [(1, 20, 0, 1)]),
+            ("TP", "A1", 0, 20, 50, 0, [(1, 20, 50, 2)]),
+            ("TP", "R1", 0, 50, 80, 0, [(1, 50, 80, 3)]),
+            ("TP", "M1", 0, 80, 100, 0, [(1, 80, 100, 4)]),
+            ("TP", "V1", 0, 320, 150, 0, [(1, 320, 150, 5)]),
+        ],
+        off_page_connectors=[
+            ("OFFPAGELEFT-L", (0, -10, 100, 10), 0),
+            ("OFFPAGELEFT-B", (40, 50, 60, 100), 3),
+            ("OFFPAGE_LEFT-IN", (100, 90, 200, 110), 4),
+            ("OFFPAGELEFT/R", (200, 140, 300, 160), 6),
+            ("OFFPAGELEFT-L", (200, 190, 300, 210), 0),
+        ],
+    )
+    page2 = dsn_fixtures.make_page(
+        "02_EXPLICIT",
+        nets={1: "SHARED", 2: "SAME_NAME_ONLY"},
+        wires=[(1, 0, 0, 20, 0), (2, 0, 50, 20, 50)],
+        components=[
+            ("TP", "S2", 0, 20, 0, 0, [(1, 20, 0, 1)]),
+            ("TP", "A2", 0, 20, 50, 0, [(1, 20, 50, 2)]),
+        ],
+        off_page_connectors=[
+            ("OFFPAGELEFT-R", (-100, -10, 0, 10), 0),
+        ],
+    )
+    dsn = tmp_path / "explicit-offpage.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        PAGE: page1,
+        "Views/SCHEMATIC1/Pages/Page2": page2,
+        "Cache": dsn_fixtures.make_cache({
+            "TP": [("P", 0, 0, 0, 0, 0x21)],
+        }),
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    page1_tree = kicad_sexpr.parse(
+        (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    )
+    page1_labels = []
+    for label in kicad_sexpr.find_all(page1_tree, "global_label"):
+        at = kicad_sexpr.find_first(label, "at")
+        page1_labels.append((
+            kicad_sexpr.strip_quotes(label[1]),
+            tuple(kicad_sexpr.to_float(value) for value in at[1:4]),
+        ))
+    assert page1_labels == [
+        ("SHARED", (0.0, 0.0, 0.0)),
+        ("ROTATED", (12.7, 12.7, 270.0)),
+        ("MIRRORED_INPUT", (25.4, 25.4, 0.0)),
+        ("SLASH_RIGHT", (76.2, 38.1, 180.0)),
+    ]
+
+    page2_tree = kicad_sexpr.parse(
+        (out_dir / "Page2.kicad_sch").read_text(encoding="utf-8")
+    )
+    assert [
+        kicad_sexpr.strip_quotes(label[1])
+        for label in kicad_sexpr.find_all(page2_tree, "global_label")
+    ] == ["SHARED"]
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli:
+        netlist = tmp_path / "explicit-offpage.net"
+        export_result = subprocess.run(
+            [
+                kicad_cli, "sch", "export", "netlist",
+                "--output", str(netlist),
+                str(out_dir / "explicit-offpage.kicad_sch"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert export_result.returncode == 0, export_result.stderr
+        groups = _net_pin_groups(netlist)
+        assert (("S1", "1"), ("S2", "1")) in groups
+        assert not any({("A1", "1"), ("A2", "1")} <= set(group)
+                       for group in groups)
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_net_names_are_case_insensitive(dsn_fixtures, tmp_path):
     page_names = ["RailName", "RAILNAME", "RailName"]
     members = {"Cache": dsn_fixtures.make_cache({

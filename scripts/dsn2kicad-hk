@@ -10,7 +10,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, ord, toUpper)
 import Data.Int (Int16, Int32)
-import Data.List (elemIndex, intercalate, isPrefixOf, isSuffixOf, sortOn)
+import Data.List (elemIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
@@ -83,6 +83,7 @@ data Page = Page
   , pageNets :: Map.Map Int String
   , pageWires :: [Wire]
   , pageNetAliases :: [NetLabel]
+  , pageOffPageConnectors :: [OffPageConnector]
   , pageComponents :: [Component]
   , pagePowerSymbols :: [PowerSymbol]
   , pageTexts :: [PageText]
@@ -109,6 +110,16 @@ data NetLabel = NetLabel
   , netLabelAngle :: Int
   }
   deriving (Eq, Ord, Show)
+
+data OffPageConnector = OffPageConnector
+  { offPageRecordName :: String
+  , offPageNetName :: String
+  , offPageX :: Int
+  , offPageY :: Int
+  , offPageAngle :: Int
+  , offPageMatched :: Bool
+  }
+  deriving Show
 
 data Component = Component
   { compCell :: String
@@ -354,10 +365,11 @@ convertStreams opts members = do
       textStyles = maybe [] parseLibraryTextStyles (Map.lookup "Library" memberMap)
       multiUnits = detectMultiUnitComponents pages
       globalNets = globalNetNames pages
+      hasOffPageRecords = any (not . null . pageOffPageConnectors) pages
       powerRefs = assignPowerReferences pages
       project = optProjectName opts
       pageFiles =
-        [(pageOutputName page, generatePageSch opts project cacheSymbols multiUnits globalNets powerRefs textStyles page)
+        [(pageOutputName page, generatePageSch opts project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles page)
         | page <- pages]
       worksheetFiles =
         [ (project ++ ".kicad_wks", generateWorksheet)
@@ -723,6 +735,8 @@ parsePage libraryValues streamName body =
       wires = parseWires nets body
       aliases = parseNetAliases nets body
       comps = parseComponents libraryValues nets body
+      offPageConnectors = resolveOffPageConnectors wires comps aliases
+        (parseOffPageConnectors body)
       powerSymbols = resolvePowerSymbols wires comps (parsePowerSymbols body)
       texts = parsePageTexts paper body
       graphics = parsePageGraphics paper body
@@ -734,6 +748,7 @@ parsePage libraryValues streamName body =
     , pageNets = nets
     , pageWires = wires
     , pageNetAliases = aliases
+    , pageOffPageConnectors = offPageConnectors
     , pageComponents = comps
     , pagePowerSymbols = powerSymbols
     , pageTexts = texts
@@ -976,6 +991,10 @@ canonicalizePageNetNames pages = map canonicalizePage pages
       , pageNetAliases =
           [ alias { netLabelName = canonicalName (netLabelName alias) }
           | alias <- pageNetAliases page
+          ]
+      , pageOffPageConnectors =
+          [ connector { offPageNetName = canonicalName (offPageNetName connector) }
+          | connector <- pageOffPageConnectors page
           ]
       , pageComponents = map canonicalizeComponent (pageComponents page)
       , pagePowerSymbols =
@@ -1364,6 +1383,109 @@ parsePagePins nets body cellEnd searchEnd =
         , pagePinNetId = 0
         , pagePinNetName = ""
         }
+
+parseOffPageConnectors :: BS.ByteString -> [OffPageConnector]
+parseOffPageConnectors body = mapMaybe parseAt (findAll recordMarker body)
+  where
+    parseAt idx = do
+      zeros <- word32LE body (idx + 4)
+      guard (zeros == 0)
+      nameLen <- word16LE body (idx + 16)
+      guard (nameLen >= 1 && nameLen <= 50)
+      let nameStart = idx + 18
+          nameEnd = nameStart + fromIntegral nameLen
+      name <- asciiAt body nameStart (fromIntegral nameLen)
+      guard ("OFFPAGE" `isInfixOf` map toUpper name)
+      guard (byteAt body nameEnd == Just 0)
+      let afterNull = nameEnd + 1
+      locY <- int16LE body (afterNull + 4)
+      locX <- int16LE body (afterNull + 6)
+      y2 <- int16LE body (afterNull + 8)
+      x2 <- int16LE body (afterNull + 10)
+      x1 <- int16LE body (afterNull + 12)
+      y1 <- int16LE body (afterNull + 14)
+      orient <- fromIntegral <$> word16LE body (afterNull + 16)
+      propertyCount <- word16LE body (afterNull + 20)
+      guard (propertyCount <= 8)
+      guard (all (\value -> abs value < 5000) [locX, locY, x1, y1, x2, y2])
+      guard (x1 /= x2 || y1 /= y2)
+      let ((hotX, hotY), angle) = offPageHotpoint name (x1, y1, x2, y2) orient
+      pure OffPageConnector
+        { offPageRecordName = name
+        , offPageNetName = ""
+        , offPageX = hotX
+        , offPageY = hotY
+        , offPageAngle = angle
+        , offPageMatched = False
+        }
+
+offPageHotpoint :: String -> (Int, Int, Int, Int) -> Int -> ((Int, Int), Int)
+offPageHotpoint name (rawX1, rawY1, rawX2, rawY2) orient =
+  let upper = map toUpper name
+      pointsRight = any (`isSuffixOf` upper) ["-R", "/R", "-IN"]
+      orientation = (orient `div` 256) .&. 0x07
+      initialX = if pointsRight then 1 else -1
+      mirroredX = if orientation .&. 0x04 /= 0 then negate initialX else initialX
+      (directionX, directionY) = case orientation .&. 0x03 of
+        1 -> (0, negate mirroredX)
+        2 -> (negate mirroredX, 0)
+        3 -> (0, mirroredX)
+        _ -> (mirroredX, 0)
+      x1 = min rawX1 rawX2
+      x2 = max rawX1 rawX2
+      y1 = min rawY1 rawY2
+      y2 = max rawY1 rawY2
+      midX = (x1 + x2) `div` 2
+      midY = (y1 + y2) `div` 2
+  in if directionX < 0
+       then ((x1, midY), 0)
+       else if directionX > 0
+         then ((x2, midY), 180)
+         else if directionY < 0
+           then ((midX, y1), 270)
+           else ((midX, y2), 90)
+
+resolveOffPageConnectors
+  :: [Wire] -> [Component] -> [NetLabel] -> [OffPageConnector]
+  -> [OffPageConnector]
+resolveOffPageConnectors wires components aliases = map resolve
+  where
+    pinNets = Map.fromList
+      [ ((pagePinX pin, pagePinY pin), pagePinNetName pin)
+      | component <- components
+      , pin <- compPagePins component
+      , not (null (pagePinNetName pin))
+      ]
+    aliasNets = Map.fromList
+      [ ((netLabelX alias, netLabelY alias), netLabelName alias)
+      | alias <- aliases
+      , not (null (netLabelName alias))
+      ]
+
+    resolve connector =
+      let point = (offPageX connector, offPageY connector)
+          endpointMatches =
+            [ wireNetName wire
+            | wire <- wires
+            , not (null (wireNetName wire))
+            , point == wirePoint1 wire || point == wirePoint2 wire
+            ]
+          segmentMatches =
+            [ wireNetName wire
+            | wire <- wires
+            , not (null (wireNetName wire))
+            , pointOnWire point wire
+            ]
+          match = listAt (reverse endpointMatches) 0
+            `orElse` Map.lookup point pinNets
+            `orElse` Map.lookup point aliasNets
+            `orElse` listAt (reverse segmentMatches) 0
+      in case match of
+           Just netName -> connector
+             { offPageNetName = netName
+             , offPageMatched = True
+             }
+           Nothing -> connector
 
 parsePowerSymbols :: BS.ByteString -> [PowerSymbol]
 parsePowerSymbols body =
@@ -2610,11 +2732,12 @@ generatePageSch
   -> Map.Map String CacheSymbol
   -> MultiUnitRegistry
   -> Set.Set String
+  -> Bool
   -> Map.Map (FilePath, Int) String
   -> [TextStyle]
   -> Page
   -> String
-generatePageSch opts _project cacheSymbols multiUnits globalNets powerRefs textStyles page =
+generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles page =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
@@ -2811,24 +2934,46 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets powerRefs textS
     regularLabels =
       [ label
       | label <- placeWireLabels
-          (Set.difference globalNets busMemberNets) powerNets regularWires
+          (Set.difference generatedGlobalNets busMemberNets) powerNets regularWires
       , let point = (netLabelX label, netLabelY label)
       , not (Set.member point pinPositions)
       , not (Set.member point powerPositions)
+      , not (Set.member point offPagePositions)
       , netLabelGlobal label
         || not (explicitAliasCovers regularWires (pageNetAliases page) label)
       ]
     busLabels =
-      [ label { netLabelGlobal = True }
-      | label <- placeWireLabels (Set.fromList (map wireNetName busWires)) Set.empty busWires
+      [ label
+      | label <- placeWireLabels busGlobalNets Set.empty busWires
       , not (Set.member (netLabelX label, netLabelY label) busEntryLandings)
+      , not (Set.member (netLabelX label, netLabelY label) offPagePositions)
       ]
     explicitAliases =
       [ alias
       | alias <- pageNetAliases page
       , not (Set.member (netLabelX alias, netLabelY alias) powerPositions)
+      , not (Set.member (netLabelX alias, netLabelY alias) offPagePositions)
       ]
-    labels = unique (regularLabels ++ explicitAliases ++ busLabels)
+    explicitOffPageLabels =
+      [ NetLabel True (offPageNetName connector)
+          (offPageX connector) (offPageY connector) (offPageAngle connector)
+      | connector <- pageOffPageConnectors page
+      , offPageMatched connector
+      , not (null (offPageNetName connector))
+      ]
+    labels = unique
+      (regularLabels ++ explicitAliases ++ busLabels ++ explicitOffPageLabels)
+    generatedGlobalNets
+      | hasOffPageRecords = Set.empty
+      | otherwise = globalNets
+    busGlobalNets
+      | hasOffPageRecords = Set.empty
+      | otherwise = Set.fromList (map wireNetName busWires)
+    offPagePositions = Set.fromList
+      [ (offPageX connector, offPageY connector)
+      | connector <- pageOffPageConnectors page
+      , offPageMatched connector
+      ]
     pinPositions = Set.fromList $
       [ (pagePinX pin, pagePinY pin)
       | component <- pageComponents page

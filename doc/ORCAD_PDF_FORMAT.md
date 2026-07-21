@@ -14,6 +14,7 @@ blue `#4200ff` — so color maps are *not* interchangeable between the two PDFs.
 | Element | Hex | Width | Notes |
 |---------|-----|-------|-------|
 | Wires | `#4200ff` | 0.127–0.169mm | Always horizontal/vertical |
+| Wires (newer Capture) | `#800040` | 0.127–0.254mm | Used by the GenericBoard corpus |
 | Pins | `#aa8744` | 0.127mm | H/V only, short (1.8mm or 5.3mm) |
 | Symbol body | `#cc8005` | 0.127–0.169mm | H/V and diagonal |
 | Pin-end markers | `#803f00` | 0.132mm | Small diagonal X shapes, in pairs |
@@ -45,6 +46,20 @@ blue `#4200ff` — so color maps are *not* interchangeable between the two PDFs.
 
 Line widths: smaller-board PDFs use ~0.169mm for most elements, larger boards
 ~0.127mm; pin-end markers are consistently 0.132mm.
+
+## Global labels
+
+OrCAD off-page ports are the PDF ground truth for KiCad global labels. In the
+observed Capture exports, a port consists of red net-name text aligned with one
+or two 45-degree chevrons. Older exports draw the chevrons in black; newer
+exports draw both the text and chevrons in red. Port
+text can be horizontal or vertical, and a separately rendered red page
+reference such as `<3,7>` may follow it.
+
+Red text alone must not be classified as a global label: the same color is used
+for warnings, page references, and ordinary annotations. PDF comparisons should
+therefore require both the text and adjacent chevron geometry when identifying
+global labels.
 
 ## Wire geometry
 

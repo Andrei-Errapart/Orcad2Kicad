@@ -338,18 +338,18 @@ convertOleBytes opts bytes = do
   convertStreams opts streams
 
 convertStreams :: Options -> [(FilePath, BS.ByteString)] -> Either String [(FilePath, String)]
-convertStreams opts members =
+convertStreams opts members = do
   let memberMap = Map.fromList members
       pageMembers =
-        sortOn fst
-          [ (name, body)
+        sortOn (\(viewName, pageName, _, _) -> (viewName, pageName))
+          [ (viewName, pageName, name, body)
           | (name, body) <- members
-          , "Views/SCHEMATIC1/Pages/" `isPrefixOf` name
+          , Just (viewName, pageName) <- [pageStreamPath name]
           ]
       cacheSymbols = maybe Map.empty parseCacheSymbols (Map.lookup "Cache" memberMap)
       libraryValues = maybe [] parseLibraryValueStrings (Map.lookup "Library" memberMap)
       rawPages = canonicalizePageNetNames
-        [parsePage libraryValues name body | (name, body) <- pageMembers]
+        [parsePage libraryValues name body | (_, _, name, body) <- pageMembers]
       pages = map (refinePageComponents cacheSymbols) rawPages
       textStyles = maybe [] parseLibraryTextStyles (Map.lookup "Library" memberMap)
       multiUnits = detectMultiUnitComponents pages
@@ -363,7 +363,12 @@ convertStreams opts members =
         [ (project ++ ".kicad_wks", generateWorksheet)
         | optEmitWorksheet opts
         ]
-  in Right $
+      outputNames = map pageOutputName pages
+  unlessEither (not (null pageMembers)) $
+    "no schematic page streams found under Views/<view>/Pages/<page>"
+  unlessEither (length outputNames == Set.size (Set.fromList outputNames)) $
+    "multiple schematic pages map to the same KiCad output filename"
+  pure $
     pageFiles
     ++ [ (project ++ ".kicad_sch", generateRootSch project pages)
        , (project ++ ".kicad_sym", generateSymbolLibrary opts cacheSymbols multiUnits pages)
@@ -371,6 +376,19 @@ convertStreams opts members =
        , ("sym-lib-table", generateSymLibTable project)
        ]
     ++ worksheetFiles
+
+pageStreamPath :: FilePath -> Maybe (String, String)
+pageStreamPath path =
+  case splitSlash path of
+    ["Views", viewName, "Pages", pageName]
+      | not (null viewName) && not (null pageName) -> Just (viewName, pageName)
+    _ -> Nothing
+
+splitSlash :: String -> [String]
+splitSlash value =
+  case break (== '/') value of
+    (part, []) -> [part]
+    (part, _:rest) -> part : splitSlash rest
 
 writeOutput :: Options -> [(FilePath, String)] -> IO ()
 writeOutput opts files = do
@@ -2720,12 +2738,11 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets powerRefs textS
     nativePinAdjustmentMap = Map.fromList nativePinAdjustments
     rcPinAdjustmentMap = Map.fromList rcPinAdjustments
     rcInternalConnections = Set.fromList
-      [ orderPoints (pagePinX firstPin, pagePinY firstPin)
-          (pagePinX secondPin, pagePinY secondPin)
+      [ orderPoints firstPoint secondPoint
       | component <- pageComponents page
       , optKicadRc opts
       , compCell component `elem` ["R", "C"]
-      , [firstPin, secondPin] <- [compPagePins component]
+      , [firstPoint, secondPoint] <- [rcOriginalPinPoints component]
       ]
     orderedWirePoints wire = orderPoints (wirePoint1 wire) (wirePoint2 wire)
     orderPoints first second = if first <= second then (first, second) else (second, first)
@@ -2743,11 +2760,19 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets powerRefs textS
       | component <- pageComponents page
       , optKicadRc opts
       , compCell component `elem` ["R", "C"]
-      , pin <- compPagePins component
-      , let oldPoint = (pagePinX pin, pagePinY pin)
-      , Just newPoint <- [standardDevicePinPoint component (show (pagePinNumber pin))]
+      , (pinNumberText, oldPoint) <- zip ["1", "2"] (rcOriginalPinPoints component)
+      , Just newPoint <- [standardDevicePinPoint component pinNumberText]
       , oldPoint /= newPoint
       ]
+    rcOriginalPinPoints component =
+      case Map.lookup (compCell component) cacheSymbols of
+        Just symbol
+          | [firstPin, secondPin] <- cachePins symbol ->
+              map (placedPinPoint component symbol) [firstPin, secondPin]
+        _ ->
+          [ (pagePinX pin, pagePinY pin)
+          | pin <- compPagePins component
+          ]
     pinOwners =
       [ ((pagePinX pin, pagePinY pin), compRef component)
       | component <- pageComponents page

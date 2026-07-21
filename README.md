@@ -49,6 +49,11 @@ the ZIP-backed synthetic DSN fixtures used by the unit tests and regular OLE
 projects and supports the options below, with real-design and exported-netlist
 regressions against the established Python converter.
 
+OrCAD view names are discovered from `Views/<view>/Pages/<page>` streams; the
+view does not need to be named `SCHEMATIC1`. Conversion fails instead of
+emitting an empty project when no page streams are present, and also rejects
+page-name collisions that would overwrite a generated schematic.
+
 Options:
 
 - `--kicad-power` — Use KiCad-native power symbol graphics (VCC chevron, GND

@@ -248,6 +248,72 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_discovers_pages_in_named_views(dsn_fixtures, tmp_path):
+    page = dsn_fixtures.make_page(
+        "01_NAMED_VIEW",
+        nets={1: "SIGNAL"},
+        wires=[(1, 0, 0, 100, 0)],
+    )
+    dsn = tmp_path / "named-view.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        "Views/GenericBoard/Pages/P01_Title Page": page,
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / "P01_Title_Page.kicad_sch").exists()
+    root = (out_dir / "named-view.kicad_sch").read_text(encoding="utf-8")
+    assert '"P01_Title_Page.kicad_sch"' in root
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_rejects_dsn_without_page_streams(dsn_fixtures, tmp_path):
+    dsn = tmp_path / "no-pages.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({"Cache": b"not a page"}))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "no schematic page streams found" in result.stderr
+    assert not out_dir.exists()
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_rejects_duplicate_page_output_names(dsn_fixtures, tmp_path):
+    page = dsn_fixtures.make_page("01_DUPLICATE")
+    dsn = tmp_path / "duplicate-pages.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        "Views/First/Pages/Page1": page,
+        "Views/Second/Pages/Page1": page,
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "same KiCad output filename" in result.stderr
+    assert not out_dir.exists()
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_extends_pin_hotpoints_and_wires(dsn_fixtures, tmp_path):
     page = dsn_fixtures.make_page(
         "01_EXTEND",
@@ -770,6 +836,56 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
             (("P1", "1"),), (("P2", "1"),), (("P3", "1"),),
             (("R1", "1"),), (("R1", "2"), ("X1", "1")),
         ]
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_kicad_rc_uses_cache_hotpoints(dsn_fixtures, tmp_path):
+    page = dsn_fixtures.make_page(
+        "01_RC_CACHE",
+        nets={1: "LEFT", 2: "RIGHT"},
+        wires=[(1, 50, 100, 90, 100), (2, 110, 100, 150, 100)],
+        components=[
+            ("TP", "L1", 0, 50, 100, 0, [(1, 50, 100, 1)]),
+            # Some real format variants yield unrelated page-pin coordinates.
+            # R/C geometry still has authoritative hotpoints in Cache.
+            ("R", "R1", 0, 100, 100, 0,
+             [(1, 500, 500, 1), (2, 600, 500, 2)]),
+            ("TP", "R2", 0, 150, 100, 0, [(1, 150, 100, 2)]),
+        ],
+    )
+    cache = dsn_fixtures.make_cache({
+        "R": [
+            ("1", -10, 0, -5, 0, 0x21),
+            ("2", 10, 0, 5, 0, 0x21),
+        ],
+        "TP": [("P", 0, 0, 10, 0, 0x21)],
+    })
+    cache += dsn_fixtures.make_cache_pin_numbers({"R": ["1", "2"]})
+    dsn = tmp_path / "rc-cache.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
+
+    default_out = tmp_path / "default"
+    rc_out = tmp_path / "rc"
+    for args in ([str(dsn), str(default_out)],
+                 ["--kicad-rc", str(dsn), str(rc_out)]):
+        result = subprocess.run(
+            [str(DSN2KICAD_HK), *args], capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli:
+        netlists = []
+        for output in (default_out, rc_out):
+            netlist = tmp_path / f"{output.name}.net"
+            result = subprocess.run(
+                [kicad_cli, "sch", "export", "netlist", "--output", str(netlist),
+                 str(output / "Page1.kicad_sch")],
+                capture_output=True, text=True, timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            netlists.append(netlist)
+        assert _net_ref_groups(netlists[0]) == _net_ref_groups(netlists[1])
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")

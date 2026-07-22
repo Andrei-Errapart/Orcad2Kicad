@@ -9,6 +9,8 @@ the converter reads.
 import io
 import zipfile
 
+import olefile
+
 
 class TestMakeZip:
     def test_roundtrips_members(self, dsn_fixtures):
@@ -17,6 +19,22 @@ class TestMakeZip:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             assert zf.read("Cache") == b"abc"
             assert zf.read("Library") == b"xyz"
+
+
+class TestMakeOle:
+    def test_roundtrips_nested_streams(self, dsn_fixtures):
+        members = {
+            "Cache": b"cache-data",
+            "Views/NAMED/Pages/Page 1": b"page-data" * 600,
+        }
+        data = dsn_fixtures.make_ole(members)
+        assert data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        with olefile.OleFileIO(io.BytesIO(data)) as ole:
+            assert sorted("/".join(path) for path in ole.listdir()) == sorted(members)
+            for name, expected in members.items():
+                actual = ole.openstream(name).read()
+                assert actual[:len(expected)] == expected
+                assert not actual[len(expected):].strip(b"\x00")
 
 
 class TestMakePage:
@@ -37,6 +55,17 @@ class TestMakePage:
         w = wires[0]
         assert (w["x1"], w["y1"], w["x2"], w["y2"]) == (0, 0, 100, 0)
         assert w["net"] == "GND"
+
+    def test_net_alias_roundtrip(self, dsn_fixtures, dsn2kicad):
+        page = dsn_fixtures.make_page(
+            "01_FOO", nets={5: "SIGNAL"}, aliases=[("signal", 40, 50)]
+        )
+        nets = dsn2kicad.parse_net_table(page)
+        assert dsn2kicad.parse_net_aliases(page, nets) == [{
+            "name": "SIGNAL",
+            "x": 40,
+            "y": 50,
+        }]
 
     def test_component_roundtrip(self, dsn_fixtures, dsn2kicad):
         page = dsn_fixtures.make_page(

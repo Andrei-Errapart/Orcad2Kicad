@@ -193,6 +193,21 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
     for path in out_dir.glob("*.kicad_sch"):
         kicad_sexpr.parse(path.read_text(encoding="utf-8"))
     sym_tree = kicad_sexpr.parse(sym_text)
+    res_symbol = next(
+        symbol
+        for symbol in kicad_sexpr.find_all(sym_tree, "symbol")
+        if kicad_sexpr.strip_quotes(symbol[1]) == "RES"
+    )
+    res_body = next(
+        unit
+        for unit in kicad_sexpr.find_all(res_symbol, "symbol")
+        if kicad_sexpr.strip_quotes(unit[1]) == "RES_1_0"
+    )
+    body_rect = kicad_sexpr.find_first(res_body, "rectangle")
+    assert tuple(map(kicad_sexpr.to_float, body_rect[1][1:3])) == (-17.78, 2.54)
+    assert tuple(map(kicad_sexpr.to_float, body_rect[2][1:3])) == (17.78, -2.54)
+    assert len(kicad_sexpr.find_all(res_body, "polyline")) >= 5
+
     sw_symbol = next(
         symbol
         for symbol in kicad_sexpr.find_all(sym_tree, "symbol")
@@ -248,16 +263,79 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path):
+    note_page = dsn_fixtures.make_page("01_NOTE")
+    main_page = dsn_fixtures.make_page(
+        "02_MAIN",
+        nets={1: "LINK"},
+        wires=[(1, 0, 0, 100, 0)],
+        components=[("TP", "J1", 0, 0, 0, 0), ("TP", "J2", 0, 100, 0, 0)],
+    )
+    cache = dsn_fixtures.make_cache({
+        "TP": [("P", 0, 0, 10, 0, 0x21)],
+    })
+    dsn = tmp_path / "synthetic-ole.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_ole({
+        "Views/SYNTHETIC/Pages/Page Note": note_page,
+        "Views/SYNTHETIC/Pages/Page Main": main_page,
+        "Cache": cache,
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert dsn.read_bytes().startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    root_path = out_dir / "synthetic-ole.kicad_sch"
+    symbol_path = out_dir / "synthetic-ole.kicad_sym"
+    note_path = out_dir / "Page_Note.kicad_sch"
+    main_path = out_dir / "Page_Main.kicad_sch"
+    assert note_path.exists()
+    assert main_path.exists()
+    root_text = root_path.read_text(encoding="utf-8")
+    assert '"Page_Note.kicad_sch"' in root_text
+    assert '"Page_Main.kicad_sch"' in root_text
+    assert "(pin passive line" in symbol_path.read_text(encoding="utf-8")
+
+    for path in [root_path, note_path, main_path, symbol_path]:
+        kicad_sexpr.parse(path.read_text(encoding="utf-8"))
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli:
+        netlist = tmp_path / "ole.net"
+        export_result = subprocess.run(
+            [
+                kicad_cli, "sch", "export", "netlist",
+                "--output", str(netlist), str(main_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert export_result.returncode == 0, export_result.stderr
+        assert (("J1", "1"), ("J2", "1")) in _net_pin_groups(netlist)
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_discovers_pages_in_named_views(dsn_fixtures, tmp_path):
     page = dsn_fixtures.make_page(
         "01_NAMED_VIEW",
         nets={1: "SIGNAL"},
         wires=[(1, 0, 0, 100, 0)],
+        components=[("TP", "TP1", 0, 100, 0, 0)],
     )
     dsn = tmp_path / "named-view.DSN"
     out_dir = tmp_path / "out"
     dsn.write_bytes(dsn_fixtures.make_zip({
         "Views/GenericBoard/Pages/P01_Title Page": page,
+        "Cache": dsn_fixtures.make_cache({
+            "TP": [("P", 0, 0, 10, 0, 0x21)],
+        }),
     }))
 
     result = subprocess.run(
@@ -271,6 +349,166 @@ def test_dsn2kicad_hk_discovers_pages_in_named_views(dsn_fixtures, tmp_path):
     assert (out_dir / "P01_Title_Page.kicad_sch").exists()
     root = (out_dir / "named-view.kicad_sch").read_text(encoding="utf-8")
     assert '"P01_Title_Page.kicad_sch"' in root
+    page_text = (out_dir / "P01_Title_Page.kicad_sch").read_text(
+        encoding="utf-8"
+    )
+    assert "(symbol" in page_text
+    assert "(wire" in page_text
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_legacy_cache_and_page_records(dsn_fixtures, tmp_path):
+    opamp_pins = [
+        ("+", -20, -20, -10, -20, 0x21),
+        ("-", -20, 0, -10, 0, 0x21),
+        ("V+", 0, -20, 0, -10, 0x21),
+        ("V-", 0, 20, 0, 10, 0x21),
+        ("OUT", 20, 0, 10, 0, 0x21),
+        ("OS1", 20, -20, 10, -20, 0x21),
+        ("OS2", 20, 20, 10, 20, 0x21),
+    ]
+    pin_numbers = [3, 2, 7, 4, 6, 1, 5]
+    hotpoints = [
+        (310, 350), (310, 370), (330, 350), (330, 390),
+        (350, 370), (350, 350), (350, 390),
+    ]
+    endpoints = [
+        (290, 350), (290, 370), (330, 330), (330, 410),
+        (370, 370), (370, 350), (370, 390),
+    ]
+
+    nets = {index: f"NET{index}" for index in range(1, 8)}
+    nets[8] = "FILLER"
+    nets.update({index: "0" for index in range(9, 13)})
+    wires = [
+        (net_id, *hotpoint, *endpoint)
+        for net_id, hotpoint, endpoint in zip(range(1, 8), hotpoints, endpoints)
+    ]
+    wires.extend(
+        (8, 600, 100 + index * 10, 620, 100 + index * 10)
+        for index in range(17)
+    )
+    power_hotpoints = [(900, 100 + index * 50) for index in range(4)]
+    wires.extend(
+        (net_id, *hotpoint, hotpoint[0] + 20, hotpoint[1])
+        for net_id, hotpoint in zip(range(9, 13), power_hotpoints)
+    )
+    assert len(wires) == 28
+
+    components = [(
+        "OPAMP", "U1", 0, 330, 370, 0,
+        [
+            (number, x, y, net_id)
+            for number, (x, y), net_id in zip(pin_numbers, hotpoints, range(1, 8))
+        ],
+    )]
+    components.extend(
+        ("TP", f"P{number}", 0, x, y, 0)
+        for number, (x, y) in zip(pin_numbers, endpoints)
+    )
+    page = dsn_fixtures.make_page(
+        "PAGE1",
+        paper="A",
+        nets=nets,
+        wires=wires,
+        components=components,
+        power_symbols=[("GND", *point) for point in power_hotpoints],
+        legacy=True,
+    )
+    cache = dsn_fixtures.make_legacy_cache(
+        {
+            "OPAMP": opamp_pins,
+            "TP": [("P", 0, 0, 10, 0, 0x21)],
+        },
+        compact_cells={"TP"},
+    )
+    cache += dsn_fixtures.make_cache_pin_numbers({
+        "OPAMP": [str(number) for number in pin_numbers],
+        "TP": ["1", "2"],
+    })
+    dsn = tmp_path / "legacy.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        "Views/SCHEMATIC1/Pages/PAGE1": page,
+        "Cache": cache,
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    symbol_tree = kicad_sexpr.parse(
+        (out_dir / "legacy.kicad_sym").read_text(encoding="utf-8")
+    )
+    opamp = next(
+        symbol
+        for symbol in symbol_tree[1:]
+        if isinstance(symbol, list)
+        and symbol
+        and symbol[0] == "symbol"
+        and kicad_sexpr.strip_quotes(symbol[1]) == "OPAMP"
+    )
+    opamp_pin_unit = next(
+        unit
+        for unit in kicad_sexpr.find_all(opamp, "symbol")
+        if kicad_sexpr.strip_quotes(unit[1]) == "OPAMP_1_1"
+    )
+    emitted_pins = {
+        kicad_sexpr.strip_quotes(kicad_sexpr.find_first(pin, "name")[1]):
+        kicad_sexpr.strip_quotes(kicad_sexpr.find_first(pin, "number")[1])
+        for pin in kicad_sexpr.find_all(opamp_pin_unit, "pin")
+    }
+    assert emitted_pins == {
+        "+": "3", "-": "2", "V+": "7", "V-": "4",
+        "OUT": "6", "OS1": "1", "OS2": "5",
+    }
+
+    page_path = out_dir / "PAGE1.kicad_sch"
+    page_text = page_path.read_text(encoding="utf-8")
+    page_tree = kicad_sexpr.parse(page_text)
+    assert page_text.count("\n\t(wire\n") == 28
+    placed = [
+        symbol
+        for symbol in kicad_sexpr.find_all(page_tree, "symbol")
+        if kicad_sexpr.find_first(symbol, "lib_id")
+    ]
+    u1 = next(
+        symbol
+        for symbol in placed
+        if kicad_sexpr.strip_quotes(
+            kicad_sexpr.find_first(symbol, "property")[2]
+        ) == "U1"
+    )
+    assert tuple(map(
+        kicad_sexpr.to_float,
+        kicad_sexpr.find_first(u1, "at")[1:4],
+    )) == (83.82, 93.98, 0.0)
+    assert sum(
+        kicad_sexpr.strip_quotes(kicad_sexpr.find_first(symbol, "lib_id")[1])
+        == "power:0"
+        for symbol in placed
+    ) == 4
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli:
+        netlist = tmp_path / "legacy.net"
+        export_result = subprocess.run(
+            [
+                kicad_cli, "sch", "export", "netlist",
+                "--output", str(netlist), str(page_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert export_result.returncode == 0, export_result.stderr
+        groups = _net_pin_groups(netlist)
+        for number in pin_numbers:
+            assert ((f"P{number}", "1"), ("U1", str(number))) in groups
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
@@ -598,6 +836,193 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
         assert (("CA1", "1"), ("CA2", "1")) in hk_groups
         assert (("CB1", "1"), ("CB2", "1")) in hk_groups
         assert hk_groups == _net_pin_groups(py_netlist)
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
+    dsn_fixtures, tmp_path,
+):
+    main_page = dsn_fixtures.make_page(
+        "05_LPDDR4",
+        nets={
+            1: "DATA[3..0]",
+            2: "DATA0",
+            3: "DATA1",
+            4: "ALIAS_NET",
+        },
+        wires=[
+            (1, 100, 100, 200, 100),
+            (2, 50, 90, 90, 90),
+            (3, 210, 90, 250, 90),
+            (4, 300, 100, 360, 100),
+        ],
+        aliases=[("alias_net", 330, 100)],
+        components=[
+            ("TP", "D0", 0, 50, 90, 0),
+            ("TP", "D1", 0, 250, 90, 0),
+            ("TP", "A1", 0, 300, 100, 0),
+            ("TP", "A2", 0, 360, 100, 0),
+            ("R", "R1", 0, 500, 100, 0),
+            ("C", "C1", 0, 550, 100, 0),
+            ("CON16W", "J1", 0, 600, 100, 0),
+            ("UART_BRIDGE", "U1", 0, 650, 100, 0),
+        ],
+    )
+    cache = dsn_fixtures.make_cache(
+        {
+            "TP": [("P", 0, 0, 10, 0, 0x21)],
+            "R": [
+                ("1", -10, 0, -5, 0, 0x21),
+                ("2", 10, 0, 5, 0, 0x21),
+            ],
+            "C": [
+                ("1", -10, 0, -5, 0, 0x21),
+                ("2", 10, 0, 5, 0, 0x21),
+            ],
+            "CON16W": [
+                ("LEFT", -20, -10, -10, -10, 0x21),
+                ("MID", -20, 0, -10, 0, 0x21),
+                ("RIGHT", -20, 10, -10, 10, 0x21),
+            ],
+            "UART_BRIDGE": [
+                ("R\\T\\S\\", -20, -10, -10, -10, 0x21),
+                ("C\\T\\S\\", -20, 0, -10, 0, 0x21),
+                ("R\\E\\S\\E\\T\\", -20, 10, -10, 10, 0x21),
+            ],
+        },
+        visibility={
+            "R": (False, False),
+            "CON16W": (True, False),
+        },
+    )
+    cache += dsn_fixtures.make_cache_pin_numbers({
+        "R": ["1", "2"],
+        "C": ["1", "2"],
+        "CON16W": ["1", "2", "3"],
+        "UART_BRIDGE": ["2", "6", "11"],
+    })
+    members = {
+        "Views/SYNTHETIC/Pages/05 LPDDR4": main_page,
+        "Cache": cache,
+    }
+    page_files = [
+        "03_Clock_Sys_Config_PWR_on_cnt.kicad_sch",
+        "06_QSPIFlash_microSD.kicad_sch",
+        "12_MIPI_CSI-2_MIPI-DSI.kicad_sch",
+        "18_UART_USB_Ext_GPIO.kicad_sch",
+    ]
+    for page_file in page_files:
+        stream_name = page_file.removesuffix(".kicad_sch").replace("_", " ")
+        members[f"Views/SYNTHETIC/Pages/{stream_name}"] = (
+            dsn_fixtures.make_page(stream_name)
+        )
+
+    dsn = tmp_path / "large-features.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip(members))
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert (out_dir / "05_LPDDR4.kicad_sch").exists()
+    for page_file in page_files:
+        assert (out_dir / page_file).exists()
+
+    page_tree = kicad_sexpr.parse(
+        (out_dir / "05_LPDDR4.kicad_sch").read_text(encoding="utf-8")
+    )
+    assert len(kicad_sexpr.find_all(page_tree, "bus")) == 1
+    assert len(kicad_sexpr.find_all(page_tree, "bus_entry")) == 2
+    aliases = [
+        label
+        for label in kicad_sexpr.find_all(page_tree, "label")
+        if kicad_sexpr.strip_quotes(label[1]) == "ALIAS_NET"
+    ]
+    assert len(aliases) == 1
+    assert tuple(map(
+        kicad_sexpr.to_float,
+        kicad_sexpr.find_first(aliases[0], "at")[1:3],
+    )) == (83.82, 25.4)
+
+    wire_signatures = []
+    for wire in kicad_sexpr.find_all(page_tree, "wire"):
+        points = kicad_sexpr.find_first(wire, "pts")
+        wire_signatures.append(tuple(
+            tuple(kicad_sexpr.to_float(value) for value in point[1:3])
+            for point in kicad_sexpr.find_all(points, "xy")
+        ))
+    assert sorted(wire_signatures) == sorted([
+        ((12.7, 22.86), (22.86, 22.86)),
+        ((53.34, 22.86), (63.5, 22.86)),
+        ((76.2, 25.4), (91.44, 25.4)),
+    ])
+
+    symbol_tree = kicad_sexpr.parse(
+        (out_dir / "large-features.kicad_sym").read_text(encoding="utf-8")
+    )
+    top_symbols = {
+        kicad_sexpr.strip_quotes(symbol[1]): symbol
+        for symbol in symbol_tree[1:]
+        if isinstance(symbol, list) and symbol and symbol[0] == "symbol"
+    }
+    for cell_name in ["R", "C"]:
+        assert kicad_sexpr.find_first(top_symbols[cell_name], "pin_numbers") == [
+            "pin_numbers", "hide",
+        ]
+        assert kicad_sexpr.find_first(top_symbols[cell_name], "pin_names")[-1] == (
+            "hide"
+        )
+
+    connector = top_symbols["CON16W"]
+    assert kicad_sexpr.find_first(connector, "pin_numbers") == [
+        "pin_numbers", "hide",
+    ]
+    assert kicad_sexpr.find_first(connector, "pin_names") is None
+
+    uart_bridge_pin_unit = next(
+        unit
+        for unit in kicad_sexpr.find_all(top_symbols["UART_BRIDGE"], "symbol")
+        if kicad_sexpr.strip_quotes(unit[1]) == "UART_BRIDGE_1_1"
+    )
+    uart_bridge_pin_names = {
+        kicad_sexpr.strip_quotes(kicad_sexpr.find_first(pin, "number")[1]):
+        kicad_sexpr.strip_quotes(kicad_sexpr.find_first(pin, "name")[1])
+        for pin in kicad_sexpr.find_all(uart_bridge_pin_unit, "pin")
+    }
+    assert uart_bridge_pin_names == {
+        "2": "~{RTS}", "6": "~{CTS}", "11": "~{RESET}",
+    }
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli:
+        rc_out = tmp_path / "rc-out"
+        rc_result = subprocess.run(
+            [str(DSN2KICAD_HK), "--kicad-rc", str(dsn), str(rc_out)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rc_result.returncode == 0, rc_result.stderr
+        groups = []
+        for directory in [out_dir, rc_out]:
+            netlist = tmp_path / f"{directory.name}.net"
+            export_result = subprocess.run(
+                [
+                    kicad_cli, "sch", "export", "netlist",
+                    "--output", str(netlist),
+                    str(directory / "large-features.kicad_sch"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert export_result.returncode == 0, export_result.stderr
+            groups.append(_net_ref_groups(netlist))
+        assert groups[0] == groups[1]
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")

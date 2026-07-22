@@ -1,18 +1,18 @@
 # Copyright (C) 2026 Andrei Errapart
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Builders for synthetic OrCAD page/cache streams and ZIP-packaged fixtures.
+"""Builders for synthetic OrCAD streams and ZIP/OLE-packaged fixtures.
 
-`olefile` is read-only, so synthetic `.DSN` inputs are authored as ZIP archives
-(see scripts/ole_zip.py) whose members are the OLE streams. ZIP removes the
-*container* barrier; these helpers remove the *record-encoding* tedium by
-emitting the exact binary records the dsn2kicad parsers read.
+Most synthetic `.DSN` inputs use ZIP archives (see scripts/ole_zip.py) whose
+members are the OLE streams. ``make_ole`` also emits a minimal Compound File
+Binary container for tests of the native OLE path. The remaining helpers remove
+the record-encoding tedium by emitting the binary records the parsers read.
 
 Each builder mirrors a specific parser in scripts/dsn2kicad.py and is covered by
 round-trip tests in test_dsn_fixtures.py:
   - make_page  -> parse_page_header / parse_net_table / parse_wires / parse_components
   - make_cache -> parse_cache_cells
   - make_cache_pin_numbers -> _parse_cache_pin_numbers
-  - make_zip   -> ole_zip.ZipOleFile
+  - make_zip / make_ole -> ZIP-backed and native OLE containers
 
 Typical use:
     page = make_page("01_PWR", nets={5: "GND"}, wires=[(5, 0, 0, 100, 0)],
@@ -39,6 +39,17 @@ def _page_header(name, paper):
             + struct.pack("<H", len(pb)) + pb + b"\x00")
 
 
+def _legacy_page_header(name, paper):
+    """Capture 7.x header without the modern record marker."""
+    nb = name.encode("ascii")
+    pb = paper.encode("ascii")
+    return (
+        bytes(3)
+        + struct.pack("<H", len(nb)) + nb + b"\x00"
+        + struct.pack("<H", len(pb)) + pb + b"\x00"
+    )
+
+
 def _net_table(nets):
     """anchor + extra_count_u16(0) + net_count_u16 + per-net(len_u16+name+NUL+id_u32)."""
     out = bytearray(NET_TABLE_ANCHOR)
@@ -57,6 +68,28 @@ def _wire(record_id, net_id, x1, y1, x2, y2):
             + struct.pack("<I", net_id)
             + struct.pack("<I", 0x30)
             + struct.pack("<iiii", x1, y1, x2, y2))
+
+
+def _legacy_wire(record_id, net_id, x1, y1, x2, y2):
+    """Capture 7.x wire record using the ordinary structure prefix."""
+    del record_id
+    return (
+        b"\x14\x00\x00" + bytes(4)
+        + struct.pack("<I", net_id)
+        + struct.pack("<I", 0x30)
+        + struct.pack("<iiii", x1, y1, x2, y2)
+    )
+
+
+def _net_alias(name, x, y):
+    """Build an explicit page net-alias record."""
+    encoded = name.encode("ascii")
+    return (
+        RECORD_MARKER + bytes(4)
+        + struct.pack("<iiII", x, y, 0x30, 0)
+        + struct.pack("<I", 0)
+        + struct.pack("<H", len(encoded)) + encoded
+    )
 
 
 def _component(
@@ -218,7 +251,8 @@ def _off_page_connector(record_id, record_name, bbox, orientation=0):
 
 def make_page(
     name, paper="A3", *, nets=None, wires=None, components=None,
-    power_symbols=None, off_page_connectors=None, texts=None, graphics=None,
+    aliases=None, power_symbols=None, off_page_connectors=None, texts=None,
+    graphics=None, legacy=False,
 ):
     """Build a synthetic page stream.
 
@@ -229,6 +263,7 @@ def make_page(
         wires: list of (net_id, x1, y1, x2, y2); coords are OrCAD units, abs<5000.
             (Avoid x1==5 and y1==3 together — that byte pattern collides with the
             net-table anchor.)
+        aliases: list of (name, x, y) explicit page net aliases.
         components: list of (cell, ref), (cell, ref, value_idx),
             (cell, ref, value_idx, x, y, orient), or that six-tuple followed by
             page pin records [(pin_number, x, y, net_id), ...].
@@ -242,13 +277,18 @@ def make_page(
             electrical hotpoint is derived from the bbox and orientation.
         texts: list of (text, bbox), optionally followed by style and color IDs.
         graphics: dictionaries accepted by `_page_graphic`.
+        legacy: emit the Capture 7.x page header and wire record variants.
 
     The header is emitted first (so parse_page_header reads it) and the net table
     last (so it wins as the "last anchor" parse_net_table selects).
     """
-    parts = [_page_header(name, paper)]
+    header = _legacy_page_header if legacy else _page_header
+    wire_record = _legacy_wire if legacy else _wire
+    parts = [header(name, paper)]
     for i, (net_id, x1, y1, x2, y2) in enumerate(wires or []):
-        parts.append(_wire(i + 1, net_id, x1, y1, x2, y2))
+        parts.append(wire_record(i + 1, net_id, x1, y1, x2, y2))
+    for alias in aliases or []:
+        parts.append(_net_alias(*alias))
     for comp in components or []:
         cell, ref = comp[0], comp[1]
         value_idx = comp[2] if len(comp) > 2 else 0
@@ -289,13 +329,31 @@ def make_page(
     return b"".join(parts)
 
 
-def make_cache(cells):
+def _visibility_metadata(pin_names_visible, pin_numbers_visible):
+    def string(value):
+        encoded = value.encode("ascii")
+        return struct.pack("<H", len(encoded)) + encoded + b"\x00"
+
+    properties = 0
+    if pin_names_visible:
+        properties |= 0x01
+    if not pin_numbers_visible:
+        properties |= 0x04
+    return (
+        string("") + string("") + string("U") + string("")
+        + bytes([properties, 0])
+    )
+
+
+def make_cache(cells, *, visibility=None):
     """Build a synthetic Cache stream.
 
     Args:
         cells: {cell_name: [pin, ...]} where each pin is the tuple
             parse_cache_cells returns:
             (pin_name, hot_x, hot_y, body_x, body_y, pin_flags).
+        visibility: optional {cell_name: (pin_names_visible,
+            pin_numbers_visible)} metadata.
     """
     out = bytearray()
     for cell_name, pins in cells.items():
@@ -306,6 +364,28 @@ def make_cache(cells):
                     + struct.pack("<H", len(pb)) + pb + b"\x00"
                     + struct.pack("<iiii", body_x, body_y, hot_x, hot_y)
                     + bytes([pin_flags]) + bytes(24))
+        if visibility and cell_name in visibility:
+            out += _visibility_metadata(*visibility[cell_name])
+    return bytes(out)
+
+
+def make_legacy_cache(cells, *, compact_cells=None):
+    """Build Cache cells using Capture 7.x long or compact pin records."""
+    compact_cells = set(compact_cells or [])
+    out = bytearray()
+    for cell_name, pins in cells.items():
+        out += cell_name.encode("ascii") + b".Normal\x00"
+        for pin_name, hot_x, hot_y, body_x, body_y, pin_flags in pins:
+            encoded = pin_name.encode("ascii")
+            if cell_name in compact_cells:
+                out += b"\x1a\x00\x00" + struct.pack("<H", len(encoded))
+            else:
+                out += b"\x1a\x01\x00\x18\x00"
+                out += struct.pack("<HH", 0x19, len(encoded))
+            out += encoded + b"\x00"
+            out += struct.pack("<iiii", body_x, body_y, hot_x, hot_y)
+            out += bytes([pin_flags]) + bytes(8)
+        out += bytes(16)
     return bytes(out)
 
 
@@ -372,3 +452,126 @@ def make_zip(members):
         for name, data in members.items():
             zf.writestr(name, data)
     return buf.getvalue()
+
+
+def make_ole(members):
+    """Pack stream members into a minimal deterministic OLE compound file.
+
+    Streams are padded to the 4096-byte regular-stream cutoff. The directory
+    uses a simple right-sibling chain, sufficient for both ``olefile`` and the
+    native Haskell reader while keeping the fixture generator compact.
+    """
+    free_sector = 0xFFFFFFFF
+    end_of_chain = 0xFFFFFFFE
+    fat_sector = 0xFFFFFFFD
+    sector_size = 512
+
+    nodes = [{
+        "name": "Root Entry", "type": 5, "children": [], "right": free_sector,
+        "child": free_sector, "data": None, "start": end_of_chain,
+    }]
+    paths = {(): 0}
+
+    def add_node(path, node_type, data=None):
+        parent = path[:-1]
+        parent_sid = paths[parent]
+        sid = len(nodes)
+        paths[path] = sid
+        nodes.append({
+            "name": path[-1], "type": node_type, "children": [],
+            "right": free_sector, "child": free_sector, "data": data,
+            "start": end_of_chain,
+        })
+        nodes[parent_sid]["children"].append(sid)
+        return sid
+
+    for member_name, data in sorted(members.items()):
+        parts = tuple(part for part in member_name.split("/") if part)
+        if not parts:
+            raise ValueError("OLE stream name must not be empty")
+        for depth in range(1, len(parts)):
+            path = parts[:depth]
+            if path not in paths:
+                add_node(path, 1)
+            elif nodes[paths[path]]["type"] != 1:
+                raise ValueError(f"OLE path is already a stream: {'/'.join(path)}")
+        if parts in paths:
+            raise ValueError(f"duplicate OLE member: {member_name}")
+        add_node(parts, 2, bytes(data))
+
+    for node in nodes:
+        children = sorted(node["children"], key=lambda sid: nodes[sid]["name"])
+        if children:
+            node["child"] = children[0]
+        for current, following in zip(children, children[1:]):
+            nodes[current]["right"] = following
+
+    directory_sector_count = (len(nodes) + 3) // 4
+    next_sector = directory_sector_count
+    stream_sectors = []
+    stream_chains = []
+    for node in nodes:
+        if node["type"] != 2 or not node["data"]:
+            continue
+        stored_size = max(
+            4096,
+            ((len(node["data"]) + sector_size - 1) // sector_size) * sector_size,
+        )
+        node["stored_data"] = node["data"].ljust(stored_size, b"\x00")
+        chunks = [
+            node["stored_data"][offset:offset + sector_size]
+            for offset in range(0, len(node["stored_data"]), sector_size)
+        ]
+        chain = list(range(next_sector, next_sector + len(chunks)))
+        node["start"] = chain[0]
+        next_sector += len(chunks)
+        stream_sectors.extend(chunks)
+        stream_chains.append(chain)
+
+    fat_sid = next_sector
+    total_sectors = fat_sid + 1
+    if total_sectors > sector_size // 4:
+        raise ValueError("synthetic OLE fixture exceeds one FAT sector")
+
+    fat = [free_sector] * (sector_size // 4)
+    for sid in range(directory_sector_count):
+        fat[sid] = sid + 1 if sid + 1 < directory_sector_count else end_of_chain
+    for chain in stream_chains:
+        for sid, following in zip(chain, chain[1:]):
+            fat[sid] = following
+        fat[chain[-1]] = end_of_chain
+    fat[fat_sid] = fat_sector
+
+    def directory_entry(node):
+        entry = bytearray(128)
+        encoded = node["name"].encode("utf-16le")
+        if len(encoded) > 62:
+            raise ValueError(f"OLE directory name is too long: {node['name']}")
+        entry[:len(encoded)] = encoded
+        struct.pack_into("<H", entry, 64, len(encoded) + 2)
+        entry[66] = node["type"]
+        entry[67] = 1
+        struct.pack_into("<III", entry, 68, free_sector, node["right"], node["child"])
+        struct.pack_into("<I", entry, 116, node["start"])
+        size = len(node.get("stored_data", b"")) if node["type"] == 2 else 0
+        struct.pack_into("<Q", entry, 120, size)
+        return bytes(entry)
+
+    directory = b"".join(directory_entry(node) for node in nodes)
+    directory = directory.ljust(directory_sector_count * sector_size, b"\x00")
+
+    header = bytearray(sector_size)
+    header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<HHHH", header, 0x18, 0x003E, 3, 0xFFFE, 9)
+    struct.pack_into("<H", header, 0x20, 6)
+    struct.pack_into("<I", header, 0x2C, 1)
+    struct.pack_into("<I", header, 0x30, 0)
+    struct.pack_into("<I", header, 0x38, 4096)
+    struct.pack_into("<I", header, 0x3C, free_sector)
+    struct.pack_into("<I", header, 0x44, free_sector)
+    for index in range(109):
+        struct.pack_into("<I", header, 0x4C + index * 4, free_sector)
+    struct.pack_into("<I", header, 0x4C, fat_sid)
+
+    fat_bytes = struct.pack(f"<{len(fat)}I", *fat)
+    return bytes(header) + directory + b"".join(stream_sectors) + fat_bytes

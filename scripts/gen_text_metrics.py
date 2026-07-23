@@ -43,6 +43,13 @@ import freetype
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUT_PATH = SCRIPT_DIR / 'text_metrics_data.py'
 
+# The native Haskell converter embeds the same tables inline (it stays a single
+# self-contained runghc script). We splice a generated block into it between
+# these markers, so the two converters always measure text with identical data.
+HK_PATH = SCRIPT_DIR / 'dsn2kicad-hk'
+HK_BEGIN = '-- BEGIN GENERATED FONT METRICS'
+HK_END = '-- END GENERATED FONT METRICS'
+
 NEWSTROKE_URL = (
     'https://gitlab.com/kicad/code/kicad/-/raw/master/common/newstroke_font.cpp'
 )
@@ -211,6 +218,93 @@ def _format_entry(key, upem, default_adv, glyphs, source):
     return "\n".join(lines)
 
 
+def _hs_char_literal(ch):
+    """Haskell Char literal for a glyph key, ASCII-safe.
+
+    Non-ASCII glyphs (°, µ, Ω, …) are emitted as numeric ``'\\xNNN'`` escapes so
+    the generated source needs no particular file encoding.
+    """
+    o = ord(ch)
+    if ch == '\\':
+        return "'\\\\'"
+    if ch == "'":
+        return "'\\''"
+    if 0x20 <= o <= 0x7e:
+        return "'%s'" % ch
+    return "'\\x%x'" % o
+
+
+def _hs_string_literal(s):
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _format_haskell_entry(name, key, upem, default_adv, glyphs):
+    """One ``fontMetricsEntryN`` binding: a ((face, bold, italic), FaceMetrics)."""
+    face, bold, italic = key
+    hs_key = "(%s, %s, %s)" % (
+        _hs_string_literal(face),
+        'True' if bold else 'False',
+        'True' if italic else 'False',
+    )
+    glyph_strs = [
+        "(%s, (%d, %d, %d))" % (_hs_char_literal(ch), *glyphs[ch])
+        for ch in sorted(glyphs, key=ord)
+    ]
+    glyph_block = "  [ " + "\n  , ".join(glyph_strs) + "\n  ]"
+    return (
+        "%s :: ((String, Bool, Bool), FaceMetrics)\n"
+        "%s = (%s, FaceMetrics %d %d (Map.fromList\n%s))\n"
+        % (name, name, hs_key, upem, default_adv, glyph_block)
+    )
+
+
+def _format_haskell_block(tables, provenance, ftver):
+    """Render the full Haskell font-metrics block (spliced between markers)."""
+    names = ['fontMetricsEntry%d' % i for i in range(len(tables))]
+    entries = [
+        _format_haskell_entry(name, key, upem, default_adv, glyphs)
+        for name, (key, upem, default_adv, glyphs, _source)
+        in zip(names, tables)
+    ]
+    head = [
+        HK_BEGIN + ' — AUTO-GENERATED, do not edit.',
+        '-- Regenerate (with text_metrics_data.py) via: python3 gen_text_metrics.py',
+        '-- Per-glyph (advance, top, bot) in font units, keyed by',
+        '-- (face_lc, bold, italic). The Python port lives in text_metrics_data.py;',
+        '-- both converters therefore measure text with byte-identical data.',
+        '-- freetype-py %s; faces: Arial / Arial Narrow / Courier New (via the'
+        % ftver,
+        '-- metric-compatible Liberation fonts) plus KiCad Newstroke.',
+        '',
+        'data FaceMetrics = FaceMetrics',
+        '  { fmUnitsPerEm :: !Int',
+        '  , fmDefaultAdvance :: !Int',
+        '  , fmGlyphs :: !(Map.Map Char (Int, Int, Int))',
+        '  }',
+        '',
+    ]
+    tail = [
+        'fontMetrics :: Map.Map (String, Bool, Bool) FaceMetrics',
+        'fontMetrics = Map.fromList',
+        '  [ ' + '\n  , '.join(names),
+        '  ]',
+        HK_END,
+    ]
+    return '\n'.join(head) + '\n'.join(entries) + '\n' + '\n'.join(tail) + '\n'
+
+
+def _splice_haskell(block):
+    """Insert/replace the font-metrics block in dsn2kicad-hk between markers."""
+    text = HK_PATH.read_text(encoding='utf-8')
+    if HK_BEGIN in text and HK_END in text:
+        start = text.index(HK_BEGIN)
+        end = text.index(HK_END) + len(HK_END) + 1  # include trailing newline
+        new = text[:start] + block + text[end:]
+    else:
+        new = text.rstrip('\n') + '\n\n\n' + block
+    HK_PATH.write_text(new, encoding='utf-8')
+
+
 def main():
     newstroke_arg = None
     argv = sys.argv[1:]
@@ -218,7 +312,10 @@ def main():
         i = argv.index('--newstroke')
         newstroke_arg = argv[i + 1]
 
-    entries = []
+    # Raw tables: [(key, units_per_em, default_advance, glyphs, source)]. Both
+    # the Python (_format_entry) and Haskell (_format_haskell_*) emitters render
+    # from this single list, so the two data files can never drift.
+    tables = []
     provenance = []
 
     for key, candidates in FONT_PATH_CANDIDATES.items():
@@ -227,19 +324,19 @@ def main():
             print(f"  WARNING: no font found for {key}; skipping", file=sys.stderr)
             continue
         upem, glyphs = measure_outline_face(path)
-        entries.append(_format_entry(key, upem, _default_advance(glyphs),
-                                     glyphs, os.path.basename(path)))
+        tables.append((key, upem, _default_advance(glyphs), glyphs,
+                       os.path.basename(path)))
         provenance.append(f"#   {key}: {path}")
 
     ns_path = _resolve_newstroke(newstroke_arg)
     upem, glyphs = parse_newstroke(ns_path)
     for italic in (False, True):
         for bold in (False, True):
-            entries.append(_format_entry(
-                ('newstroke', bold, italic), upem, _default_advance(glyphs),
-                glyphs, 'newstroke_font.cpp'))
+            tables.append((('newstroke', bold, italic), upem,
+                           _default_advance(glyphs), glyphs, 'newstroke_font.cpp'))
     provenance.append(f"#   newstroke: {NEWSTROKE_URL}")
 
+    entries = [_format_entry(*t) for t in tables]
     header = [
         '"""Embedded font advance/extent tables. AUTO-GENERATED — do not edit.',
         '',
@@ -260,6 +357,10 @@ def main():
     OUT_PATH.write_text(out, encoding='utf-8')
     print(f"wrote {OUT_PATH} ({len(entries)} face variants, "
           f"{len(out)} bytes)")
+
+    ftver = ".".join(str(x) for x in freetype.version())
+    _splice_haskell(_format_haskell_block(tables, provenance, ftver))
+    print(f"spliced {len(tables)} face variants into {HK_PATH}")
 
 
 if __name__ == '__main__':

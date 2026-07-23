@@ -1659,3 +1659,61 @@ def test_dsn2kicad_hk_component_fields_and_page_artwork(dsn_fixtures, tmp_path):
             timeout=30,
         )
         assert export_result.returncode == 0, export_result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Reference/Value text placement — real font metrics vs char-count width
+# ---------------------------------------------------------------------------
+
+def _property_at(page_sch, prop, value):
+    """Return (x, y, angle) of a component property's placement anchor."""
+    m = re.search(
+        r'\(property\s+"%s"\s+"%s".*?\(at\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\)'
+        % (re.escape(prop), re.escape(value)),
+        page_sch, re.DOTALL)
+    assert m, f'no {prop} property "{value}" in generated page'
+    return float(m.group(1)), float(m.group(2)), float(m.group(3))
+
+
+@pytest.mark.parametrize("kicad_fonts", [False, True])
+def test_dsn2kicad_hk_reference_placement_uses_font_metrics(
+        dsn_fixtures, tmp_path, kicad_fonts):
+    """Reference text is centred with real per-glyph widths, not a char count.
+
+    Two references of equal length but very different rendered width ("MMMMMM1"
+    vs "iiiiii1") share one display-field offset. A char-count width model
+    (len * size * k) centres both at the same X; real metrics place the wide
+    'M' run measurably to the right (>2.5 mm here). Mirrors _text_box_dims /
+    measure_text_width in dsn2kicad.py, in both outline (Arial) and
+    --kicad-fonts (Newstroke) measurement modes. (The trailing digit only makes
+    both strings valid OrCAD reference designators; it is identical, so it
+    cancels out of the X difference.)
+    """
+    fields = [(0, 200, 0, 0)]  # (property_index=Reference, x_off, y_off, turns)
+    page = dsn_fixtures.make_page(
+        "01_TEST",
+        components=[
+            ("RES", "MMMMMM1", 0, 0, 0, 0, None, fields),
+            ("RES", "iiiiii1", 0, 0, 0, 0, None, fields),
+        ],
+    )
+    cache = dsn_fixtures.make_cache({
+        "RES": [("A", 0, 0, 50, 0, 0x20), ("K", 100, 0, 50, 0, 0x21)],
+    })
+    dsn = tmp_path / "metrics.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
+
+    argv = [str(DSN2KICAD_HK)]
+    if kicad_fonts:
+        argv.append("--kicad-fonts")
+    argv += [str(dsn), str(out_dir)]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+    page_sch = (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    wide_x = _property_at(page_sch, "Reference", "MMMMMM1")[0]
+    narrow_x = _property_at(page_sch, "Reference", "iiiiii1")[0]
+    # Char-count width would make these identical (both 6 glyphs); real metrics
+    # separate them by the difference in rendered width of 'M'*6 vs 'i'*6.
+    assert wide_x - narrow_x > 1.0, (wide_x, narrow_x)

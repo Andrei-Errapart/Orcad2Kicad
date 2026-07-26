@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-DSN2KICAD_HK = SCRIPTS_DIR / "dsn2kicad-hk"
-DSN2KICAD_PY = SCRIPTS_DIR / "dsn2kicad.py"
+DSN2KICAD_HK = SCRIPTS_DIR / "dsn2kicad.hs"
+DSN2KICAD_PY = SCRIPTS_DIR / "dsn2kicad_py.py"
 PAGE = "Views/SCHEMATIC1/Pages/Page1"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -1495,9 +1495,13 @@ def test_dsn2kicad_hk_native_power_symbols(dsn_fixtures, tmp_path):
                         if kicad_sexpr.strip_quotes(prop[1]) == "Value"
                     )
                     value_at = kicad_sexpr.find_first(value, "at")
+                    # Centre anchor derived from real per-glyph metrics. The
+                    # earlier (27.43, 1.27) came from a char-count estimate
+                    # (len * 5.0 wide, 6.0 tall, no cap-height nudge) that put
+                    # power labels ~0.75 mm / ~0.95 mm off their OrCAD position.
                     assert tuple(map(kicad_sexpr.to_float, value_at[1:4])) == (
-                        27.43,
-                        1.27,
+                        26.99,
+                        1.67,
                         90.0,
                     )
                     assert kicad_sexpr.find_first(value, "hide") is None
@@ -1684,7 +1688,7 @@ def test_dsn2kicad_hk_reference_placement_uses_font_metrics(
     vs "iiiiii1") share one display-field offset. A char-count width model
     (len * size * k) centres both at the same X; real metrics place the wide
     'M' run measurably to the right (>2.5 mm here). Mirrors _text_box_dims /
-    measure_text_width in dsn2kicad.py, in both outline (Arial) and
+    measure_text_width in dsn2kicad_py.py, in both outline (Arial) and
     --kicad-fonts (Newstroke) measurement modes. (The trailing digit only makes
     both strings valid OrCAD reference designators; it is identical, so it
     cancels out of the X difference.)

@@ -55,12 +55,14 @@ Everything happens in memory:
 
 **Key modules (all under `scripts/`):**
 
-- `dsn2kicad.py` (~6300 lines) — the converter monolith. Roughly ordered as:
+- `dsn2kicad_py.py` (~6300 lines) — the converter monolith. Roughly ordered as:
   `parse_*` (binary stream decoders) → `sch_*` / `lib_symbol_*` (KiCad
   S-expression emitters) → geometry/placement helpers → `generate_page_sch` /
   `generate_root_sch` / `generate_project` → `convert_dsn`. Find things by
-  function name, not line number. The `scripts/dsn2kicad` CLI is a shell wrapper;
-  `scripts/dsn2kicad-hk` is the native Haskell implementation. It reads both
+  function name, not line number. It is reached via the `scripts/dsn2kicad_py`
+  shell wrapper. `scripts/dsn2kicad` is the **primary** entrypoint: a wrapper that
+  compiles and caches `scripts/dsn2kicad.hs`, the native Haskell implementation,
+  which is the reference for everything except the browser/Pyodide path. It reads both
   ZIP-backed synthetic fixtures and regular OLE `.DSN` files, and emits complete
   KiCad projects with sheets, symbols, graphics, connectivity, and worksheets.
   Its focused regression suite compares real-design output and exported
@@ -86,7 +88,7 @@ Everything happens in memory:
 
 ## Key Details
 
-- **Module-level global state is the main gotcha.** `dsn2kicad.py` accumulates
+- **Module-level global state is the main gotcha.** `dsn2kicad_py.py` accumulates
   per-cell data in module-level dicts (`_cell_pin_defs`, `_cell_body_rects`,
   `_cell_centers`, `_multi_unit_groups`, `_library_value_strings`, …) and sets
   option flags (`_use_kicad_power`, `_use_kicad_rc`, `_use_kicad_fonts`) inside
@@ -102,7 +104,7 @@ Everything happens in memory:
 - Output UUIDs are **deterministic**: seeded with `SHA256(dsn_bytes + filename)`,
   so an edit on one page never churns UUIDs on unrelated pages.
 - Coordinate unit: `UNIT_TO_MM = 0.254` (OrCAD's 10-mil unit).
-- The `scripts/dsn2kicad` wrapper builds a private venv
+- The `scripts/dsn2kicad_py` wrapper builds a private venv
   under the user cache dir (`ORCAD2KICAD_VENV` overrides); `scripts/olb2xml`
   instead uses the parent repo's `.venv`. None of these are `pip install -e`.
 - Reference/Value text placement is derived from OrCAD display-property records

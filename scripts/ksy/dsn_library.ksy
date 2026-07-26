@@ -23,7 +23,7 @@ doc: |
        the value/title-block string run (packed u16-length-prefixed strings).
 
   This sketch covers the font/style record structure. The title-block
-  field run is parsed by `dsn2kicad.py`'s `parse_title_block`: it
+  field run is parsed by `dsn2kicad_py.py`'s `parse_title_block`: it
   enumerates the u16-length strings, finds the `SCHEMATIC1` sentinel
   string, and walks backward for the last string matching the doc-number
   pattern `EP\d[A-Z]{2}-AB(-\d{2,4})+` (the live one — DSNs may retain

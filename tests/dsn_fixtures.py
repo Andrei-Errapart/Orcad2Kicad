@@ -7,7 +7,7 @@ members are the OLE streams. ``make_ole`` also emits a minimal Compound File
 Binary container for tests of the native OLE path. The remaining helpers remove
 the record-encoding tedium by emitting the binary records the parsers read.
 
-Each builder mirrors a specific parser in scripts/dsn2kicad.py and is covered by
+Each builder mirrors a specific parser in scripts/dsn2kicad_py.py and is covered by
 round-trip tests in test_dsn_fixtures.py:
   - make_page  -> parse_page_header / parse_net_table / parse_wires / parse_components
   - make_cache -> parse_cache_cells
@@ -24,7 +24,7 @@ import io
 import struct
 import zipfile
 
-#: Page-stream record marker (see RECORD_MARKER in dsn2kicad.py).
+#: Page-stream record marker (see RECORD_MARKER in dsn2kicad_py.py).
 RECORD_MARKER = b"\xff\xe4\x5c\x39"
 #: 12-byte sequence that precedes a page's net-name table.
 NET_TABLE_ANCHOR = b"\x30\x00\x00\x00\x05\x00\x00\x00\x03\x00\x00\x00"

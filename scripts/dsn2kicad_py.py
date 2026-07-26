@@ -18,7 +18,7 @@ Generates KiCad schematic files (.kicad_sch) with:
   - Text annotations
 
 Usage:
-    scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts]
+    scripts/dsn2kicad_py [--kicad-power] [--kicad-rc] [--kicad-fonts]
                       [--no-worksheet] [--debug-bbox] [--debug-ref-val]
                       [--debug-symbol] <file.DSN> [output_dir]
 """
@@ -1261,7 +1261,7 @@ def sch_header(paper="A3", title="", date="", rev="", company="",
     return (
         f"(kicad_sch\n"
         f"\t(version 20260306)\n"
-        f"\t(generator \"dsn2kicad\")\n"
+        f"\t(generator \"dsn2kicad_py\")\n"
         f"\t(generator_version \"1.0\")\n"
         f"\t(uuid \"{uid}\")\n"
         f"\t(paper \"{paper}\")\n"
@@ -4874,7 +4874,7 @@ def generate_symbol_library(project_name, power_names=None, used_cells=None,
     parts = [
         f"(kicad_symbol_lib\n"
         f"\t(version 20251024)\n"
-        f"\t(generator \"dsn2kicad\")\n"
+        f"\t(generator \"dsn2kicad_py\")\n"
         f"\t(generator_version \"1.0\")\n"
     ]
     for cell_name in ('R', 'C'):

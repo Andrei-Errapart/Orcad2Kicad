@@ -46,7 +46,7 @@ OUT_PATH = SCRIPT_DIR / 'text_metrics_data.py'
 # The native Haskell converter embeds the same tables inline (it stays a single
 # self-contained runghc script). We splice a generated block into it between
 # these markers, so the two converters always measure text with identical data.
-HK_PATH = SCRIPT_DIR / 'dsn2kicad-hk'
+HK_PATH = SCRIPT_DIR / 'dsn2kicad.hs'
 HK_BEGIN = '-- BEGIN GENERATED FONT METRICS'
 HK_END = '-- END GENERATED FONT METRICS'
 
@@ -294,7 +294,7 @@ def _format_haskell_block(tables, provenance, ftver):
 
 
 def _splice_haskell(block):
-    """Insert/replace the font-metrics block in dsn2kicad-hk between markers."""
+    """Insert/replace the font-metrics block in dsn2kicad.hs between markers."""
     text = HK_PATH.read_text(encoding='utf-8')
     if HK_BEGIN in text and HK_END in text:
         start = text.index(HK_BEGIN)

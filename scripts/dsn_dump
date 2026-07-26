@@ -33,11 +33,16 @@ except ImportError:
 
 
 def _load_dsn2kicad():
-    """Import scripts/dsn2kicad as a module (it has no .py extension)."""
+    """Import the Python converter module (scripts/dsn2kicad_py.py).
+
+    Loaded by path rather than by name so this tool works without the scripts
+    directory being on sys.path. Note scripts/dsn2kicad is the Haskell
+    entrypoint (a shell wrapper) and is deliberately not what we load here.
+    """
     from importlib.machinery import SourceFileLoader
-    path = str(SCRIPT_DIR / "dsn2kicad")
-    loader = SourceFileLoader("dsn2kicad", path)
-    spec = importlib.util.spec_from_loader("dsn2kicad", loader)
+    path = str(SCRIPT_DIR / "dsn2kicad_py.py")
+    loader = SourceFileLoader("dsn2kicad_py", path)
+    spec = importlib.util.spec_from_loader("dsn2kicad_py", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod

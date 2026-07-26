@@ -1,11 +1,16 @@
 #!/bin/sh
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Compile-and-cache launcher for the Haskell converter. Mirrors the cache-root
+# resolution in scripts/dsn2kicad_py so both entrypoints behave the same way.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PY_SCRIPT="$SCRIPT_DIR/dsn2kicad.py"
+HS_SCRIPT="$SCRIPT_DIR/dsn2kicad.hs"
 
-if [ -n "${ORCAD2KICAD_VENV:-}" ]; then
-    VENV_DIR=$ORCAD2KICAD_VENV
+if [ -n "${ORCAD2KICAD_HS_CACHE:-}" ]; then
+    CACHE_DIR=$ORCAD2KICAD_HS_CACHE
 else
     if [ -n "${XDG_CACHE_HOME:-}" ]; then
         CACHE_ROOT=$XDG_CACHE_HOME
@@ -18,22 +23,32 @@ else
     fi
 
     if [ -n "$CACHE_ROOT" ] && mkdir -p "$CACHE_ROOT/orcad2kicad" 2>/dev/null; then
-        VENV_DIR="$CACHE_ROOT/orcad2kicad/venv"
+        CACHE_DIR="$CACHE_ROOT/orcad2kicad/hs"
     else
         TMP_ROOT=${TMPDIR:-/tmp}
-        VENV_DIR="$TMP_ROOT/orcad2kicad-venv-${USER:-user}"
+        CACHE_DIR="$TMP_ROOT/orcad2kicad-hs-${USER:-user}"
     fi
 fi
 
-if [ ! -x "$VENV_DIR/bin/python3" ]; then
-    echo "Creating OrCAD2KiCad virtualenv at $VENV_DIR" >&2
-    python3 -m venv "$VENV_DIR"
-    "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
-    "$VENV_DIR/bin/python3" -m pip install --quiet olefile freetype-py
+# Content hash as the cache key: editing the source rebuilds automatically.
+if command -v shasum >/dev/null 2>&1; then
+    STAMP=$(shasum -a 256 "$HS_SCRIPT")
+else
+    STAMP=$(sha256sum "$HS_SCRIPT")
+fi
+STAMP=${STAMP%% *}
+BINARY="$CACHE_DIR/dsn2kicad-$STAMP"
+
+if [ ! -x "$BINARY" ]; then
+    if ! command -v ghc >/dev/null 2>&1; then
+        echo "dsn2kicad: GHC not found." >&2
+        echo "Install GHC, or use $SCRIPT_DIR/dsn2kicad_py for the Python converter." >&2
+        exit 1
+    fi
+    mkdir -p "$CACHE_DIR/objects"
+    rm -f "$CACHE_DIR"/dsn2kicad-*
+    echo "Compiling dsn2kicad (Haskell) at $BINARY" >&2
+    ghc -O1 -outputdir "$CACHE_DIR/objects" "$HS_SCRIPT" -o "$BINARY" >&2
 fi
 
-# freetype-py gives faithful text metrics; install it if this venv predates it.
-"$VENV_DIR/bin/python3" -c "import freetype" 2>/dev/null \
-    || "$VENV_DIR/bin/python3" -m pip install --quiet freetype-py
-
-exec "$VENV_DIR/bin/python3" "$PY_SCRIPT" "$@"
+exec "$BINARY" "$@"

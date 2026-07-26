@@ -128,7 +128,7 @@ types:
       ASCII character. See doc/ORCAD_FILE_FORMAT.md for the corrected
       interpretation.
 
-      `_parse_cache_graphics` in dsn2kicad.py reads this record by
+      `_parse_cache_graphics` in dsn2kicad_py.py reads this record by
       resyncing on the 2-byte type word `0x2e2e`, not by parsing a
       marker-framed structure from the marker start.
     seq:
@@ -338,7 +338,7 @@ types:
 
   pin_record:
     doc: |
-      Pin definition. Marker-framed (see `parse_cache_cells` in dsn2kicad.py).
+      Pin definition. Marker-framed (see `parse_cache_cells` in dsn2kicad_py.py).
 
       Layout from marker:
         marker(4)
@@ -416,7 +416,7 @@ types:
     doc: |
       Filled polygon body primitive. Type word `0x2c2c`. Used by symbols
       whose body is drawn as a closed filled shape rather than a rectangle
-      (see `_parse_cache_graphics` in dsn2kicad.py).
+      (see `_parse_cache_graphics` in dsn2kicad_py.py).
 
       Layout from the type word (NOT preceded by the usual marker tail here;
       `_parse_cache_graphics` resyncs on the 2-byte type word, then on the

@@ -14,7 +14,7 @@ _dsn2kicad_mod = None
 def _load_dsn2kicad():
     global _dsn2kicad_mod
     if _dsn2kicad_mod is None:
-        path = str(SCRIPTS_DIR / "dsn2kicad.py")
+        path = str(SCRIPTS_DIR / "dsn2kicad_py.py")
         loader = SourceFileLoader("dsn2kicad", path)
         spec = importlib.util.spec_from_loader("dsn2kicad", loader)
         mod = importlib.util.module_from_spec(spec)

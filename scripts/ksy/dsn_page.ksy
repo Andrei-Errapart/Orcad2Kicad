@@ -31,7 +31,7 @@ doc: |
     - wire_body                 (wire segments, type 0x30)
     - net_alias_record          (net-name labels, type 0x30 with x1==0)
     - power_symbol_body         (GND/VCC instances)
-    - off-page connector placements (decoded by dsn2kicad-hk from the
+    - off-page connector placements (decoded by dsn2kicad.hs from the
                                       StructGraphicInst records)
     - net_table_entry           (per-page net id ↔ name table)
     - component_instance        (component placement)
@@ -49,13 +49,13 @@ doc: |
   Not yet modeled: hierarchical block references and the TitleBlock cell
   instance. Off-page connectors are not represented as a declarative type
   below yet, but their record layout and electrical hotpoint transform are
-  implemented in dsn2kicad-hk.
+  implemented in dsn2kicad.hs.
 
   Graphic-primitive color: each rectangle / line / ellipse / polygon
   record (and each page_text_record) is preceded by a StructGraphicInst
   wrapper whose color is a single uint8 palette index sitting 37 bytes
   BEFORE the record marker (`marker − 37`). It indexes a fixed 48-entry
-  RGBA palette (`_ORCAD_PALETTE_RGBA` in dsn2kicad.py); index 48 means
+  RGBA palette (`_ORCAD_PALETTE_RGBA` in dsn2kicad_py.py); index 48 means
   "default", emitted as black.
 
 seq:
@@ -155,7 +155,7 @@ types:
 
   wire_body:
     doc: |
-      Layout (from `parse_wires` in dsn2kicad.py):
+      Layout (from `parse_wires` in dsn2kicad_py.py):
         marker(4)        FF E4 5C 39
         word0(4)         record id / flags (not decoded by dsn2kicad)
         word1(4)         record id / flags (not decoded by dsn2kicad)
@@ -191,7 +191,7 @@ types:
       `x1` offset (marker+20) is **zero** — that zero is what `parse_net_aliases`
       uses to tell aliases apart from wires.
 
-      Layout from marker (from `parse_net_aliases` in dsn2kicad.py):
+      Layout from marker (from `parse_net_aliases` in dsn2kicad_py.py):
         marker(4)          FF E4 5C 39
         zeros(4)           at marker+4
         x(4)               at marker+8   alias position X, 10-mil units
@@ -363,7 +363,7 @@ types:
       `cell_name` and `style` are part of the leading bytes; after the null
       terminator, the structured fields follow.
 
-      Layout (from `parse_components` in dsn2kicad.py). Offsets below are
+      Layout (from `parse_components` in dsn2kicad_py.py). Offsets below are
       relative to `cell_end`, the byte just past the `\0` that terminates
       `CellName.{Normal,Convert}\0`:
         cell_name (ASCII, regex: [A-Za-z0-9_./+\-()]+)
@@ -491,7 +491,7 @@ types:
   pin_placement:
     doc: |
       Pin placement record following a component_instance (see
-      `_parse_pin_records` in dsn2kicad.py). Marker-framed.
+      `_parse_pin_records` in dsn2kicad_py.py). Marker-framed.
 
       The component header word at `cell_end+20` (u2 LE) is a count of
       non-pin marker records (the ref/value display-prop records and other
@@ -630,7 +630,7 @@ types:
       (see the top-level "Graphic-primitive color" note), NOT from any field
       inside this record. The four style words below were formerly mis-modeled
       as a single `style_index` u2; the converter now reads them as four
-      separate u32 fields (`parse_page_graphics` in dsn2kicad.py).
+      separate u32 fields (`parse_page_graphics` in dsn2kicad_py.py).
     seq:
       - id: marker
         type: dsn_common::record_marker
@@ -662,7 +662,7 @@ types:
         enum: line_width
         doc: |
           at marker+50. 0=thin(0.15mm), 1=medium(0.30mm), 2=wide(0.50mm),
-          3=default(0.15mm) — see _ORCAD_LINE_WIDTH_MM in dsn2kicad.py.
+          3=default(0.15mm) — see _ORCAD_LINE_WIDTH_MM in dsn2kicad_py.py.
       - id: fill_style
         type: u4
         enum: fill_style
@@ -780,7 +780,7 @@ types:
       (FillStyle 1).
 
       Located by the type word `01 00 2c 2c 2e 00` at marker+18.
-      Layout from marker (from `_parse_page_polygon` in dsn2kicad.py):
+      Layout from marker (from `_parse_page_polygon` in dsn2kicad_py.py):
         type_word          at marker+18: 01 00 2c 2c 2e 00
         fill_style(u32)    at marker+38: 0=solid color fill, 1=outline only
         vertex_count(u16)  at marker+46

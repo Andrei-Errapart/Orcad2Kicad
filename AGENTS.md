@@ -2,10 +2,13 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Python 3.9+ toolset for converting OrCAD Capture `.DSN`
-schematics to KiCad projects. Core implementation lives in `scripts/`, with
-CLI entry points such as `scripts/dsn2kicad`, `scripts/dsn_dump`,
-and matching importable modules like `scripts/dsn2kicad.py`. Bundled KiCad symbol
+This repository is a Haskell + Python 3.9+ toolset for converting OrCAD Capture
+`.DSN` schematics to KiCad projects. Core implementation lives in `scripts/`.
+The naming rule is **bare name = wrapper, name + extension = source**:
+`scripts/dsn2kicad` (primary) compiles and caches `scripts/dsn2kicad.hs`, while
+`scripts/dsn2kicad_py` runs `scripts/dsn2kicad_py.py` in a bootstrapped venv.
+Other CLI entry points such as `scripts/dsn_dump` follow the same pattern with
+matching importable modules. Bundled KiCad symbol
 libraries are in `scripts/kicad_symbols/`. Kaitai schema sketches for DSN and OLB
 formats are in `scripts/ksy/`. Project documentation is in `doc/`, while `README.md`
 contains user-facing usage and limitations. Tests and fixtures live under `tests/`,
@@ -17,7 +20,8 @@ including OLB fixture pairs in `tests/test_data_olb/`.
   font tooling.
 - `pytest`: run the full test suite.
 - `scripts/dsn2kicad <file.DSN> [output_dir]`: convert a schematic to a KiCad
-  project.
+  project (Haskell, primary; needs GHC).
+- `scripts/dsn2kicad_py <file.DSN> [output_dir]`: same via the Python converter.
 - `scripts/dsn_dump <file.DSN>`: inspect DSN internals for debugging.
 - `python3 scripts/gen_text_metrics.py`: regenerate committed text metric tables
   after changing the supported character/font set.

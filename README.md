@@ -7,8 +7,9 @@ component placements, and a symbol library. The converter is still incomplete, t
 
 ## Requirements
 
-- Python 3.9+
-- GHC / `runghc` (for the optional `scripts/dsn2kicad-hk` launcher)
+- GHC (for `scripts/dsn2kicad`, the primary entrypoint — it compiles
+  `scripts/dsn2kicad.hs` on first use and caches the binary)
+- Python 3.9+ (for `scripts/dsn2kicad_py`, the alternate Python entrypoint)
 - `olefile` (for reading OLE Compound Documents) — the **only** Python runtime dependency
 
 ```
@@ -39,15 +40,22 @@ anchors with zero margins so it follows the original sheet size instead of
 applying KiCad's default drawing-sheet inset. Output defaults to a directory
 named after the DSN file.
 
-The `scripts/dsn2kicad` wrapper creates a small Python virtualenv on first use
-under the user's cache directory, falling back to the temp directory if needed.
-Set `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
+`scripts/dsn2kicad` is the primary entrypoint. It is a shell wrapper around the
+native Haskell implementation in `scripts/dsn2kicad.hs`: on first use it compiles
+that source with GHC and caches the binary under the user's cache directory
+(keyed by a hash of the source, so edits rebuild automatically), falling back to
+the temp directory if needed. Set `ORCAD2KICAD_HS_CACHE=/path/to/dir` to force a
+specific location. If GHC is not installed the wrapper fails with a message
+pointing at the Python entrypoint rather than silently switching implementations.
+It converts both the ZIP-backed synthetic DSN fixtures used by the unit tests and
+regular OLE `.DSN` files through its own Compound File reader.
 
-`scripts/dsn2kicad-hk` is the native Haskell implementation. It converts both
-the ZIP-backed synthetic DSN fixtures used by the unit tests and regular OLE
-`.DSN` files through its own Compound File reader. It emits complete KiCad
-projects and supports the options below, with real-design and exported-netlist
-regressions against the established Python converter.
+`scripts/dsn2kicad_py` is the alternate Python entrypoint, wrapping the module in
+`scripts/dsn2kicad_py.py`. It creates a small Python virtualenv on first use under
+the user's cache directory, falling back to the temp directory if needed. Set
+`ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment. The two
+implementations are compared by real-design output and exported-netlist
+regressions; the Python one remains the reference for the browser/Pyodide path.
 
 OrCAD view names are discovered from `Views/<view>/Pages/<page>` streams; the
 view does not need to be named `SCHEMATIC1`. Conversion fails instead of
@@ -152,7 +160,7 @@ In a page, install the one pure-Python dependency and load the scripts:
 const pyodide = await loadPyodide();
 await pyodide.loadPackage("micropip");
 await pyodide.runPythonAsync(`import micropip; await micropip.install("olefile")`);
-// Put dsn2kicad.py, olb_parser.py, kicad_sexpr.py, text_metrics.py,
+// Put dsn2kicad_py.py, olb_parser.py, kicad_sexpr.py, text_metrics.py,
 // text_metrics_data.py (and scripts/kicad_symbols/ for --kicad-power/-rc) on
 // Pyodide's filesystem, then call convert_dsn_bytes with the uploaded bytes.
 ```

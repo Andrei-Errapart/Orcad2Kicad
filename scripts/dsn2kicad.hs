@@ -299,7 +299,7 @@ writeNativeOrExit container opts result =
     Right files -> writeOutput opts files
     Left err -> do
       hPutStrLn stderr $
-        "dsn2kicad-hk: native " ++ container ++ " conversion failed: " ++ err
+        "dsn2kicad: native " ++ container ++ " conversion failed: " ++ err
       exitWith (ExitFailure 1)
 
 parseOptions :: [String] -> Either String Options
@@ -339,7 +339,7 @@ partitionArgs = go [] []
 
 usage :: IO ()
 usage = hPutStrLn stderr $
-  "Usage: scripts/dsn2kicad-hk [--debug-bbox] [--debug-ref-val] "
+  "Usage: scripts/dsn2kicad [--debug-bbox] [--debug-ref-val] "
   ++ "[--debug-symbol] [--kicad-power] [--kicad-rc] [--kicad-fonts] "
   ++ "[--no-worksheet] <file.DSN> [output_dir]"
 
@@ -2749,7 +2749,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
-      , kNode "generator" [kString "dsn2kicad-hk"]
+      , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
       , kUuid (pageObjectUuid page 0 1)
       , kNode "paper" [kString (pagePaper page)]
@@ -3086,11 +3086,26 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
             then take (length (compValue comp) - length (" *DNP" :: String)) (compValue comp)
             else compValue comp
           mirrorFields = [kNode "mirror" [kAtom "y"] | compOrient comp .&. 0x04 /= 0]
+          -- Placement anchor. When the body origin was recovered by pin
+          -- matching, compX/compY already is that origin. A part with no
+          -- usable pins (mounting screws, holes) has no pin-matched origin,
+          -- and the raw cell position is not where OrCAD draws the body: the
+          -- cell's local frame is anchored at the instance loc, so the body
+          -- lands at loc + symbolOrigin -- symbolOrigin being the same
+          -- graphics midpoint the emitted lib symbol is centred on. Checked
+          -- against the OrCAD PDF vector geometry for SCR1 and SP1 on 0002.
+          (placeX, placeY) = case compOriginX comp of
+            Just _ -> (compX comp, compY comp)
+            Nothing ->
+              let (symOx, symOy) = symbolOrigin symbol
+              in ( compLocX comp + round symOx
+                 , compLocY comp + round symOy
+                 )
           componentFields =
             [ kNode "lib_id" [kString libName]
             , kAt
-                [ kCoord (compX comp)
-                , kCoord (compY comp)
+                [ kCoord placeX
+                , kCoord placeY
                 , kInt angle
                 ]
             ]
@@ -3189,11 +3204,18 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
           y = powerHotY symbol
           hidden = powerStyle symbol == PowerGround
             || powerValueOffset symbol == Nothing
-          property = if hidden then kHiddenProperty else kProperty
-          atExpr = case powerValueCenter symbol of
-            Just (rawX, rawY) -> kAt
-              [ kDouble (rawX * unitToMm)
-              , kDouble (rawY * unitToMm)
+          -- Visible power labels are rendered text, so they must carry the same
+          -- size/face as component fields; kProperty would emit a bare 1.27 with
+          -- no (face ...), which KiCad renders in Newstroke instead of Arial.
+          property
+            | hidden = kHiddenProperty
+            | otherwise = \n v a ->
+                kStyledProperty n v a fieldSize fieldFace fieldBold fieldItalic
+          atExpr = case powerValueCenter (optKicadFonts opts)
+                          fieldSize fieldFace fieldBold fieldItalic symbol of
+            Just (mmX, mmY) -> kAt
+              [ kDouble mmX
+              , kDouble mmY
               , kInt (powerValueAngle symbol)
               ]
             Nothing -> kAt [kCoord x, kCoord y, kInt 0]
@@ -3295,7 +3317,7 @@ generateRootSch project pages =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
-      , kNode "generator" [kString "dsn2kicad-hk"]
+      , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
       , kUuid "00000000-0000-4000-8000-000000000002"
       , kNode "paper" [kString "A3"]
@@ -3341,7 +3363,7 @@ generateSymbolLibrary opts cacheSymbols multiUnits pages =
   renderKicad $
     kNode "kicad_symbol_lib" $
       [ kNode "version" [kInt 20251024]
-      , kNode "generator" [kString "dsn2kicad-hk"]
+      , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
       ]
       ++ map emitUsedSymbol usedCells
@@ -4149,14 +4171,13 @@ componentFieldAt opts component field value size face bold italic =
     absoluteAngle = displayTextAngle field `mod` 360
     relative = (absoluteAngle - componentAngleFor opts component) `mod` 360
     relativeAngle = if relative >= 180 then relative - 180 else relative
-    useLocation = compOrient component .&. 0x03 `elem` [1, 3]
-      && absoluteAngle == 0
-    originX = if useLocation
-      then fromIntegral (compLocX component)
-      else fromMaybe (fromIntegral (compX component)) (compOriginX component)
-    originY = if useLocation
-      then fromIntegral (compLocY component)
-      else fromMaybe (fromIntegral (compY component)) (compOriginY component)
+    -- OrCAD stores ref/value offsets against the instance *loc*, never against
+    -- the body origin. The two coincide for the 0/180 family, but the body
+    -- origin is recovered by pin matching, so for a part with no usable pins
+    -- (e.g. the SCR1 mounting screw) it is unreliable and drags the labels with
+    -- it. Anchoring to loc unconditionally matches the Python converter.
+    originX = fromIntegral (compLocX component)
+    originY = fromIntegral (compLocY component)
     topLeftX = (originX + fromIntegral (displayOffsetX field)) * unitToMm
     topLeftY = (originY + fromIntegral (displayOffsetY field)) * unitToMm
     -- OrCAD's display-prop (x, y) lands at the axis-aligned top-left of the
@@ -4285,18 +4306,32 @@ powerValueAngle symbol =
       relative = (angle - powerSymbolAngle symbol) `mod` 360
   in if relative >= 180 then relative - 180 else relative
 
-powerValueCenter :: PowerSymbol -> Maybe (Double, Double)
-powerValueCenter symbol = do
+-- Returns the KiCad centre anchor in **millimetres**. OrCAD's display-prop
+-- (x, y) is the axis-aligned top-left of the rendered text box, so the box has
+-- to be measured with real per-glyph metrics (a char-count estimate is off by
+-- ~0.8 mm horizontally and ~0.9 mm vertically) and nudged the same way
+-- component Reference/Value fields are.
+powerValueCenter
+  :: Bool -> Double -> String -> Bool -> Bool -> PowerSymbol
+  -> Maybe (Double, Double)
+powerValueCenter useKicadFonts size face bold italic symbol = do
   (offX, offY) <- powerValueOffset symbol
   let (_, _, y2, x2, x1, y1) = powerCoords symbol
-      left = fromIntegral (min x1 x2 + offX)
-      top = fromIntegral (min y1 y2 + offY)
-      textWidth = fromIntegral (length (powerNetName symbol)) * 5.0
-      textHeight = 6.0
+      topLeftX = fromIntegral (min x1 x2 + offX) * unitToMm
+      topLeftY = fromIntegral (min y1 y2 + offY) * unitToMm
+      (textWidth, textHeight) =
+        textBoxDims useKicadFonts (powerNetName symbol) size face bold italic
       rotation = fromMaybe 0 (powerValueRotation symbol)
-  pure $ if rotation `elem` [90, 270]
-    then (left + textHeight / 2, top + textWidth / 2)
-    else (left + textWidth / 2, top + textHeight / 2)
+      (boxWidth, boxHeight) = if rotation `elem` [90, 270]
+        then (textHeight, textWidth)
+        else (textWidth, textHeight)
+      nudge = 0.416 * size
+      (nudgeX, nudgeY) = case rotation of
+        90 -> (nudge, 0)
+        180 -> (0, -nudge)
+        270 -> (-nudge, 0)
+        _ -> (0, nudge)
+  pure (topLeftX + boxWidth / 2 + nudgeX, topLeftY + boxHeight / 2 + nudgeY)
 
 pageObjectUuid :: Page -> Int -> Int -> String
 pageObjectUuid page = stableObjectUuid (pageStreamName page)

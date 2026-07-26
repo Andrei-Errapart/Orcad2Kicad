@@ -3545,7 +3545,7 @@ def get_lib_symbol(cell_name):
     if _use_kicad_rc and cell_name in ('R', 'C'):
         lib_id = f'Device:{cell_name}'
         return (lib_id, cell_name,
-                lambda name=cell_name: _kicad_native_device.get(name))
+                lambda name=cell_name: _kicad_rc_symbol_text(name))
     if cell_name in CELL_TO_KICAD:
         return CELL_TO_KICAD[cell_name]
     if cell_name in _multi_unit_cell_map:
@@ -3618,6 +3618,17 @@ def orient_to_angle(orient_byte, cell_name):
                    0x03: 270, 0x07: 270}.get(orient_byte, 0)
 
     if _use_kicad_rc and cell_name in ('R', 'C'):
+        if _kicad_rc_substitution_is_inert(cell_name):
+            # The emitted Device symbol carries the OrCAD pin span and the cell
+            # is drawn vertically like Device:R/C, so the substitution should
+            # not turn the part at all: keep the angle it has without --kicad-rc
+            # and every pin stays on its wire. Mirroring is compensated exactly
+            # as in the ordinary path below.
+            if orient_byte & 0x04:
+                return (360 - orcad_angle) % 360
+            return orcad_angle
+        # Cell geometry unknown (no Cache definition), so fall back to the
+        # long-standing assumption that OrCAD draws R/C horizontally.
         return (90 - orcad_angle) % 360
 
     if orient_byte & 0x04:
@@ -3800,6 +3811,98 @@ def _move_rc_text_clear_of_body(cell_name, center, text, text_angle,
     return (cx + dx * distance, cy + dy * distance)
 
 
+_KICAD_RC_STOCK_PIN_OFFSET = 3.81
+
+
+def _fmt_mm(value):
+    """Format a millimetre value the way KiCad writes them (no trailing zeros)."""
+    text = f'{round(value, 4):.4f}'.rstrip('0').rstrip('.')
+    return text if text not in ('', '-0') else '0'
+
+# A pin's (at ...) is always followed by its (length ...); no other clause in a
+# symbol is, so this cannot match a property or graphic by accident.
+_KICAD_RC_PIN_RE = re.compile(
+    r'\(at (-?[\d.]+) (-?[\d.]+) (\d+)\)(\s*)\(length ([\d.]+)\)')
+
+
+def _kicad_rc_pin_offset(cell_name):
+    """Half-span, in mm, from a Device R/C symbol's centre to each pin.
+
+    Device:R and Device:C put their pins +/-3.81mm from the centre, but the
+    OrCAD cell being replaced need not: a 10-mil-grid OrCAD resistor has its
+    pins at +/-6.35mm. Substituting at the stock span moves every connection
+    point, so wires had to be dragged afterwards to follow -- and dragging them
+    is what shorted resistors onto neighbouring nets. Reporting the OrCAD span
+    here keeps the pins where they already were, making the substitution
+    electrically inert.
+    """
+    defs = _cell_pin_defs.get(cell_name)
+    if not defs or len(defs) != 2:
+        return _KICAD_RC_STOCK_PIN_OFFSET
+    offsets = [max(abs(d[1]), abs(d[2])) for d in defs]
+    span = max(offsets)
+    return span if span > 0 else _KICAD_RC_STOCK_PIN_OFFSET
+
+
+def _kicad_rc_cell_is_horizontal(cell_name):
+    """True when the OrCAD R/C cell being replaced is drawn with its pins
+    left/right. Falls back to True (the historical assumption) when the cell's
+    pin geometry is unavailable."""
+    defs = _cell_pin_defs.get(cell_name)
+    if not defs or len(defs) != 2:
+        return True
+    (_, x1, y1) = defs[0][0:3][0], defs[0][1], defs[0][2]
+    (_, x2, y2) = defs[1][0:3][0], defs[1][1], defs[1][2]
+    return abs(x1 - x2) > abs(y1 - y2)
+
+
+def _kicad_rc_substitution_is_inert(cell_name):
+    """True when swapping in Device:R/C leaves every pin exactly where the OrCAD
+    symbol had it.
+
+    That holds once the emitted symbol carries the OrCAD pin span and the part
+    keeps the angle it has without the substitution -- i.e. the cell is drawn
+    vertically, like Device:R/C. Nothing then needs to move, so the pin-adjust
+    and wire-bridging machinery must be left alone: applying it drags wire
+    endpoints onto neighbouring nets and shorts resistors across their own pins.
+    """
+    defs = _cell_pin_defs.get(cell_name)
+    return (bool(defs) and len(defs) == 2
+            and not _kicad_rc_cell_is_horizontal(cell_name))
+
+
+def _kicad_rc_symbol_text(cell_name):
+    """Bundled Device:R/C definition with its pins moved out to the OrCAD span.
+
+    Only the pins move; the body outline is left alone, so the leads simply get
+    longer and the symbol still reads as a standard KiCad resistor/capacitor.
+    """
+    text = _kicad_native_device.get(cell_name)
+    if not text:
+        return text
+    offset = _kicad_rc_pin_offset(cell_name)
+    if abs(offset - _KICAD_RC_STOCK_PIN_OFFSET) < 1e-9:
+        return text
+
+    def _retarget(m):
+        px, py, ang, gap, length = (float(m.group(1)), float(m.group(2)),
+                                    m.group(3), m.group(4), float(m.group(5)))
+        along_y = abs(py) >= abs(px)
+        v = py if along_y else px
+        if v == 0:
+            return m.group(0)
+        body_edge = abs(v) - length          # where the lead meets the outline
+        new_v = math.copysign(offset, v)
+        new_len = max(0.0, offset - body_edge)
+        if along_y:
+            return (f'(at {_fmt_mm(px)} {_fmt_mm(new_v)} {ang}){gap}'
+                    f'(length {_fmt_mm(new_len)})')
+        return (f'(at {_fmt_mm(new_v)} {_fmt_mm(py)} {ang}){gap}'
+                f'(length {_fmt_mm(new_len)})')
+
+    return _KICAD_RC_PIN_RE.sub(_retarget, text)
+
+
 def _kicad_rc_pin_position(comp, pin_num):
     """Return standard Device R/C pin hotpoint in DSN page units."""
     if comp.get('cell') not in ('R', 'C'):
@@ -3808,7 +3911,8 @@ def _kicad_rc_pin_position(comp, pin_num):
     mirror_x = bool(comp['orient'] & 0x04)
     if mirror_x and pin_num in ('1', '2'):
         pin_num = '2' if pin_num == '1' else '1'
-    local = {'1': (0.0, 3.81), '2': (0.0, -3.81)}.get(pin_num)
+    offset = _kicad_rc_pin_offset(comp['cell'])
+    local = {'1': (0.0, offset), '2': (0.0, -offset)}.get(pin_num)
     if local is None:
         return None
     x = dsn_to_mm(comp['x'])
@@ -4177,7 +4281,8 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     rc_internal_pin_wires = set()
     for comp in components:
         cell = comp['cell']
-        if _use_kicad_rc and cell in ('R', 'C'):
+        if (_use_kicad_rc and cell in ('R', 'C')
+                and not _kicad_rc_substitution_is_inert(cell)):
             old_pins = []
             for pn, old_x, old_y in comp.get('pins') or []:
                 old_pos = (old_x, old_y)

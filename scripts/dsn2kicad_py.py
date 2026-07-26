@@ -593,6 +593,17 @@ def parse_components(data, net_table=None):
             origin_y = sum(p[2] for p in pins) / len(pins)
             x = round(origin_x)
             y = round(origin_y)
+        elif not pins:
+            # No pins at all (mounting screws, holes), so there is nothing to
+            # match a body origin against and the raw cell position is not where
+            # OrCAD draws the body. The Cache stores the cell in a local frame
+            # anchored at the instance loc, and the emitted symbol is centred on
+            # the graphics midpoint, so the placement is loc + that midpoint.
+            # Verified against the OrCAD PDF vector geometry for SCR1 on 0002.
+            cc = _cell_centers.get(cell_name)
+            if cc is not None:
+                x = round(loc_x + cc[0])
+                y = round(loc_y + cc[1])
 
         if os.environ.get('DSNDEBUG_ORIGIN') and origin_x is not None:
             sys.stderr.write(
@@ -5580,6 +5591,11 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
         ys = [c[1] for c in all_coords]
         cx = (min(xs) + max(xs)) / 2
         cy = (min(ys) + max(ys)) / 2
+        # These cells have no pins, so the emitted symbol is centred on the
+        # graphics midpoint rather than a pin extent. Record it: it is the point
+        # the symbol's own origin corresponds to, and placement needs it because
+        # a pinless part has no pin-matched origin to fall back on.
+        _cell_centers[cell_name] = (cx, cy)
 
         if cell_name in cache_body_rects:
             sym_rects = []

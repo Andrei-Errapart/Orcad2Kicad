@@ -10,6 +10,7 @@ import io
 import zipfile
 
 import olefile
+import pytest
 
 
 class TestMakeZip:
@@ -22,12 +23,13 @@ class TestMakeZip:
 
 
 class TestMakeOle:
-    def test_roundtrips_nested_streams(self, dsn_fixtures):
+    @pytest.mark.parametrize("sector_size", [512, 4096])
+    def test_roundtrips_nested_streams(self, dsn_fixtures, sector_size):
         members = {
             "Cache": b"cache-data",
             "Views/NAMED/Pages/Page 1": b"page-data" * 600,
         }
-        data = dsn_fixtures.make_ole(members)
+        data = dsn_fixtures.make_ole(members, sector_size=sector_size)
         assert data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
         with olefile.OleFileIO(io.BytesIO(data)) as ole:
             assert sorted("/".join(path) for path in ole.listdir()) == sorted(members)

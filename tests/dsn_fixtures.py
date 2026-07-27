@@ -425,7 +425,7 @@ def make_library_styles(styles):
     return bytes(out)
 
 
-def make_library(values, styles=None):
+def make_library(values, styles=None, title_block=None):
     """Build the parsed prefix of an OrCAD Library stream."""
     out = bytearray(32)
     intro = b"OrCAD Windows Design"
@@ -442,6 +442,16 @@ def make_library(values, styles=None):
     for value in values:
         encoded = value.encode("ascii")
         out += struct.pack("<H", len(encoded)) + encoded + b"\x00"
+    if title_block:
+        title_strings = [
+            title_block.get("title", ""),
+            title_block["doc_number"],
+            title_block.get("rev", ""),
+            "SCHEMATIC1",
+        ]
+        for value in filter(None, title_strings):
+            encoded = value.encode("ascii")
+            out += struct.pack("<H", len(encoded)) + encoded + b"\x00"
     return bytes(out)
 
 
@@ -454,7 +464,7 @@ def make_zip(members):
     return buf.getvalue()
 
 
-def make_ole(members):
+def make_ole(members, *, sector_size=512):
     """Pack stream members into a minimal deterministic OLE compound file.
 
     Streams are padded to the 4096-byte regular-stream cutoff. The directory
@@ -464,7 +474,8 @@ def make_ole(members):
     free_sector = 0xFFFFFFFF
     end_of_chain = 0xFFFFFFFE
     fat_sector = 0xFFFFFFFD
-    sector_size = 512
+    if sector_size not in (512, 4096):
+        raise ValueError("OLE sector size must be 512 or 4096 bytes")
 
     nodes = [{
         "name": "Root Entry", "type": 5, "children": [], "right": free_sector,
@@ -506,7 +517,10 @@ def make_ole(members):
         for current, following in zip(children, children[1:]):
             nodes[current]["right"] = following
 
-    directory_sector_count = (len(nodes) + 3) // 4
+    directory_entries_per_sector = sector_size // 128
+    directory_sector_count = (
+        len(nodes) + directory_entries_per_sector - 1
+    ) // directory_entries_per_sector
     next_sector = directory_sector_count
     stream_sectors = []
     stream_chains = []
@@ -562,8 +576,20 @@ def make_ole(members):
 
     header = bytearray(sector_size)
     header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-    struct.pack_into("<HHHH", header, 0x18, 0x003E, 3, 0xFFFE, 9)
+    major_version = 3 if sector_size == 512 else 4
+    sector_shift = 9 if sector_size == 512 else 12
+    struct.pack_into(
+        "<HHHH",
+        header,
+        0x18,
+        0x003E,
+        major_version,
+        0xFFFE,
+        sector_shift,
+    )
     struct.pack_into("<H", header, 0x20, 6)
+    if major_version == 4:
+        struct.pack_into("<I", header, 0x28, directory_sector_count)
     struct.pack_into("<I", header, 0x2C, 1)
     struct.pack_into("<I", header, 0x30, 0)
     struct.pack_into("<I", header, 0x38, 4096)

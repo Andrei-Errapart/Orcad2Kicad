@@ -5,7 +5,16 @@
 -- SPDX-License-Identifier: GPL-2.0-or-later
 
 import Control.Monad (forM_, guard, unless)
-import Data.Bits ((.&.), xor)
+import Data.Array (Array, (!), array, listArray)
+import Data.Bits
+  ( (.&.)
+  , (.|.)
+  , complement
+  , rotateR
+  , shiftL
+  , shiftR
+  , xor
+  )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, ord, toLower, toUpper)
@@ -19,6 +28,7 @@ import Data.List
   , maximumBy
   , sortOn
   )
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
@@ -219,6 +229,16 @@ data TextStyle = TextStyle
   }
   deriving Show
 
+data TitleBlock = TitleBlock
+  { titleBlockTitle :: String
+  , titleBlockDocumentNumber :: String
+  , titleBlockRevision :: String
+  }
+  deriving Show
+
+emptyTitleBlock :: TitleBlock
+emptyTitleBlock = TitleBlock "" "" ""
+
 data Pin = Pin
   { pinName :: String
   , pinNumber :: String
@@ -305,12 +325,13 @@ writeNativeOrExit container opts result =
 parseOptions :: [String] -> Either String Options
 parseOptions argv =
   let (flags, positional) = partitionArgs argv
-      passthroughFlags =
-        [ "--debug-bbox", "--debug-ref-val", "--debug-symbol"
-        , "--kicad-power", "--kicad-rc", "--kicad-fonts", "--no-worksheet"
+      debugFlags = ["--debug-bbox", "--debug-ref-val", "--debug-symbol"]
+      supportedFlags =
+        [ "--kicad-power", "--kicad-rc", "--kicad-fonts", "--no-worksheet"
         , "--native-only"
         ]
-      unknownFlags = filter (`notElem` passthroughFlags) flags
+      unknownFlags = filter (`notElem` (debugFlags ++ supportedFlags)) flags
+      requestedDebugFlags = filter (`elem` debugFlags) flags
       makeOptions dsn outDir = Options
         { optDsnPath = dsn
         , optOutputDir = outDir
@@ -322,12 +343,16 @@ parseOptions argv =
         }
   in case unknownFlags of
     f : _ -> Left ("Unknown option: " ++ f)
-    [] -> case positional of
-      [] -> Left "Missing DSN path"
-      dsn : outDir : _ ->
-        Right (makeOptions dsn outDir)
-      [dsn] ->
-        Right (makeOptions dsn (takeBaseName dsn ++ "_kicad"))
+    [] -> case requestedDebugFlags of
+      f : _ -> Left $
+        f ++ " is not implemented by scripts/dsn2kicad; "
+        ++ "use scripts/dsn2kicad_py for debug overlays"
+      [] -> case positional of
+        [] -> Left "Missing DSN path"
+        dsn : outDir : _ ->
+          Right (makeOptions dsn outDir)
+        [dsn] ->
+          Right (makeOptions dsn (takeBaseName dsn ++ "_kicad"))
 
 partitionArgs :: [String] -> ([String], [String])
 partitionArgs = go [] []
@@ -338,10 +363,12 @@ partitionArgs = go [] []
       | otherwise = go flags (arg:positional) rest
 
 usage :: IO ()
-usage = hPutStrLn stderr $
-  "Usage: scripts/dsn2kicad [--debug-bbox] [--debug-ref-val] "
-  ++ "[--debug-symbol] [--kicad-power] [--kicad-rc] [--kicad-fonts] "
-  ++ "[--no-worksheet] <file.DSN> [output_dir]"
+usage = do
+  hPutStrLn stderr $
+    "Usage: scripts/dsn2kicad [--kicad-power] [--kicad-rc] "
+    ++ "[--kicad-fonts] [--no-worksheet] <file.DSN> [output_dir]"
+  hPutStrLn stderr $
+    "Debug flags are implemented by scripts/dsn2kicad_py only."
 
 isZipArchive :: BS.ByteString -> Bool
 isZipArchive = BS.isPrefixOf (BS.pack [0x50, 0x4b, 0x03, 0x04])
@@ -349,16 +376,21 @@ isZipArchive = BS.isPrefixOf (BS.pack [0x50, 0x4b, 0x03, 0x04])
 convertZipBytes :: Options -> BS.ByteString -> Either String [(FilePath, String)]
 convertZipBytes opts bytes = do
   members <- parseStoredZip bytes
-  convertStreams opts [(name, body) | ZipMember name body <- members]
+  convertStreams opts bytes [(name, body) | ZipMember name body <- members]
 
 convertOleBytes :: Options -> BS.ByteString -> Either String [(FilePath, String)]
 convertOleBytes opts bytes = do
   streams <- parseOleStreams bytes
-  convertStreams opts streams
+  convertStreams opts bytes streams
 
-convertStreams :: Options -> [(FilePath, BS.ByteString)] -> Either String [(FilePath, String)]
-convertStreams opts members = do
+convertStreams
+  :: Options
+  -> BS.ByteString
+  -> [(FilePath, BS.ByteString)]
+  -> Either String [(FilePath, String)]
+convertStreams opts sourceBytes members = do
   let memberMap = Map.fromList members
+      libraryBody = Map.lookup "Library" memberMap
       pageMembers =
         sortOn (\(viewName, pageName, _, _) -> (viewName, pageName))
           [ (viewName, pageName, name, body)
@@ -366,31 +398,42 @@ convertStreams opts members = do
           , Just (viewName, pageName) <- [pageStreamPath name]
           ]
       cacheSymbols = maybe Map.empty parseCacheSymbols (Map.lookup "Cache" memberMap)
-      libraryValues = maybe [] parseLibraryValueStrings (Map.lookup "Library" memberMap)
+      libraryValues = maybe [] parseLibraryValueStrings libraryBody
+      titleBlock = maybe emptyTitleBlock parseTitleBlock libraryBody
       rawPages = canonicalizePageNetNames
         [parsePage libraryValues name body | (_, _, name, body) <- pageMembers]
       pages = map (refinePageComponents cacheSymbols) rawPages
-      textStyles = maybe [] parseLibraryTextStyles (Map.lookup "Library" memberMap)
+      textStyles = maybe [] parseLibraryTextStyles libraryBody
       multiUnits = detectMultiUnitComponents pages
       globalNets = globalNetNames pages
       hasOffPageRecords = any (not . null . pageOffPageConnectors) pages
       powerRefs = assignPowerReferences pages
       project = optProjectName opts
+      pageCount = length pages
+      dsnDigest = sha256 sourceBytes
       pageFiles =
-        [(pageOutputName page, generatePageSch opts project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles page)
-        | page <- pages]
+        [ (pageOutputName page, generatePageSch
+            dsnDigest opts project cacheSymbols multiUnits globalNets
+            hasOffPageRecords powerRefs textStyles titleBlock pageIndex
+            pageCount page)
+        | (pageIndex, page) <- zip [1..] pages
+        ]
       worksheetFiles =
         [ (project ++ ".kicad_wks", generateWorksheet)
         | optEmitWorksheet opts
         ]
       outputNames = map pageOutputName pages
+      rootFilename = project ++ ".kicad_sch"
   unlessEither (not (null pageMembers)) $
     "no schematic page streams found under Views/<view>/Pages/<page>"
   unlessEither (length outputNames == Set.size (Set.fromList outputNames)) $
     "multiple schematic pages map to the same KiCad output filename"
   pure $
     pageFiles
-    ++ [ (project ++ ".kicad_sch", generateRootSch project pages)
+    ++ [ ( rootFilename
+         , generateRootSch
+             dsnDigest project pages
+         )
        , (project ++ ".kicad_sym", generateSymbolLibrary opts cacheSymbols multiUnits pages)
        , (project ++ ".kicad_pro", generateProject project (optEmitWorksheet opts))
        , ("sym-lib-table", generateSymLibTable project)
@@ -675,7 +718,7 @@ sectorChain table startSid = go Map.empty [] startSid
 readSector :: BS.ByteString -> Int -> Word32 -> Maybe BS.ByteString
 readSector bytes sectorSize sid = do
   sidInt <- maybeWord32ToInt sid
-  let start = 512 + sidInt * sectorSize
+  let start = (sidInt + 1) * sectorSize
   sliceAt bytes start sectorSize
 
 sliceAt :: BS.ByteString -> Int -> Int -> Maybe BS.ByteString
@@ -1432,6 +1475,7 @@ offPageHotpoint name (rawX1, rawY1, rawX2, rawY2) orient =
   let upper = map toUpper name
       pointsRight = any (`isSuffixOf` upper) ["-R", "/R", "-IN"]
       orientation = (orient `div` 256) .&. 0x07
+      initialX :: Int
       initialX = if pointsRight then 1 else -1
       mirroredX = if orientation .&. 0x04 /= 0 then negate initialX else initialX
       (directionX, directionY) = case orientation .&. 0x03 of
@@ -1819,9 +1863,79 @@ readLengthStrings body = go []
           raw = BS.take stringLen (BS.drop stringStart body)
           afterString = stringStart + stringLen
           nextPos = if byteAt body afterString == Just 0
-            then afterString + 1
-            else afterString
+              then afterString + 1
+              else afterString
       go (BSC.unpack raw : values) nextPos (remaining - 1)
+
+parseTitleBlock :: BS.ByteString -> TitleBlock
+parseTitleBlock body =
+  case reverse liveDocumentIndices of
+    documentIndex : _ ->
+      let documentNumber = values !! documentIndex
+          title = case listAt values (documentIndex - 1) of
+            Just candidate
+              | not ("{" `isPrefixOf` candidate) -> candidate
+            _ -> ""
+          revision = fromMaybe "" $ firstJust
+            [ if isRevision candidate then Just candidate else Nothing
+            | candidate <- take 4 (drop (documentIndex + 1) values)
+            ]
+      in TitleBlock title documentNumber revision
+    [] -> emptyTitleBlock
+  where
+    values = map snd (enumerateU16Strings body)
+    sentinelIndex = fromMaybe (length values) (elemIndex "SCHEMATIC1" values)
+    liveDocumentIndices =
+      [ index
+      | (index, value) <- zip [0..] (take sentinelIndex values)
+      , isDocumentNumber value
+      ]
+
+enumerateU16Strings :: BS.ByteString -> [(Int, String)]
+enumerateU16Strings body = go 0
+  where
+    go off
+      | off + 3 >= BS.length body = []
+      | otherwise =
+          case word16LE body off of
+            Just lengthWord ->
+              let stringLength = fromIntegral lengthWord
+                  stringStart = off + 2
+                  stringEnd = stringStart + stringLength
+              in case asciiAt body stringStart stringLength of
+                   Just value
+                     | stringLength >= 1
+                     , stringLength <= 150
+                     , byteAt body stringEnd == Just 0 ->
+                         (off, value) : go (stringEnd + 1)
+                   _ -> go (off + 1)
+            Nothing -> []
+
+isDocumentNumber :: String -> Bool
+isDocumentNumber ('E':'P':digit:firstLetter:secondLetter:'-':'A':'B':rest) =
+  isDigit digit
+  && isUpperAscii firstLetter
+  && isUpperAscii secondLetter
+  && validGroups rest
+  where
+    validGroups ('-':value) =
+      let (digits, remaining) = span isDigit value
+      in length digits >= 2
+         && length digits <= 4
+         && (null remaining || validGroups remaining)
+    validGroups _ = False
+isDocumentNumber _ = False
+
+isRevision :: String -> Bool
+isRevision value =
+  let (major, rest) = span isDigit value
+  in not (null major)
+     && case rest of
+          '.':minor -> not (null minor) && all isDigit minor
+          _ -> False
+
+isUpperAscii :: Char -> Bool
+isUpperAscii char = char >= 'A' && char <= 'Z'
 
 orcadPageSize :: String -> (Int, Int)
 orcadPageSize paper = Map.findWithDefault (1654, 1170) paper $ Map.fromList
@@ -2735,7 +2849,8 @@ kHiddenProperty name value atExpr =
     ]
 
 generatePageSch
-  :: Options
+  :: BS.ByteString
+  -> Options
   -> String
   -> Map.Map String CacheSymbol
   -> MultiUnitRegistry
@@ -2743,17 +2858,20 @@ generatePageSch
   -> Bool
   -> Map.Map (FilePath, Int) String
   -> [TextStyle]
+  -> TitleBlock
+  -> Int
+  -> Int
   -> Page
   -> String
-generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles page =
+generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles titleBlock pageIndex pageCount page =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
       , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
-      , kUuid (pageObjectUuid page 0 1)
+      , kUuid (pageObjectUuid uuidSeed page 0 1)
       , kNode "paper" [kString (pagePaper page)]
-      , kNode "title_block" [kNode "title" [kString (pageTitle page)]]
+      , emitTitleBlock
       , kNode "lib_symbols"
           (map emitUsedSymbol usedCells ++ map emitPowerDefinition powerDefinitions)
       ]
@@ -2773,6 +2891,27 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
          , kNo "embedded_fonts"
          ]
   where
+    emitTitleBlock =
+      kNode "title_block" $
+        [kNode "title" [kString outputTitle]]
+        ++ [ kNode "rev" [kString (titleBlockRevision titleBlock)]
+           | not (null (titleBlockRevision titleBlock))
+           ]
+        ++ [ kNode "comment"
+               [kInt 1, kString (titleBlockDocumentNumber titleBlock)]
+           | not (null (titleBlockDocumentNumber titleBlock))
+           ]
+        ++ [ kNode "comment"
+               [ kInt 2
+               , kString
+                   ("Sheet " ++ show pageIndex ++ " of " ++ show pageCount)
+               ]
+           ]
+
+    outputTitle
+      | null (titleBlockTitle titleBlock) = pageTitle page
+      | otherwise = titleBlockTitle titleBlock
+
     (fieldSize, fieldFace, fieldBold, fieldItalic) =
       defaultComponentTextStyle (optKicadFonts opts) textStyles
 
@@ -2817,7 +2956,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
                   (fromIntegral y2 * unitToMm)
             ]
         , kStroke "0.15" "default"
-        , kUuid (pageObjectUuid page 1 wireIndex)
+        , kUuid (pageObjectUuid uuidSeed page 1 wireIndex)
         ]
 
     adjustedWirePoint wire point =
@@ -2835,7 +2974,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
                   (fromIntegral (wireY2 wire) * unitToMm)
             ]
         , kStroke "0" "default"
-        , kUuid (pageObjectUuid page 12 busIndex)
+        , kUuid (pageObjectUuid uuidSeed page 12 busIndex)
         ]
 
     emitBusEntry entryIndex (BusEntry x y dx dy) =
@@ -2843,7 +2982,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
         [ kAt [kCoord x, kCoord y]
         , kNode "size" [kCoord dx, kCoord dy]
         , kStroke "0" "default"
-        , kUuid (pageObjectUuid page 13 entryIndex)
+        , kUuid (pageObjectUuid uuidSeed page 13 entryIndex)
         ]
 
     regularWires =
@@ -3013,7 +3152,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
         [ kAt [kCoord x, kCoord y]
         , kNode "diameter" [kInt 0]
         , kNode "color" [kInt 0, kInt 0, kInt 0, kInt 0]
-        , kUuid (pageObjectUuid page 5 junctionIndex)
+        , kUuid (pageObjectUuid uuidSeed page 5 junctionIndex)
         ]
 
     emitRcBridge bridgeIndex ((x1, y1), (x2, y2)) =
@@ -3021,7 +3160,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
         [ kNode "pts" [kXy (fromIntegral x1 * unitToMm) (fromIntegral y1 * unitToMm)
                        , kXy (fromIntegral x2 * unitToMm) (fromIntegral y2 * unitToMm)]
         , kStroke "0.15" "default"
-        , kUuid (pageObjectUuid page 14 bridgeIndex)
+        , kUuid (pageObjectUuid uuidSeed page 14 bridgeIndex)
         ]
 
     emitNetLabel labelIndex label
@@ -3043,7 +3182,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
                   ]
               , kNode "justify" justify
               ]
-          , kUuid (pageObjectUuid page 6 labelIndex)
+          , kUuid (pageObjectUuid uuidSeed page 6 labelIndex)
           ]
 
     emitGlobalLabel labelIndex label =
@@ -3059,7 +3198,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
                   ]
               , kNode "justify" [justify]
               ]
-          , kUuid (pageObjectUuid page 7 labelIndex)
+          , kUuid (pageObjectUuid uuidSeed page 7 labelIndex)
           , kNode "property"
               [ kString "Intersheetrefs"
               , kString "${INTERSHEET_REFS}"
@@ -3116,7 +3255,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
             , if dnp then kNo "in_bom" else kYes "in_bom"
             , kYes "on_board"
             , if dnp then kYes "dnp" else kNo "dnp"
-            , kUuid (pageObjectUuid page 2 compIndex)
+            , kUuid (pageObjectUuid uuidSeed page 2 compIndex)
             , emitComponentProperty
                 "Reference"
                 (compRef comp)
@@ -3133,7 +3272,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
               (\pinIndex number ->
                 kNode "pin"
                   [ kString number
-                  , kUuid (pagePinUuid page compIndex pinIndex)
+                  , kUuid (pagePinUuid uuidSeed page compIndex pinIndex)
                   ])
               [1..]
               pinNumbers
@@ -3175,7 +3314,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
             , kYes "in_bom"
             , kYes "on_board"
             , kNo "dnp"
-            , kUuid (pageObjectUuid page 8 powerIndex)
+            , kUuid (pageObjectUuid uuidSeed page 8 powerIndex)
             , kHiddenProperty
                 "Reference"
                 reference
@@ -3183,7 +3322,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
             , powerValueProperty symbol
             , kNode "pin"
                 [ kString "1"
-                , kUuid (pageObjectUuid page 9 powerIndex)
+                , kUuid (pageObjectUuid uuidSeed page 9 powerIndex)
                 ]
             , kNode "instances"
                 [ kNode "project"
@@ -3229,7 +3368,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
             , kNode "end" [kCoord x2, kCoord y2]
             , pageGraphicStroke style
             , pageGraphicFill style
-            , kUuid (pageObjectUuid page 11 graphicIndex)
+            , kUuid (pageObjectUuid uuidSeed page 11 graphicIndex)
             ]
         PageLine style x1 y1 x2 y2 ->
           pagePolyline graphicIndex style [(x1, y1), (x2, y2)] False
@@ -3244,7 +3383,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
                  , kNode "radius" [kDouble rx]
                  , pageGraphicStroke style
                  , pageGraphicFill style
-                 , kUuid (pageObjectUuid page 11 graphicIndex)
+                 , kUuid (pageObjectUuid uuidSeed page 11 graphicIndex)
                  ]
                else pagePolylineMm graphicIndex style
                  (ellipsePoints cx cy rx ry 32) True
@@ -3264,7 +3403,7 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
           [ kNode "pts" [kXy x y | (x, y) <- finalPoints]
           , pageGraphicStroke style
           , pageGraphicFill style
-          , kUuid (pageObjectUuid page 11 graphicIndex)
+          , kUuid (pageObjectUuid uuidSeed page 11 graphicIndex)
           ]
 
     closePoints shouldClose points = case points of
@@ -3309,17 +3448,17 @@ generatePageSch opts _project cacheSymbols multiUnits globalNets hasOffPageRecor
           , kStyledTextEffects size face bold italic
               (Just (pageTextColor (pageTexts page !! (textIndex - 1))))
               ["left", "bottom"]
-          , kUuid (pageObjectUuid page 10 (textIndex * 1000 + lineIndex))
+          , kUuid (pageObjectUuid uuidSeed page 10 (textIndex * 1000 + lineIndex))
           ]
 
-generateRootSch :: String -> [Page] -> String
-generateRootSch project pages =
+generateRootSch :: BS.ByteString -> String -> [Page] -> String
+generateRootSch uuidSeed project pages =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
       , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
-      , kUuid "00000000-0000-4000-8000-000000000002"
+      , kUuid (stableObjectUuid uuidSeed 0 1)
       , kNode "paper" [kString "A3"]
       , kNode "title_block" [kNode "title" [kString (project ++ " (DSN import)")]]
       , kNode "lib_symbols" []
@@ -3346,7 +3485,7 @@ generateRootSch project pages =
            , kYes "fields_autoplaced"
            , kStroke "0.1524" "solid"
            , kNode "fill" [kNode "color" [kInt 0, kInt 0, kInt 0, kInt 0]]
-           , kUuid (stableObjectUuid project 4 idx)
+           , kUuid (stableObjectUuid uuidSeed 4 idx)
            , kProperty
                "Sheetname"
                (pageTitle page)
@@ -4333,33 +4472,192 @@ powerValueCenter useKicadFonts size face bold italic symbol = do
         _ -> (0, nudge)
   pure (topLeftX + boxWidth / 2 + nudgeX, topLeftY + boxHeight / 2 + nudgeY)
 
-pageObjectUuid :: Page -> Int -> Int -> String
-pageObjectUuid page = stableObjectUuid (pageStreamName page)
+pageObjectUuid :: BS.ByteString -> Page -> Int -> Int -> String
+pageObjectUuid seed page category objectIndex =
+  deterministicUuid seed $
+    pageStreamName page ++ ":" ++ show category ++ ":" ++ show objectIndex
 
-pagePinUuid :: Page -> Int -> Int -> String
-pagePinUuid page componentIndex pinIndex =
-  stableObjectUuid
-    (pageStreamName page)
-    3
-    (componentIndex * 1000000 + pinIndex)
+pagePinUuid :: BS.ByteString -> Page -> Int -> Int -> String
+pagePinUuid seed page componentIndex pinIndex =
+  pageObjectUuid seed page 3 (componentIndex * 1000000 + pinIndex)
 
-stableObjectUuid :: String -> Int -> Int -> String
-stableObjectUuid scope category objectIndex =
-  hexPadded 8 (toInteger (stableHash scope))
-  ++ "-" ++ hexPadded 4 (toInteger category)
-  ++ "-4000-8000-"
-  ++ hexPadded 12 (toInteger objectIndex)
+stableObjectUuid :: BS.ByteString -> Int -> Int -> String
+stableObjectUuid seed category objectIndex =
+  deterministicUuid seed (show category ++ ":" ++ show objectIndex)
 
-stableHash :: String -> Word32
-stableHash = foldl hashByte 2166136261
+-- Seed every output from the DSN digest alone.  Explicit object keys include
+-- stable page/stream identity, so source and output filenames need not be part
+-- of the seed and renaming the input does not churn UUIDs.
+deterministicUuid :: BS.ByteString -> String -> String
+deterministicUuid seed objectKey =
+  formatUuid $ setUuidVersionAndVariant $ BS.take 16 $
+    sha256 (seed <> BS.singleton 0 <> utf8Encode objectKey)
+
+setUuidVersionAndVariant :: BS.ByteString -> BS.ByteString
+setUuidVersionAndVariant bytes = BS.pack
+  [ case index of
+      6 -> (value .&. 0x0f) .|. 0x40
+      8 -> (value .&. 0x3f) .|. 0x80
+      _ -> value
+  | (index, value) <- zip [0 :: Int ..] (BS.unpack bytes)
+  ]
+
+formatUuid :: BS.ByteString -> String
+formatUuid bytes =
+  intercalate "-"
+    [ take 8 rendered
+    , take 4 (drop 8 rendered)
+    , take 4 (drop 12 rendered)
+    , take 4 (drop 16 rendered)
+    , take 12 (drop 20 rendered)
+    ]
   where
-    hashByte value char =
-      (value `xor` fromIntegral (ord char)) * 16777619
+    rendered = concatMap hexByte (BS.unpack bytes)
+    hexByte value =
+      let digits = showHex value ""
+      in replicate (2 - length digits) '0' ++ digits
 
-hexPadded :: Int -> Integer -> String
-hexPadded width value =
-  let rendered = showHex value ""
-  in replicate (max 0 (width - length rendered)) '0' ++ rendered
+utf8Encode :: String -> BS.ByteString
+utf8Encode = BS.pack . concatMap encodeChar
+  where
+    encodeChar :: Char -> [Word8]
+    encodeChar char
+      | code <= 0x7f =
+          [fromIntegral code]
+      | code <= 0x7ff =
+          [ fromIntegral (0xc0 .|. (code `shiftR` 6))
+          , fromIntegral (0x80 .|. (code .&. 0x3f))
+          ]
+      | code >= 0xd800 && code <= 0xdfff =
+          encodeCodePoint 0xfffd
+      | code <= 0xffff =
+          encodeCodePoint code
+      | otherwise =
+          [ fromIntegral (0xf0 .|. (code `shiftR` 18))
+          , fromIntegral (0x80 .|. ((code `shiftR` 12) .&. 0x3f))
+          , fromIntegral (0x80 .|. ((code `shiftR` 6) .&. 0x3f))
+          , fromIntegral (0x80 .|. (code .&. 0x3f))
+          ]
+      where
+        code = ord char
+
+    encodeCodePoint :: Int -> [Word8]
+    encodeCodePoint code =
+      [ fromIntegral (0xe0 .|. (code `shiftR` 12))
+      , fromIntegral (0x80 .|. ((code `shiftR` 6) .&. 0x3f))
+      , fromIntegral (0x80 .|. (code .&. 0x3f))
+      ]
+
+type Sha256State =
+  (Word32, Word32, Word32, Word32, Word32, Word32, Word32, Word32)
+
+sha256 :: BS.ByteString -> BS.ByteString
+sha256 input = BS.concat (map word32Be finalWords)
+  where
+    bitLength = fromIntegral (BS.length input) * 8 :: Word64
+    paddingLength = (56 - ((BS.length input + 1) `mod` 64)) `mod` 64
+    padded =
+      input
+      <> BS.singleton 0x80
+      <> BS.replicate paddingLength 0
+      <> word64Be bitLength
+    blocks =
+      [ BS.take 64 (BS.drop offset padded)
+      | offset <- [0, 64 .. BS.length padded - 64]
+      ]
+    initialState =
+      ( 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a
+      , 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+      )
+    finalWords = stateWords (List.foldl' compressSha256 initialState blocks)
+
+compressSha256 :: Sha256State -> BS.ByteString -> Sha256State
+compressSha256 initial block = addSha256States initial compressed
+  where
+    schedule :: Array Int Word32
+    schedule = array (0, 63) $
+      [ (index, word32BeAt block (index * 4))
+      | index <- [0..15]
+      ]
+      ++
+      [ ( index
+        , smallSigma1 (schedule ! (index - 2))
+          + schedule ! (index - 7)
+          + smallSigma0 (schedule ! (index - 15))
+          + schedule ! (index - 16)
+        )
+      | index <- [16..63]
+      ]
+
+    compressed = List.foldl' roundSha256 initial [0..63]
+    roundSha256 (a, b, c, d, e, f, g, h) index =
+      let choice = (e .&. f) `xor` (complement e .&. g)
+          majority = (a .&. b) `xor` (a .&. c) `xor` (b .&. c)
+          temporary1 =
+            h + bigSigma1 e + choice + sha256Constants ! index
+            + schedule ! index
+          temporary2 = bigSigma0 a + majority
+      in (temporary1 + temporary2, a, b, c, d + temporary1, e, f, g)
+
+smallSigma0, smallSigma1, bigSigma0, bigSigma1 :: Word32 -> Word32
+smallSigma0 value =
+  rotateR value 7 `xor` rotateR value 18 `xor` shiftR value 3
+smallSigma1 value =
+  rotateR value 17 `xor` rotateR value 19 `xor` shiftR value 10
+bigSigma0 value =
+  rotateR value 2 `xor` rotateR value 13 `xor` rotateR value 22
+bigSigma1 value =
+  rotateR value 6 `xor` rotateR value 11 `xor` rotateR value 25
+
+addSha256States :: Sha256State -> Sha256State -> Sha256State
+addSha256States
+  (a, b, c, d, e, f, g, h)
+  (a', b', c', d', e', f', g', h') =
+    (a + a', b + b', c + c', d + d', e + e', f + f', g + g', h + h')
+
+stateWords :: Sha256State -> [Word32]
+stateWords (a, b, c, d, e, f, g, h) = [a, b, c, d, e, f, g, h]
+
+word32BeAt :: BS.ByteString -> Int -> Word32
+word32BeAt bytes off =
+  fromIntegral (BS.index bytes off) `shiftL` 24
+  .|. fromIntegral (BS.index bytes (off + 1)) `shiftL` 16
+  .|. fromIntegral (BS.index bytes (off + 2)) `shiftL` 8
+  .|. fromIntegral (BS.index bytes (off + 3))
+
+word32Be :: Word32 -> BS.ByteString
+word32Be value = BS.pack
+  [ fromIntegral (value `shiftR` 24)
+  , fromIntegral (value `shiftR` 16)
+  , fromIntegral (value `shiftR` 8)
+  , fromIntegral value
+  ]
+
+word64Be :: Word64 -> BS.ByteString
+word64Be value = BS.pack
+  [ fromIntegral (value `shiftR` shift)
+  | shift <- [56, 48 .. 0]
+  ]
+
+sha256Constants :: Array Int Word32
+sha256Constants = listArray (0, 63)
+  [ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5
+  , 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5
+  , 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3
+  , 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174
+  , 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc
+  , 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da
+  , 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7
+  , 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967
+  , 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13
+  , 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85
+  , 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3
+  , 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070
+  , 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5
+  , 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3
+  , 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208
+  , 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]
 
 fmt :: Double -> String
 fmt value =

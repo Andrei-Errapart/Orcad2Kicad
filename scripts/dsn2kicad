@@ -45,10 +45,28 @@ if [ ! -x "$BINARY" ]; then
         echo "Install GHC, or use $SCRIPT_DIR/dsn2kicad_py for the Python converter." >&2
         exit 1
     fi
-    mkdir -p "$CACHE_DIR/objects"
-    rm -f "$CACHE_DIR"/dsn2kicad-*
+    mkdir -p "$CACHE_DIR"
+    BUILD_DIR=$(mktemp -d "$CACHE_DIR/.build-$STAMP.XXXXXX")
+    cleanup_build()
+    {
+        rm -rf "$BUILD_DIR"
+    }
+    trap cleanup_build 0
+    trap 'exit 1' HUP INT TERM
+
+    mkdir -p "$BUILD_DIR/objects"
     echo "Compiling dsn2kicad (Haskell) at $BINARY" >&2
-    ghc -O1 -outputdir "$CACHE_DIR/objects" "$HS_SCRIPT" -o "$BINARY" >&2
+    ghc -O1 \
+        -outputdir "$BUILD_DIR/objects" \
+        "$HS_SCRIPT" \
+        -o "$BUILD_DIR/dsn2kicad" >&2
+
+    # BUILD_DIR is inside CACHE_DIR, so this publication is an atomic rename.
+    # Concurrent first launches compile independently and may safely publish
+    # the same content-addressed binary.
+    mv -f "$BUILD_DIR/dsn2kicad" "$BINARY"
+    cleanup_build
+    trap - 0 HUP INT TERM
 fi
 
 exec "$BINARY" "$@"

@@ -29,7 +29,7 @@ CPython runs, including in a browser via Pyodide. See
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet] [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
@@ -39,6 +39,10 @@ standard border, coordinate markers, and title block, but uses page-corner
 anchors with zero margins so it follows the original sheet size instead of
 applying KiCad's default drawing-sheet inset. Output defaults to a directory
 named after the DSN file.
+
+Title, revision, and document-number metadata recovered from the OrCAD Library
+stream is preserved in each generated page's KiCad title block. The document
+number maps to comment field 1, and comment field 2 records the sheet count.
 
 `scripts/dsn2kicad` is the primary entrypoint. It is a shell wrapper around the
 native Haskell implementation in `scripts/dsn2kicad.hs`: on first use it compiles
@@ -56,6 +60,15 @@ the user's cache directory, falling back to the temp directory if needed. Set
 `ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment. The two
 implementations are compared by real-design output and exported-netlist
 regressions; the Python one remains the reference for the browser/Pyodide path.
+The debug-overlay flags are currently implemented by this Python entrypoint
+only:
+
+```
+scripts/dsn2kicad_py [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
+```
+
+Passing one of these flags to `scripts/dsn2kicad` reports that it is
+unimplemented and points to `scripts/dsn2kicad_py`.
 
 OrCAD view names are discovered from `Views/<view>/Pages/<page>` streams; the
 view does not need to be named `SCHEMATIC1`. Conversion fails instead of
@@ -89,16 +102,18 @@ Options:
   KiCad editor as in any native schematic.
 - `--no-worksheet` — Do not emit or reference the project-local worksheet; KiCad
   will use its configured/default drawing sheet instead.
-- `--debug-bbox` — Draw debug rectangles around component bounding boxes.
-- `--debug-ref-val` — Overlay text-placement markers on every component: a red
+- `--debug-bbox` *(Python entrypoint only)* — Draw debug rectangles around
+  component bounding boxes.
+- `--debug-ref-val` *(Python entrypoint only)* — Overlay text-placement markers
+  on every component: a red
   circle at the instance origin (`loc`) tagged with the mirror flag (`H`), plus
   smaller light-grey circles at the raw OrCAD Reference/Value display-prop
   corners before rotation/mirror. For power symbols, the light-grey marker is
   the raw Value display-prop corner interpreted relative to the upper-left
   corner of the OrCAD power-port record bbox.
-- `--debug-symbol` — Draw each symbol's bounding box (the Cache `SymbolBBox`, the
-  pivot for ref/value placement) as a light-blue rectangle. Power-symbol
-  records use their page-record bbox for this overlay.
+- `--debug-symbol` *(Python entrypoint only)* — Draw each symbol's bounding box
+  (the Cache `SymbolBBox`, the pivot for ref/value placement) as a light-blue
+  rectangle. Power-symbol records use their page-record bbox for this overlay.
 
 Reference and Value text is placed from OrCAD display-property records. Each
 record gives the raw page-space top-left corner of the rendered text box. The
@@ -123,9 +138,12 @@ Pin lengths are automatically extended so that pin numbers are readable: each
 pin is at least `(max_chars + 1) * 1.27 mm` long, where `max_chars` is the
 longest pin number in the symbol. Connecting wires are extended to match.
 
-Output UUIDs are deterministic: each output file is seeded with
-`SHA256(DSN content + output filename)`, so changes on one page never
-cause UUID diffs on unrelated pages.
+Output UUIDs are deterministic and content-seeded. The Python converter seeds
+its UUID stream from `SHA256(DSN content + output filename)`. The Haskell
+converter hashes the DSN once, then derives each RFC 4122 version-4 UUID from
+that digest and an explicit object key containing stable page/stream identity.
+Renaming or moving the source DSN therefore does not change its Haskell output
+UUIDs, while different DSN contents do not reuse schematic UUIDs.
 
 Root schematic sheet symbols are placed top-to-bottom, then left-to-right, so
 KiCad's hierarchy navigator follows the original DSN page order. Symbol

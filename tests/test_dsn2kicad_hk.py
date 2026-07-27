@@ -1,7 +1,9 @@
 # Copyright (C) 2026 Andrei Errapart
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Smoke tests for the in-progress Haskell dsn2kicad port."""
+import hashlib
 import json
+import os
 import re
 import shutil
 import struct
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+DSN2KICAD = SCRIPTS_DIR / "dsn2kicad"
 DSN2KICAD_HK = SCRIPTS_DIR / "dsn2kicad.hs"
 DSN2KICAD_PY = SCRIPTS_DIR / "dsn2kicad_py.py"
 PAGE = "Views/SCHEMATIC1/Pages/Page1"
@@ -262,8 +265,165 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
         assert _net_pin_groups(hk_netlist) == _net_pin_groups(py_netlist)
 
 
+@pytest.mark.skipif(shutil.which("ghc") is None, reason="GHC not installed")
+def test_dsn2kicad_wrapper_concurrent_first_launch(dsn_fixtures, tmp_path):
+    page = dsn_fixtures.make_page("01_CONCURRENT")
+    dsn = tmp_path / "concurrent.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page}))
+    cache_dir = tmp_path / "haskell-cache"
+    env = os.environ.copy()
+    env["ORCAD2KICAD_HS_CACHE"] = str(cache_dir)
+
+    processes = [
+        subprocess.Popen(
+            [str(DSN2KICAD), str(dsn), str(tmp_path / f"out-{index}")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        for index in range(2)
+    ]
+    results = [process.communicate(timeout=60) for process in processes]
+
+    for process, (_stdout, stderr) in zip(processes, results):
+        assert process.returncode == 0, stderr
+    assert len(list(cache_dir.glob("dsn2kicad-*"))) == 1
+    assert not list(cache_dir.glob(".build-*"))
+
+
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
-def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path):
+def test_dsn2kicad_hk_rejects_python_only_debug_flags():
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), "--debug-bbox"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert "--debug-bbox is not implemented by scripts/dsn2kicad" in result.stderr
+    assert "scripts/dsn2kicad_py" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
+    page = dsn_fixtures.make_page("01_METADATA")
+    library = dsn_fixtures.make_library(
+        [],
+        title_block={
+            "title": "Evaluation Board",
+            "doc_number": "ACME-XX-24-0001-02",
+            "rev": "1.2",
+        },
+    )
+    dsn = tmp_path / "metadata.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Library": library}))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    tree = kicad_sexpr.parse(
+        (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    )
+    title_block = kicad_sexpr.find_first(tree, "title_block")
+    assert kicad_sexpr.find_first(title_block, "title") == [
+        "title", '"Evaluation Board"',
+    ]
+    assert kicad_sexpr.find_first(title_block, "rev") == ["rev", '"1.2"']
+    assert kicad_sexpr.find_all(title_block, "comment") == [
+        ["comment", "1", '"ACME-XX-24-0001-02"'],
+        ["comment", "2", '"Sheet 1 of 1"'],
+    ]
+
+
+def _expected_haskell_uuid(dsn_bytes, category, object_index):
+    dsn_digest = hashlib.sha256(dsn_bytes).digest()
+    object_key = f"{category}:{object_index}".encode("utf-8")
+    raw = bytearray(hashlib.sha256(dsn_digest + b"\0" + object_key).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return (
+        f"{raw[0:4].hex()}-{raw[4:6].hex()}-{raw[6:8].hex()}-"
+        f"{raw[8:10].hex()}-{raw[10:16].hex()}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_uuids_are_content_seeded(dsn_fixtures, tmp_path):
+    root_uuids = []
+    for variant in ("FIRST", "SECOND"):
+        project_dir = tmp_path / variant.lower()
+        project_dir.mkdir()
+        dsn = project_dir / "identity.DSN"
+        dsn_bytes = dsn_fixtures.make_zip({
+            PAGE: dsn_fixtures.make_page(f"01_{variant}"),
+        })
+        dsn.write_bytes(dsn_bytes)
+        out_dir = project_dir / "out"
+
+        result = subprocess.run(
+            [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+        root_text = (out_dir / "identity.kicad_sch").read_text(encoding="utf-8")
+        root_uuid = re.search(r'\(uuid "([0-9a-f-]+)"\)', root_text).group(1)
+        assert root_uuid == _expected_haskell_uuid(dsn_bytes, 0, 1)
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            root_uuid,
+        )
+        root_uuids.append(root_uuid)
+
+    assert root_uuids[0] != root_uuids[1]
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_uuids_do_not_depend_on_source_filename(
+    dsn_fixtures, tmp_path
+):
+    dsn_bytes = dsn_fixtures.make_zip({
+        PAGE: dsn_fixtures.make_page("01_RENAMED"),
+    })
+    root_uuids = []
+
+    for source_name in ("original.DSN", "renamed.DSN"):
+        project_dir = tmp_path / Path(source_name).stem
+        project_dir.mkdir()
+        dsn = project_dir / source_name
+        dsn.write_bytes(dsn_bytes)
+        out_dir = project_dir / "out"
+
+        result = subprocess.run(
+            [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+        root_text = (out_dir / f"{dsn.stem}.kicad_sch").read_text(encoding="utf-8")
+        root_uuids.append(
+            re.search(r'\(uuid "([0-9a-f-]+)"\)', root_text).group(1)
+        )
+
+    assert root_uuids[0] == root_uuids[1]
+
+
+@pytest.mark.parametrize("sector_size", [512, 4096])
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path, sector_size):
     note_page = dsn_fixtures.make_page("01_NOTE")
     main_page = dsn_fixtures.make_page(
         "02_MAIN",
@@ -276,11 +436,16 @@ def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path):
     })
     dsn = tmp_path / "synthetic-ole.DSN"
     out_dir = tmp_path / "out"
-    dsn.write_bytes(dsn_fixtures.make_ole({
-        "Views/SYNTHETIC/Pages/Page Note": note_page,
-        "Views/SYNTHETIC/Pages/Page Main": main_page,
-        "Cache": cache,
-    }))
+    dsn.write_bytes(
+        dsn_fixtures.make_ole(
+            {
+                "Views/SYNTHETIC/Pages/Page Note": note_page,
+                "Views/SYNTHETIC/Pages/Page Main": main_page,
+                "Cache": cache,
+            },
+            sector_size=sector_size,
+        )
+    )
 
     result = subprocess.run(
         [str(DSN2KICAD_HK), str(dsn), str(out_dir)],

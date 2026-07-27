@@ -25,7 +25,6 @@ import Data.List
   , isInfixOf
   , isPrefixOf
   , isSuffixOf
-  , maximumBy
   , sortOn
   )
 import qualified Data.List as List
@@ -130,8 +129,7 @@ data NetLabel = NetLabel
   deriving (Eq, Ord, Show)
 
 data OffPageConnector = OffPageConnector
-  { offPageRecordName :: String
-  , offPageNetName :: String
+  { offPageNetName :: String
   , offPageX :: Int
   , offPageY :: Int
   , offPageAngle :: Int
@@ -146,7 +144,6 @@ data Component = Component
   , compX :: Int
   , compY :: Int
   , compOrient :: Int
-  , compValueIdx :: Maybe Int
   , compPagePins :: [PagePin]
   , compLocX :: Int
   , compLocY :: Int
@@ -178,8 +175,7 @@ data PowerStyle = PowerGround | PowerRail | PowerCircle
   deriving (Eq, Ord, Show)
 
 data PowerSymbol = PowerSymbol
-  { powerRecordName :: String
-  , powerNetName :: String
+  { powerNetName :: String
   , powerStyle :: PowerStyle
   , powerCoords :: (Int, Int, Int, Int, Int, Int)
   , powerOrient :: Int
@@ -448,10 +444,13 @@ pageStreamPath path =
     _ -> Nothing
 
 splitSlash :: String -> [String]
-splitSlash value =
-  case break (== '/') value of
+splitSlash = splitOn '/'
+
+splitOn :: Char -> String -> [String]
+splitOn separator value =
+  case break (== separator) value of
     (part, []) -> [part]
-    (part, _:rest) -> part : splitSlash rest
+    (part, _:rest) -> part : splitOn separator rest
 
 writeOutput :: Options -> [(FilePath, String)] -> IO ()
 writeOutput opts files = do
@@ -702,13 +701,14 @@ readMiniSectorChainBytesTake miniStream miniSectorSize miniFat startSid size = d
 sectorChain :: Map.Map Int Word32 -> Word32 -> Either String [Word32]
 sectorChain table startSid = go Map.empty [] startSid
   where
-    limit = Map.size table + 1
-
+    -- Termination rests on `seen`: every visited sector is recorded, and a
+    -- sector missing from the FAT ends the walk, so the chain cannot outrun the
+    -- table.  An additional length check would be redundant and, because it
+    -- measured the accumulator, quadratic in the chain length.
     go seen acc sid
       | sid == endOfChain = Right (reverse acc)
       | not (isRegularSector sid) =
           Left ("unexpected OLE sector marker in chain: " ++ showHex32 sid)
-      | length acc > limit = Left "OLE sector chain is longer than the FAT"
       | Map.member (fromIntegral sid :: Int) seen = Left "OLE sector chain cycle"
       | otherwise = do
           sidInt <- word32ToInt "OLE sector id" sid
@@ -1069,11 +1069,13 @@ assignPowerReferences pages = Map.fromList (zip keys references)
       | page <- pages
       , powerIndex <- [1 .. length (pagePowerSymbols page)]
       ]
-    references = ["#PWR" ++ padNumber index | index <- [1 :: Int ..]]
+    references = map powerReferenceName [1 :: Int ..]
 
-    padNumber index =
-      let rendered = show index
-      in replicate (max 0 (2 - length rendered)) '0' ++ rendered
+-- Power symbols get project-wide sequential references (#PWR01, #PWR02, ...).
+powerReferenceName :: Int -> String
+powerReferenceName index =
+  let rendered = show index
+  in "#PWR" ++ replicate (max 0 (2 - length rendered)) '0' ++ rendered
 
 wirePoint1 :: Wire -> (Int, Int)
 wirePoint1 wire = (wireX1 wire, wireY1 wire)
@@ -1273,12 +1275,15 @@ synthesizeBusEntries busWires regularWires =
         ]
       points <- Map.lookup busName busPoints
       firstJust
-        [ nearestEntry endpoint points
+        [ busEntryAt endpoint points
         | endpoint <- [wirePoint1 wire, wirePoint2 wire]
         ]
 
-    nearestEntry (x, y) points =
-      case sortOn snd
+    -- A bus entry is the diagonal stub between a member wire's endpoint and the
+    -- bus it taps.  Every candidate is one grid step away on both axes, so they
+    -- are all equidistant; ordering by (dy, dx) just picks one deterministically.
+    busEntryAt (x, y) points =
+      case sortOn (\(dx, dy) -> (dy, dx))
         [ (dx, dy)
         | (busX, busY) <- Set.toList points
         , let dx = busX - x
@@ -1346,7 +1351,6 @@ parseComponents libraryValues nets body =
         , compX = rawX
         , compY = rawY
         , compOrient = orient
-        , compValueIdx = valueIdx
         , compPagePins = parsePagePins nets body cellEnd searchEnd
         , compLocX = locX
         , compLocY = locY
@@ -1462,8 +1466,7 @@ parseOffPageConnectors body = mapMaybe parseAt (findAll recordMarker body)
       guard (x1 /= x2 || y1 /= y2)
       let ((hotX, hotY), angle) = offPageHotpoint name (x1, y1, x2, y2) orient
       pure OffPageConnector
-        { offPageRecordName = name
-        , offPageNetName = ""
+        { offPageNetName = ""
         , offPageX = hotX
         , offPageY = hotY
         , offPageAngle = angle
@@ -1564,8 +1567,7 @@ parsePowerSymbols body =
       let (hotX, hotY) = transformPowerAnchor style coords orient
           (valueOffset, valueRotation) = parsePowerDisplay afterNull
       pure PowerSymbol
-        { powerRecordName = name
-        , powerNetName = name
+        { powerNetName = name
         , powerStyle = style
         , powerCoords = coords
         , powerOrient = orient
@@ -1581,8 +1583,7 @@ parsePowerSymbols body =
       y <- fromIntegral <$> word16LE body (idx + 29)
       guard (x > 0 && x < 5000 && y > 0 && y < 5000)
       pure PowerSymbol
-        { powerRecordName = "0"
-        , powerNetName = "0"
+        { powerNetName = "0"
         , powerStyle = PowerGround
         , powerCoords = (0, 0, 0, 0, x, y)
         , powerOrient = 0
@@ -1704,14 +1705,16 @@ parsePageTexts paper body = mapMaybe parseAt (findAll textRecordType body)
     titleX = pageWidth - 300
     titleY = pageHeight - 150
 
+    -- Signed, like the graphic records: reading these as unsigned turned a
+    -- negative coordinate into ~4 billion, which the bounds guard then dropped.
     parseAt idx = do
-      x1 <- fromIntegral <$> word32LE body (idx + 12)
-      y1 <- fromIntegral <$> word32LE body (idx + 16)
-      x2 <- fromIntegral <$> word32LE body (idx + 20)
-      y2 <- fromIntegral <$> word32LE body (idx + 24)
-      x3 <- fromIntegral <$> word32LE body (idx + 28)
-      y3 <- fromIntegral <$> word32LE body (idx + 32)
-      guard (all (<= 30000) [x1, y1, x2, y2, x3, y3])
+      x1 <- int32LE body (idx + 12)
+      y1 <- int32LE body (idx + 16)
+      x2 <- int32LE body (idx + 20)
+      y2 <- int32LE body (idx + 24)
+      x3 <- int32LE body (idx + 28)
+      y3 <- int32LE body (idx + 32)
+      guard (all ((<= 30000) . abs) [x1, y1, x2, y2, x3, y3])
       guard (not (x1 > titleX && y1 > titleY))
       styleId <- fromIntegral <$> word16LE body (idx + 36)
       textLen <- fromIntegral <$> word16LE body (idx + 40)
@@ -1911,20 +1914,32 @@ enumerateU16Strings body = go 0
                    _ -> go (off + 1)
             Nothing -> []
 
+-- A title block is located by finding the drawing's document number in the
+-- Library string table.  The pattern is deliberately narrow -- "EP<digit><AA>",
+-- the literal issuer group "AB", then two-to-four-digit groups, as in
+-- "ACME-XX-24-0001" -- and only that one issuer's drawings get a title block;
+-- every other design falls back to the page name.
+--
+-- Do NOT relax this into a generic "letters-letters-digits-digits" shape.  That
+-- was tried: ordinary manufacturer part numbers share it (the corpus contains
+-- "CONN-AF-01-001" and "CONN-AF-04-002"), and matching one promotes an unrelated
+-- component string into the sheet title -- strictly worse than no title block.
+-- Recognising further issuers needs a real signal, such as a Library field that
+-- identifies the document number, not a looser shape.
 isDocumentNumber :: String -> Bool
-isDocumentNumber ('E':'P':digit:firstLetter:secondLetter:'-':'A':'B':rest) =
-  isDigit digit
-  && isUpperAscii firstLetter
-  && isUpperAscii secondLetter
-  && validGroups rest
+isDocumentNumber value =
+  case splitOn '-' value of
+    prefixGroup : "AB" : numberGroups ->
+      isPrefixGroup prefixGroup
+      && not (null numberGroups)
+      && all isNumberGroup numberGroups
+    _ -> False
   where
-    validGroups ('-':value) =
-      let (digits, remaining) = span isDigit value
-      in length digits >= 2
-         && length digits <= 4
-         && (null remaining || validGroups remaining)
-    validGroups _ = False
-isDocumentNumber _ = False
+    isPrefixGroup ['E', 'P', digit, firstLetter, secondLetter] =
+      isDigit digit && isUpperAscii firstLetter && isUpperAscii secondLetter
+    isPrefixGroup _ = False
+    isNumberGroup group =
+      length group >= 2 && length group <= 4 && all isDigit group
 
 isRevision :: String -> Bool
 isRevision value =
@@ -1997,8 +2012,7 @@ refinePageComponents cacheSymbols page = page
               originsFor orient = mapMaybe (pinOrigin orient pins center)
                 (compPagePins component)
               candidates =
-                [ (orient, mapMaybe (pinOrigin orient pins center)
-                    (compPagePins component))
+                [ (orient, originsFor orient)
                 | orient <- [0..7]
                 , orient /= compOrient component
                 ]
@@ -2258,14 +2272,21 @@ parseCacheSymbols body = Map.mapWithKey attachPinNumbers parsedSymbols
 
     setDefaultNumber pinIndex pin = pin { pinNumber = show pinIndex }
 
-    parsePin idx = do
-      zeros <- word32LE body (idx + 4)
-      guard (zeros == 0)
-      nameLen <- word16LE body (idx + 8)
-      guard (nameLen >= 1 && nameLen <= 200)
-      name <- asciiAt body (idx + 10) (fromIntegral nameLen)
-      let nameEnd = idx + 10 + fromIntegral nameLen
+    -- Shared tail of every cache pin encoding: a NUL-terminated,
+    -- length-prefixed name at `nameLenPos`, then body and hot coordinates and a
+    -- flags byte.  Only the preamble ahead of the name length tells the record
+    -- marker form apart from the two Capture 7.x forms.  `limit` is the end of
+    -- the cell's region where the caller scans a byte pattern rather than a
+    -- self-delimiting record.
+    pinFromNameAt nameLenPos limit = do
+      nameLenWord <- word16LE body nameLenPos
+      let nameLen = fromIntegral nameLenWord
+          namePos = nameLenPos + 2
+          nameEnd = namePos + nameLen
           coordOff = nameEnd + 1
+      guard (nameLen >= 1 && nameLen <= 200)
+      guard (maybe True (\scanEnd -> coordOff + 18 <= scanEnd) limit)
+      name <- asciiAt body namePos nameLen
       guard (byteAt body nameEnd == Just 0)
       bx <- int32LE body coordOff
       by <- int32LE body (coordOff + 4)
@@ -2282,6 +2303,11 @@ parseCacheSymbols body = Map.mapWithKey attachPinNumbers parsedSymbols
         , pinBodyY = by
         , pinFlags = fromIntegral flags
         }
+
+    parsePin idx = do
+      zeros <- word32LE body (idx + 4)
+      guard (zeros == 0)
+      pinFromNameAt (idx + 8) Nothing
 
     -- Capture 7.x caches use ordinary structure prefixes instead of the
     -- record marker introduced by later releases.  The scalar/bus tag is
@@ -2292,54 +2318,9 @@ parseCacheSymbols body = Map.mapWithKey attachPinNumbers parsedSymbols
     parseLegacyPin scanEnd idx = do
       pinKind <- word16LE body (idx + 5)
       guard (pinKind `elem` [0x19, 0x1a, 0x26])
-      nameLenWord <- word16LE body (idx + 7)
-      let nameLen = fromIntegral nameLenWord
-          namePos = idx + 9
-          nameEnd = namePos + nameLen
-          coordOff = nameEnd + 1
-      guard (nameLen >= 1 && nameLen <= 200 && coordOff + 18 <= scanEnd)
-      name <- asciiAt body namePos nameLen
-      guard (byteAt body nameEnd == Just 0)
-      bx <- int32LE body coordOff
-      by <- int32LE body (coordOff + 4)
-      hx <- int32LE body (coordOff + 8)
-      hy <- int32LE body (coordOff + 12)
-      flags <- byteAt body (coordOff + 16)
-      guard (all (\v -> abs v < 5000) [bx, by, hx, hy])
-      pure Pin
-        { pinName = name
-        , pinNumber = ""
-        , pinHotX = hx
-        , pinHotY = hy
-        , pinBodyX = bx
-        , pinBodyY = by
-        , pinFlags = fromIntegral flags
-        }
+      pinFromNameAt (idx + 7) (Just scanEnd)
 
-    parseCompactLegacyPin scanEnd idx = do
-      nameLenWord <- word16LE body (idx + 3)
-      let nameLen = fromIntegral nameLenWord
-          namePos = idx + 5
-          nameEnd = namePos + nameLen
-          coordOff = nameEnd + 1
-      guard (nameLen >= 1 && nameLen <= 200 && coordOff + 18 <= scanEnd)
-      name <- asciiAt body namePos nameLen
-      guard (byteAt body nameEnd == Just 0)
-      bx <- int32LE body coordOff
-      by <- int32LE body (coordOff + 4)
-      hx <- int32LE body (coordOff + 8)
-      hy <- int32LE body (coordOff + 12)
-      flags <- byteAt body (coordOff + 16)
-      guard (all (\v -> abs v < 5000) [bx, by, hx, hy])
-      pure Pin
-        { pinName = name
-        , pinNumber = ""
-        , pinHotX = hx
-        , pinHotY = hy
-        , pinBodyX = bx
-        , pinBodyY = by
-        , pinFlags = fromIntegral flags
-        }
+    parseCompactLegacyPin scanEnd idx = pinFromNameAt (idx + 3) (Just scanEnd)
 
 parseCachePinNumbers :: [String] -> BS.ByteString -> Map.Map String [String]
 parseCachePinNumbers cellNames body =
@@ -2873,7 +2854,8 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       , kNode "paper" [kString (pagePaper page)]
       , emitTitleBlock
       , kNode "lib_symbols"
-          (map emitUsedSymbol usedCells ++ map emitPowerDefinition powerDefinitions)
+          (emitSymbolDefinitions opts cacheSymbols multiUnits
+            (pageComponents page) (pagePowerSymbols page))
       ]
       ++ zipWith emitWire [1..] regularWires
       ++ zipWith emitRcBridge [1..] rcBridgePairs
@@ -2914,35 +2896,6 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
 
     (fieldSize, fieldFace, fieldBold, fieldItalic) =
       defaultComponentTextStyle (optKicadFonts opts) textStyles
-
-    usedCells = Map.elems $ Map.fromListWith (\_ earlier -> earlier)
-      [ (componentLibName opts multiUnits (compCell comp), compCell comp)
-      | comp <- pageComponents page
-      ]
-
-    emitUsedSymbol cellName
-      | optKicadRc opts && cellName `elem` ["R", "C"] =
-          libStandardDeviceSymbol cellName
-      | otherwise =
-          let (libName, _) = componentUnitInfo multiUnits cellName
-          in case Map.lookup libName (multiUnitGroups multiUnits) of
-               Just units -> libMultiUnitSymbol libName units cacheSymbols
-               Nothing -> libSymbol
-                 (libName, Map.findWithDefault emptyCacheSymbol libName cacheSymbols)
-
-    powerDefinitions = Map.toAscList $ Map.fromListWith preferPowerStyle
-      [ (powerLibName opts symbol, powerStyle symbol)
-      | symbol <- pagePowerSymbols page
-      , not (null (powerNetName symbol))
-      ]
-
-    preferPowerStyle PowerGround _ = PowerGround
-    preferPowerStyle _ PowerGround = PowerGround
-    preferPowerStyle new _ = new
-
-    emitPowerDefinition (name, style)
-      | optKicadPower opts = libStandardPowerSymbol name
-      | otherwise = libPowerSymbol name style
 
     emitWire wireIndex wire =
       let (x1, y1) = adjustedWirePoint wire (wireX1 wire, wireY1 wire)
@@ -3303,7 +3256,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       let x = powerHotX symbol
           y = powerHotY symbol
           reference = Map.findWithDefault
-            ("#PWR" ++ show powerIndex)
+            (powerReferenceName powerIndex)
             (pageStreamName page, powerIndex)
             powerRefs
           fields =
@@ -3426,7 +3379,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       in kPageFill fillType color
 
     emitPageText textIndex pageText =
-      [ emitTextLine textIndex lineIndex lineText style size rotation x y
+      [ emitTextLine textIndex lineIndex lineText pageText style size rotation x y
       | (lineIndex, lineText) <- zip [(1 :: Int)..] textLines
       , let (x, y) = pageTextLinePosition pageText size rotation
               (lineIndex - 1) (length textLines)
@@ -3437,7 +3390,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
         textLines = nonEmptyTextLines (pageTextValue pageText)
         size = pageTextSize (optKicadFonts opts) pageText style textLines rotation
 
-    emitTextLine textIndex lineIndex lineText style size rotation x y =
+    emitTextLine textIndex lineIndex lineText pageText style size rotation x y =
       let face = if optKicadFonts opts then "" else maybe "" textStyleFace style
           bold = maybe False ((== 700) . textStyleWeight) style
           italic = maybe False textStyleItalic style
@@ -3446,7 +3399,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
           , kNo "exclude_from_sim"
           , kAt [kDouble x, kDouble y, kInt rotation]
           , kStyledTextEffects size face bold italic
-              (Just (pageTextColor (pageTexts page !! (textIndex - 1))))
+              (Just (pageTextColor pageText))
               ["left", "bottom"]
           , kUuid (pageObjectUuid uuidSeed page 10 (textIndex * 1000 + lineIndex))
           ]
@@ -3470,9 +3423,21 @@ generateRootSch uuidSeed project pages =
          , kNo "embedded_fonts"
          ]
   where
+    -- The index sheet is A3 (420 x 297 mm).  Columns are filled top to bottom;
+    -- growing the column height before adding columns keeps wide designs on the
+    -- sheet instead of running off the right edge.  At most 6 columns fit
+    -- (15 + 5 * 68 + 60 = 415) and at most 15 rows (25 + 14 * 17 + 12 = 275),
+    -- and the four-row default is preserved for the designs that already fit.
+    maxSheetColumns, maxSheetRows :: Int
+    maxSheetColumns = 6
+    maxSheetRows = 15
+    rowsPerColumn =
+      max 4 $ min maxSheetRows $
+        (length pages + maxSheetColumns - 1) `div` maxSheetColumns
+
     emitSheet (idx, page) =
-      let row = (idx - 1) `mod` 4
-          col = (idx - 1) `div` 4
+      let row = (idx - 1) `mod` rowsPerColumn
+          col = (idx - 1) `div` rowsPerColumn
           x = 15 + col * 68
           y = 25 + row * 17
       in kNode "sheet"
@@ -3505,13 +3470,27 @@ generateSymbolLibrary opts cacheSymbols multiUnits pages =
       , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
       ]
-      ++ map emitUsedSymbol usedCells
-      ++ map emitPowerDefinition powerDefinitions
+      ++ emitSymbolDefinitions opts cacheSymbols multiUnits
+           [comp | page <- pages, comp <- pageComponents page]
+           [symbol | page <- pages, symbol <- pagePowerSymbols page]
+
+-- Symbol definitions for a set of placed components and power symbols: one
+-- definition per referenced component cell, then one per power glyph.  A page's
+-- embedded `lib_symbols` cache and the project-wide .kicad_sym are the same
+-- list; they differ only in whether the scope is one page or all of them.
+emitSymbolDefinitions
+  :: Options
+  -> Map.Map String CacheSymbol
+  -> MultiUnitRegistry
+  -> [Component]
+  -> [PowerSymbol]
+  -> [KExpr]
+emitSymbolDefinitions opts cacheSymbols multiUnits components powerSymbols =
+  map emitUsedSymbol usedCells ++ map emitPowerDefinition powerDefinitions
   where
     usedCells = Map.elems $ Map.fromListWith (\_ earlier -> earlier)
       [ (componentLibName opts multiUnits (compCell comp), compCell comp)
-      | page <- pages
-      , comp <- pageComponents page
+      | comp <- components
       ]
 
     emitUsedSymbol cellName
@@ -3526,8 +3505,7 @@ generateSymbolLibrary opts cacheSymbols multiUnits pages =
 
     powerDefinitions = Map.toAscList $ Map.fromListWith preferPowerStyle
       [ (powerLibName opts symbol, powerStyle symbol)
-      | page <- pages
-      , symbol <- pagePowerSymbols page
+      | symbol <- powerSymbols
       , not (null (powerNetName symbol))
       ]
 
@@ -4308,6 +4286,31 @@ textBoxDims useKicadFonts text sizeMm face bold italic = (width, height)
     heightRef = if useKicadFonts then "0" else text
     height = measureTextHeight heightRef sizeMm mface bold italic * comp
 
+-- OrCAD's display-prop (x, y) lands at the axis-aligned top-left of the rendered
+-- text box; KiCad anchors text at its centre.  Convert between them, measuring
+-- the box with real per-glyph metrics (a char-count estimate is off by ~0.8 mm
+-- horizontally and ~0.9 mm vertically) and applying the perpendicular nudge from
+-- the OrCAD em-box top to the cap-height top -- an empirical fraction of the
+-- font size that aligns with OrCAD's PDF.  Both component Reference/Value fields
+-- and power-symbol values are placed this way.
+orcadTextTopLeftToCenter
+  :: Bool -> String -> Double -> String -> Bool -> Bool -> Int
+  -> (Double, Double) -> (Double, Double)
+orcadTextTopLeftToCenter
+  useKicadFonts text size face bold italic angle (topLeftX, topLeftY) =
+    (topLeftX + boxWidth / 2 + nudgeX, topLeftY + boxHeight / 2 + nudgeY)
+  where
+    (textWidth, textHeight) = textBoxDims useKicadFonts text size face bold italic
+    (boxWidth, boxHeight) = if angle `elem` [90, 270]
+      then (textHeight, textWidth)
+      else (textWidth, textHeight)
+    nudge = 0.416 * size
+    (nudgeX, nudgeY) = case angle of
+      90 -> (nudge, 0)
+      180 -> (0, -nudge)
+      270 -> (-nudge, 0)
+      _ -> (0, nudge)
+
 componentFieldAt
   :: Options -> Component -> DisplayField -> String -> Double
   -> String -> Bool -> Bool -> KExpr
@@ -4326,25 +4329,9 @@ componentFieldAt opts component field value size face bold italic =
     originY = fromIntegral (compLocY component)
     topLeftX = (originX + fromIntegral (displayOffsetX field)) * unitToMm
     topLeftY = (originY + fromIntegral (displayOffsetY field)) * unitToMm
-    -- OrCAD's display-prop (x, y) lands at the axis-aligned top-left of the
-    -- rendered text box; convert to the centre anchor KiCad wants. Rendered box
-    -- dimensions come from real per-glyph metrics, not a char count.
-    (textWidth, textHeight) =
-      textBoxDims (optKicadFonts opts) value size face bold italic
-    (boxWidth, boxHeight) = if absoluteAngle `elem` [90, 270]
-      then (textHeight, textWidth)
-      else (textWidth, textHeight)
-    -- Perpendicular offset from the OrCAD em-box top to the field centre: the
-    -- empirical fraction of the font size between the em-box top and cap-height
-    -- top that aligns with OrCAD's PDF. Direction follows the text angle.
-    nudge = 0.416 * size
-    (nudgeX, nudgeY) = case absoluteAngle of
-      90 -> (nudge, 0)
-      180 -> (0, -nudge)
-      270 -> (-nudge, 0)
-      _ -> (0, nudge)
-    centerX = topLeftX + boxWidth / 2 + nudgeX
-    centerY = topLeftY + boxHeight / 2 + nudgeY
+    (centerX, centerY) =
+      orcadTextTopLeftToCenter (optKicadFonts opts) value size face bold italic
+        absoluteAngle (topLeftX, topLeftY)
 
 defaultComponentTextStyle :: Bool -> [TextStyle] -> (Double, String, Bool, Bool)
 defaultComponentTextStyle useKicadFonts styles =
@@ -4401,15 +4388,21 @@ pageTextSize useKicadFonts pageText style textLines rotation =
     readingWidth = if rotated then physicalHeight else physicalWidth
     readingHeight = if rotated then physicalWidth else physicalHeight
     lineCount = max 1 (length textLines)
-    -- Size the text so the widest line's rendered width matches the bbox width,
-    -- using real per-glyph metrics (mirrors generate_page_sch in dsn2kicad.py).
+    -- Size the text so the longest line's rendered width matches the bbox width.
+    -- The line is chosen by character count and only then measured with real
+    -- per-glyph metrics, mirroring `max(lines, key=len)` in dsn2kicad_py.py --
+    -- including its tie-break, which keeps the *first* longest line (maximumBy
+    -- would have kept the last).
     face = maybe "" textStyleFace style
     bold = maybe False ((== 700) . textStyleWeight) style
     italic = maybe False textStyleItalic style
     mface = measureFaceName useKicadFonts face
-    widestLine = if null textLines
-      then ""
-      else maximumBy (\a b -> compare (length a) (length b)) textLines
+    widestLine = case textLines of
+      [] -> ""
+      firstLine : rest -> foldl longerLine firstLine rest
+    longerLine best candidate
+      | length candidate > length best = candidate
+      | otherwise = best
     widthAtOne = max 1.0e-3 (measureTextWidth widestLine 1.0 mface bold italic)
     -- Outline inflates both axes by 1.4; the Newstroke stroke font inflates
     -- advance widths ~1.0x but caps ~1.12x, so width and height differ.
@@ -4452,11 +4445,8 @@ powerValueAngle symbol =
       relative = (angle - powerSymbolAngle symbol) `mod` 360
   in if relative >= 180 then relative - 180 else relative
 
--- Returns the KiCad centre anchor in **millimetres**. OrCAD's display-prop
--- (x, y) is the axis-aligned top-left of the rendered text box, so the box has
--- to be measured with real per-glyph metrics (a char-count estimate is off by
--- ~0.8 mm horizontally and ~0.9 mm vertically) and nudged the same way
--- component Reference/Value fields are.
+-- Returns the KiCad centre anchor in **millimetres** for a power symbol's value
+-- text, placed the same way component Reference/Value fields are.
 powerValueCenter
   :: Bool -> Double -> String -> Bool -> Bool -> PowerSymbol
   -> Maybe (Double, Double)
@@ -4465,19 +4455,10 @@ powerValueCenter useKicadFonts size face bold italic symbol = do
   let (_, _, y2, x2, x1, y1) = powerCoords symbol
       topLeftX = fromIntegral (min x1 x2 + offX) * unitToMm
       topLeftY = fromIntegral (min y1 y2 + offY) * unitToMm
-      (textWidth, textHeight) =
-        textBoxDims useKicadFonts (powerNetName symbol) size face bold italic
       rotation = fromMaybe 0 (powerValueRotation symbol)
-      (boxWidth, boxHeight) = if rotation `elem` [90, 270]
-        then (textHeight, textWidth)
-        else (textWidth, textHeight)
-      nudge = 0.416 * size
-      (nudgeX, nudgeY) = case rotation of
-        90 -> (nudge, 0)
-        180 -> (0, -nudge)
-        270 -> (-nudge, 0)
-        _ -> (0, nudge)
-  pure (topLeftX + boxWidth / 2 + nudgeX, topLeftY + boxHeight / 2 + nudgeY)
+  pure $
+    orcadTextTopLeftToCenter useKicadFonts (powerNetName symbol) size face bold
+      italic rotation (topLeftX, topLeftY)
 
 pageObjectUuid :: BS.ByteString -> Page -> Int -> Int -> String
 pageObjectUuid seed page category objectIndex =

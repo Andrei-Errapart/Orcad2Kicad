@@ -784,6 +784,131 @@ def test_dsn2kicad_hk_extends_pin_hotpoints_and_wires(dsn_fixtures, tmp_path):
     ]
 
 
+def _placed_pin_points(out_dir, project, page, lib_id):
+    """Absolute mm positions of a placed symbol's pins on the page.
+
+    KiCad resolves a pin by adding the symbol-local pin coordinate to the
+    placement anchor, negating Y because symbol space points up.  Only
+    unrotated, unmirrored placements are handled -- enough to check that the two
+    emitted numbers still sum to the pin's true page position.
+    """
+    symbol_tree = kicad_sexpr.parse(
+        (out_dir / f"{project}.kicad_sym").read_text(encoding="utf-8")
+    )
+    definition = next(
+        node
+        for node in kicad_sexpr.find_all(symbol_tree, "symbol")
+        if kicad_sexpr.strip_quotes(node[1]) == lib_id
+    )
+    local = [
+        tuple(kicad_sexpr.to_float(v) for v in kicad_sexpr.find_first(pin, "at")[1:3])
+        for unit in kicad_sexpr.find_all(definition, "symbol")
+        for pin in kicad_sexpr.find_all(unit, "pin")
+    ]
+
+    page_tree = kicad_sexpr.parse(
+        (out_dir / f"{page}.kicad_sch").read_text(encoding="utf-8")
+    )
+    placement = next(
+        node
+        for node in kicad_sexpr.find_all(page_tree, "symbol")
+        if (kicad_sexpr.find_first(node, "lib_id")
+            and kicad_sexpr.strip_quotes(
+                kicad_sexpr.find_first(node, "lib_id")[1]) == lib_id)
+    )
+    at = kicad_sexpr.find_first(placement, "at")
+    anchor_x, anchor_y = (kicad_sexpr.to_float(v) for v in at[1:3])
+    assert kicad_sexpr.to_float(at[3]) == 0
+    assert kicad_sexpr.find_first(placement, "mirror") is None
+    return {
+        (round(anchor_x + lx, 6), round(anchor_y - ly, 6)) for lx, ly in local
+    }
+
+
+def _wire_endpoints(out_dir, page):
+    points = set()
+    tree = kicad_sexpr.parse(
+        (out_dir / f"{page}.kicad_sch").read_text(encoding="utf-8")
+    )
+    for wire in kicad_sexpr.find_all(tree, "wire"):
+        for point in kicad_sexpr.find_all(kicad_sexpr.find_first(wire, "pts"), "xy"):
+            points.add(tuple(
+                round(kicad_sexpr.to_float(value), 6) for value in point[1:3]
+            ))
+    return points
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_pins_land_exactly_on_their_wires(dsn_fixtures, tmp_path):
+    """Symbol pins must coincide *exactly* with the wires that reach them.
+
+    KiCad connects a pin to a wire only when the two points are identical, so a
+    sub-grid discrepancy silently drops the pin off its net.  Two roundings used
+    to introduce one:
+
+    ODDY spans an odd number of units between its hot points, so the symbol
+    origin -- the point every symbol-local coordinate is measured from -- landed
+    on a half unit while the placement anchor stayed whole, shifting every pin
+    0.127 mm.
+
+    WIDE places a pin where the anchor (826 units -> 209.804 mm) and the local
+    offset (178 units -> 45.212 mm) each round down at two decimals, so their sum
+    came out 255.01 instead of the wire's 255.02.
+    """
+    page = dsn_fixtures.make_page(
+        "01_GRID",
+        nets={1: "ODD_A", 2: "ODD_B", 3: "WIDE_L", 4: "WIDE_R"},
+        wires=[
+            (1, 100, 200, 150, 200),
+            (2, 100, 225, 150, 225),
+            (3, 648, 300, 600, 300),
+            (4, 1004, 300, 1050, 300),
+        ],
+        components=[
+            (
+                "ODDY", "U1", 0, 100, 200, 0,
+                [(1, 100, 200, 1), (2, 100, 225, 2)],
+            ),
+            (
+                "WIDE", "U2", 0, 826, 300, 0,
+                [(1, 648, 300, 3), (2, 1004, 300, 4)],
+            ),
+        ],
+    )
+    cache = dsn_fixtures.make_cache({
+        # Hot Y extent 0..25 sums to an odd number of units.
+        "ODDY": [
+            ("A", -30, 0, -10, 0, 0x21),
+            ("B", -30, 25, -10, 25, 0x21),
+        ],
+        "WIDE": [
+            ("L", -178, 0, -158, 0, 0x21),
+            ("R", 178, 0, 158, 0, 0x21),
+        ],
+    })
+    dsn = tmp_path / "grid.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+    wires = _wire_endpoints(out_dir, "Page1")
+    odd = _placed_pin_points(out_dir, "grid", "Page1", "ODDY")
+    wide = _placed_pin_points(out_dir, "grid", "Page1", "WIDE")
+
+    # The OrCAD page coordinates the pins were parsed at, in millimetres.
+    assert odd == {(100 * 0.254, 200 * 0.254), (100 * 0.254, 225 * 0.254)}
+    assert wide == {(648 * 0.254, 300 * 0.254), (1004 * 0.254, 300 * 0.254)}
+    assert odd <= wires
+    assert wide <= wires
+
+
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_multi_unit_symbols(dsn_fixtures, tmp_path):
     page = dsn_fixtures.make_page(
@@ -1514,7 +1639,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
     assert '(symbol "Device:C"' in schematic
     assert '(lib_id "Device:R")' in schematic
     assert '(lib_id "Device:C")' in schematic
-    assert '(at 25.40 25.40 90)' in schematic
+    assert '(at 25.4 25.4 90)' in schematic
     assert '(face "Arial")' not in schematic
 
     kicad_cli = shutil.which("kicad-cli")
@@ -1664,9 +1789,12 @@ def test_dsn2kicad_hk_native_power_symbols(dsn_fixtures, tmp_path):
                     # earlier (27.43, 1.27) came from a char-count estimate
                     # (len * 5.0 wide, 6.0 tall, no cap-height nudge) that put
                     # power labels ~0.75 mm / ~0.95 mm off their OrCAD position.
+                    # Coordinates carry four decimals: rounding each emitted
+                    # number to two let a symbol-local offset and its placement
+                    # anchor round apart, leaving pins off their wires.
                     assert tuple(map(kicad_sexpr.to_float, value_at[1:4])) == (
-                        26.99,
-                        1.67,
+                        26.993,
+                        1.6657,
                         90.0,
                     )
                     assert kicad_sexpr.find_first(value, "hide") is None

@@ -4045,10 +4045,17 @@ symbolOrigin symbol =
     textCoords (TextAnnotation x1 y1 x2 y2 ax ay _) =
       [(x1, y1), (x2, y2), (ax, ay)]
 
-    midpoint xs ys =
-      ( (fromIntegral (minimum xs) + fromIntegral (maximum xs)) / 2
-      , (fromIntegral (minimum ys) + fromIntegral (maximum ys)) / 2
-      )
+    midpoint xs ys = (gridMidpoint xs, gridMidpoint ys)
+
+-- Midpoint of an extent, snapped to OrCAD's integer grid.  Every symbol-local
+-- coordinate is measured as (coordinate - origin), so an origin landing on a
+-- half unit -- which a plain (min + max) / 2 does whenever the extent spans an
+-- odd number of units -- shifts the entire symbol, pins included, half a unit
+-- (0.127 mm) away from the wires drawn on the page.  The placement anchor is a
+-- whole unit, so it cannot absorb the half.  Snapping here keeps pins exactly on
+-- the page grid; the body moves by at most half a unit, which is invisible.
+gridMidpoint :: [Int] -> Double
+gridMidpoint values = fromIntegral ((minimum values + maximum values) `div` 2)
 
 directionFromVector :: Double -> Double -> Int
 directionFromVector dx dy
@@ -4659,10 +4666,31 @@ sha256Constants = listArray (0, 63)
   , 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
   ]
 
+-- Emitted coordinate precision.  A symbol pin's page position is the sum of two
+-- separately emitted numbers (the placement anchor and the symbol-local offset)
+-- while the wire that lands on it is emitted as a single number, so quantising
+-- each term to two decimals let the two roundings accumulate past half a step
+-- and pushed pins 0.01 mm off their wires -- which KiCad reads as unconnected.
+-- Four decimals represents every OrCAD grid coordinate (an integer multiple of
+-- 0.254 mm needs at most three) exactly, so the sum is exact too.
+fmtDecimals :: Int
+fmtDecimals = 4
+
 fmt :: Double -> String
 fmt value =
-  let normalized = if abs value < 0.005 then 0 else value
-  in showFFloat (Just 2) normalized ""
+  let normalized = if abs value < 0.5 / 10 ^ fmtDecimals then 0 else value
+  in trimTrailingZeros (showFFloat (Just fmtDecimals) normalized "")
+
+-- "255.0160" -> "255.016", "60.0000" -> "60".  KiCad accepts both forms; the
+-- shorter one keeps the emitted files close to what KiCad itself writes.
+trimTrailingZeros :: String -> String
+trimTrailingZeros rendered
+  | '.' `notElem` rendered = rendered
+  | otherwise =
+      case reverse (dropWhile (== '0') (reverse rendered)) of
+        trimmed
+          | "." `isSuffixOf` trimmed -> init trimmed
+          | otherwise -> trimmed
 
 unique :: Ord a => [a] -> [a]
 unique = go Map.empty

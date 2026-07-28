@@ -76,6 +76,21 @@ data Options = Options
   , optSourceEncoding :: Maybe SourceEncoding
   }
 
+-- | The rendering flags, separated from the CLI record so that geometry and
+-- text layout do not depend on how the program was invoked.
+data RenderConfig = RenderConfig
+  { useKicadPower :: Bool
+  , useKicadRc :: Bool
+  , useKicadFonts :: Bool
+  }
+
+renderConfigOf :: Options -> RenderConfig
+renderConfigOf opts = RenderConfig
+  { useKicadPower = optKicadPower opts
+  , useKicadRc = optKicadRc opts
+  , useKicadFonts = optKicadFonts opts
+  }
+
 data ZipMember = ZipMember FilePath BS.ByteString
   deriving Show
 
@@ -458,9 +473,10 @@ convertStreams opts sourceBytes members = do
       project = optProjectName opts
       pageCount = length pages
       dsnDigest = sha256 sourceBytes
+      renderConfig = renderConfigOf opts
       pageFiles =
         [ (pageOutputName page, generatePageSch
-            dsnDigest opts project cacheSymbols multiUnits powerRefs
+            dsnDigest renderConfig project cacheSymbols multiUnits powerRefs
             textStyles pageIndex pageCount page)
         | (pageIndex, page) <- zip [1..] pages
         ]
@@ -480,7 +496,7 @@ convertStreams opts sourceBytes members = do
          , generateRootSch
              dsnDigest project pages
          )
-       , (project ++ ".kicad_sym", generateSymbolLibrary opts cacheSymbols multiUnits pages)
+       , (project ++ ".kicad_sym", generateSymbolLibrary renderConfig cacheSymbols multiUnits pages)
        , (project ++ ".kicad_pro", generateProject project (optEmitWorksheet opts))
        , ("sym-lib-table", generateSymLibTable project)
        ]
@@ -2156,9 +2172,9 @@ componentUnitInfo :: MultiUnitRegistry -> String -> (String, Int)
 componentUnitInfo registry cellName =
   Map.findWithDefault (cellName, 1) cellName (multiUnitCells registry)
 
-componentLibName :: Options -> MultiUnitRegistry -> String -> String
-componentLibName opts registry cellName
-  | optKicadRc opts && cellName `elem` ["R", "C"] = "Device:" ++ cellName
+componentLibName :: RenderConfig -> MultiUnitRegistry -> String -> String
+componentLibName cfg registry cellName
+  | useKicadRc cfg && cellName `elem` ["R", "C"] = "Device:" ++ cellName
   | otherwise = fst (componentUnitInfo registry cellName)
 
 parseCacheSymbols :: BS.ByteString -> Map.Map String CacheSymbol
@@ -2817,7 +2833,7 @@ kHiddenProperty name value atExpr =
 
 generatePageSch
   :: BS.ByteString
-  -> Options
+  -> RenderConfig
   -> String
   -> Map.Map String CacheSymbol
   -> MultiUnitRegistry
@@ -2827,7 +2843,7 @@ generatePageSch
   -> Int
   -> Page
   -> String
-generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textStyles pageIndex pageCount page =
+generatePageSch uuidSeed cfg _project cacheSymbols multiUnits powerRefs textStyles pageIndex pageCount page =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
@@ -2837,7 +2853,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
       , kNode "paper" [kString (pagePaper page)]
       , emitTitleBlock
       , kNode "lib_symbols"
-          (emitSymbolDefinitions opts cacheSymbols multiUnits
+          (emitSymbolDefinitions cfg cacheSymbols multiUnits
             (pageComponents page) (pagePowerSymbols page))
       ]
       ++ zipWith emitWire [1..] regularWires
@@ -2882,7 +2898,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
       | otherwise = titleBlockTitle titleBlock
 
     (fieldSize, fieldFace, fieldBold, fieldItalic) =
-      defaultComponentTextStyle (optKicadFonts opts) textStyles
+      defaultComponentTextStyle (useKicadFonts cfg) textStyles
 
     emitWire wireIndex wire =
       let (x1, y1) = adjustedWirePoint wire (wireX1 wire, wireY1 wire)
@@ -2935,7 +2951,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
     nativePinAdjustments =
       [ (oldPoint, newPoint)
       | component <- pageComponents page
-      , not (optKicadRc opts && compCell component `elem` ["R", "C"])
+      , not (useKicadRc cfg && compCell component `elem` ["R", "C"])
       , Just symbol <- [Map.lookup (compCell component) cacheSymbols]
       , (oldPin, newPin) <- zip
           (cachePins symbol)
@@ -2950,7 +2966,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
     rcInternalConnections = Set.fromList
       [ orderPoints firstPoint secondPoint
       | component <- pageComponents page
-      , optKicadRc opts
+      , useKicadRc cfg
       , compCell component `elem` ["R", "C"]
       , [firstPoint, secondPoint] <- [rcOriginalPinPoints component]
       ]
@@ -2968,7 +2984,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
     rcPinMoves =
       [ (compRef component, oldPoint, newPoint)
       | component <- pageComponents page
-      , optKicadRc opts
+      , useKicadRc cfg
       , compCell component `elem` ["R", "C"]
       , (pinNumberText, oldPoint) <- zip ["1", "2"] (rcOriginalPinPoints component)
       , Just newPoint <- [standardDevicePinPoint component pinNumberText]
@@ -3152,11 +3168,11 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
     emitComponent compIndex comp =
       let symbol = Map.findWithDefault emptyCacheSymbol (compCell comp) cacheSymbols
           (_, unitNumber) = componentUnitInfo multiUnits (compCell comp)
-          libName = componentLibName opts multiUnits (compCell comp)
-          pinNumbers = if optKicadRc opts && compCell comp `elem` ["R", "C"]
+          libName = componentLibName cfg multiUnits (compCell comp)
+          pinNumbers = if useKicadRc cfg && compCell comp `elem` ["R", "C"]
             then ["1", "2"]
             else unique (map pinNumber (cachePins symbol))
-          angle = componentAngleFor opts comp
+          angle = componentAngleFor cfg comp
           dnp = " *DNP" `isSuffixOf` compValue comp
           value = if dnp
             then take (length (compValue comp) - length (" *DNP" :: String)) (compValue comp)
@@ -3230,7 +3246,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
         emitComponentProperty propertyName value displayField isReference =
           let fallbackY = compY comp + if isReference then -10 else 10
               atExpr = case displayField of
-                Just field -> componentFieldAt opts comp field value fieldSize
+                Just field -> componentFieldAt cfg comp field value fieldSize
                   fieldFace fieldBold fieldItalic
                 Nothing -> kAt [kCoord (compX comp), kCoord fallbackY, kInt 0]
           in kStyledProperty propertyName value atExpr
@@ -3244,7 +3260,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
             (pageStreamName page, powerIndex)
             powerRefs
           fields =
-            [ kNode "lib_id" [kString ("power:" ++ powerLibName opts symbol)]
+            [ kNode "lib_id" [kString ("power:" ++ powerLibName cfg symbol)]
             , kAt [kCoord x, kCoord y, kInt (powerSymbolAngle symbol)]
             , kNode "unit" [kInt 1]
             , kNo "exclude_from_sim"
@@ -3287,7 +3303,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
             | hidden = kHiddenProperty
             | otherwise = \n v a ->
                 kStyledProperty n v a fieldSize fieldFace fieldBold fieldItalic
-          atExpr = case powerValueCenter (optKicadFonts opts)
+          atExpr = case powerValueCenter (useKicadFonts cfg)
                           fieldSize fieldFace fieldBold fieldItalic symbol of
             Just (mmX, mmY) -> kAt
               [ kDouble mmX
@@ -3372,10 +3388,10 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textSty
         style = textStyleForId textStyles (pageTextStyleId pageText)
         rotation = normalizedTextRotation (maybe 0 textStyleEscapement style)
         textLines = nonEmptyTextLines (pageTextValue pageText)
-        size = pageTextSize (optKicadFonts opts) pageText style textLines rotation
+        size = pageTextSize (useKicadFonts cfg) pageText style textLines rotation
 
     emitTextLine textIndex lineIndex lineText pageText style size rotation x y =
-      let face = if optKicadFonts opts then "" else maybe "" textStyleFace style
+      let face = if useKicadFonts cfg then "" else maybe "" textStyleFace style
           bold = maybe False ((== 700) . textStyleWeight) style
           italic = maybe False textStyleItalic style
       in kNode "text"
@@ -3446,15 +3462,15 @@ generateRootSch uuidSeed project pages =
            ]
 
 generateSymbolLibrary
-  :: Options -> Map.Map String CacheSymbol -> MultiUnitRegistry -> [Page] -> String
-generateSymbolLibrary opts cacheSymbols multiUnits pages =
+  :: RenderConfig -> Map.Map String CacheSymbol -> MultiUnitRegistry -> [Page] -> String
+generateSymbolLibrary cfg cacheSymbols multiUnits pages =
   renderKicad $
     kNode "kicad_symbol_lib" $
       [ kNode "version" [kInt 20251024]
       , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
       ]
-      ++ emitSymbolDefinitions opts cacheSymbols multiUnits
+      ++ emitSymbolDefinitions cfg cacheSymbols multiUnits
            [comp | page <- pages, comp <- pageComponents page]
            [symbol | page <- pages, symbol <- pagePowerSymbols page]
 
@@ -3463,22 +3479,22 @@ generateSymbolLibrary opts cacheSymbols multiUnits pages =
 -- embedded `lib_symbols` cache and the project-wide .kicad_sym are the same
 -- list; they differ only in whether the scope is one page or all of them.
 emitSymbolDefinitions
-  :: Options
+  :: RenderConfig
   -> Map.Map String CacheSymbol
   -> MultiUnitRegistry
   -> [Component]
   -> [PowerSymbol]
   -> [KExpr]
-emitSymbolDefinitions opts cacheSymbols multiUnits components powerSymbols =
+emitSymbolDefinitions cfg cacheSymbols multiUnits components powerSymbols =
   map emitUsedSymbol usedCells ++ map emitPowerDefinition powerDefinitions
   where
     usedCells = Map.elems $ Map.fromListWith (\_ earlier -> earlier)
-      [ (componentLibName opts multiUnits (compCell comp), compCell comp)
+      [ (componentLibName cfg multiUnits (compCell comp), compCell comp)
       | comp <- components
       ]
 
     emitUsedSymbol cellName
-      | optKicadRc opts && cellName `elem` ["R", "C"] =
+      | useKicadRc cfg && cellName `elem` ["R", "C"] =
           libStandardDeviceSymbol cellName
       | otherwise =
           let (libName, _) = componentUnitInfo multiUnits cellName
@@ -3488,7 +3504,7 @@ emitSymbolDefinitions opts cacheSymbols multiUnits components powerSymbols =
                  (libName, Map.findWithDefault emptyCacheSymbol libName cacheSymbols)
 
     powerDefinitions = Map.toAscList $ Map.fromListWith preferPowerStyle
-      [ (powerLibName opts symbol, powerStyle symbol)
+      [ (powerLibName cfg symbol, powerStyle symbol)
       | symbol <- powerSymbols
       , not (null (powerNetName symbol))
       ]
@@ -3498,7 +3514,7 @@ emitSymbolDefinitions opts cacheSymbols multiUnits components powerSymbols =
     preferPowerStyle new _ = new
 
     emitPowerDefinition (name, style)
-      | optKicadPower opts = libStandardPowerSymbol name
+      | useKicadPower cfg = libStandardPowerSymbol name
       | otherwise = libPowerSymbol name style
 
 libPowerSymbol :: String -> PowerStyle -> KExpr
@@ -3551,9 +3567,9 @@ libPowerSymbol name style =
         , kCircleShape 0 1.905 0.635
         ]
 
-powerLibName :: Options -> PowerSymbol -> String
-powerLibName opts symbol
-  | not (optKicadPower opts) = powerNetName symbol
+powerLibName :: RenderConfig -> PowerSymbol -> String
+powerLibName cfg symbol
+  | not (useKicadPower cfg) = powerNetName symbol
   | otherwise =
       Map.findWithDefault fallbackName
         (map toUpper (powerNetName symbol)) standardPowerNameMap
@@ -4157,9 +4173,9 @@ componentAngle component =
        then (360 - angle) `mod` 360
        else angle
 
-componentAngleFor :: Options -> Component -> Int
-componentAngleFor opts component
-  | optKicadRc opts && compCell component `elem` ["R", "C"] =
+componentAngleFor :: RenderConfig -> Component -> Int
+componentAngleFor cfg component
+  | useKicadRc cfg && compCell component `elem` ["R", "C"] =
       (90 - orientToAngle (compOrient component)) `mod` 360
   | otherwise = componentAngle component
 
@@ -4296,13 +4312,13 @@ orcadTextTopLeftToCenter
       _ -> (0, nudge)
 
 componentFieldAt
-  :: Options -> Component -> DisplayField -> String -> Double
+  :: RenderConfig -> Component -> DisplayField -> String -> Double
   -> String -> Bool -> Bool -> KExpr
-componentFieldAt opts component field value size face bold italic =
+componentFieldAt cfg component field value size face bold italic =
   kAt [kDouble centerX, kDouble centerY, kInt relativeAngle]
   where
     absoluteAngle = displayTextAngle field `mod` 360
-    relative = (absoluteAngle - componentAngleFor opts component) `mod` 360
+    relative = (absoluteAngle - componentAngleFor cfg component) `mod` 360
     relativeAngle = if relative >= 180 then relative - 180 else relative
     -- OrCAD stores ref/value offsets against the instance *loc*, never against
     -- the body origin. The two coincide for the 0/180 family, but the body
@@ -4314,7 +4330,7 @@ componentFieldAt opts component field value size face bold italic =
     topLeftX = (originX + fromIntegral (displayOffsetX field)) * unitToMm
     topLeftY = (originY + fromIntegral (displayOffsetY field)) * unitToMm
     (centerX, centerY) =
-      orcadTextTopLeftToCenter (optKicadFonts opts) value size face bold italic
+      orcadTextTopLeftToCenter (useKicadFonts cfg) value size face bold italic
         absoluteAngle (topLeftX, topLeftY)
 
 defaultComponentTextStyle :: Bool -> [TextStyle] -> (Double, String, Bool, Bool)

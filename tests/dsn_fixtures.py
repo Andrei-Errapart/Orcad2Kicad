@@ -30,23 +30,42 @@ RECORD_MARKER = b"\xff\xe4\x5c\x39"
 NET_TABLE_ANCHOR = b"\x30\x00\x00\x00\x05\x00\x00\x00\x03\x00\x00\x00"
 
 
-def _page_header(name, paper):
-    """marker + zeros(4) + name_len_u16 + name + NUL + paper_len_u16 + paper + NUL."""
+def _page_header(name, paper, created=0, modified=0, properties=None):
+    """marker + zeros(4) + name + paper + created/modified + property table.
+
+    Names and paper sizes are u16-length-prefixed and NUL-terminated; the
+    two timestamps are Unix ``time_t``. The property table is a u16 pair
+    count followed by (u32 name index, u32 value index) pairs indexing the
+    Library value pool.
+    """
     nb = name.encode("ascii")
     pb = paper.encode("ascii")
-    return (RECORD_MARKER + b"\x00\x00\x00\x00"
-            + struct.pack("<H", len(nb)) + nb + b"\x00"
-            + struct.pack("<H", len(pb)) + pb + b"\x00")
+    out = (RECORD_MARKER + b"\x00\x00\x00\x00"
+           + struct.pack("<H", len(nb)) + nb + b"\x00"
+           + struct.pack("<H", len(pb)) + pb + b"\x00"
+           + struct.pack("<II", created, modified))
+    return out + _property_table(properties)
 
 
-def _legacy_page_header(name, paper):
+def _property_table(properties):
+    if not properties:
+        return b""
+    out = bytearray(struct.pack("<H", len(properties)))
+    for name_index, value_index in properties:
+        out += struct.pack("<II", name_index, value_index)
+    return bytes(out)
+
+
+def _legacy_page_header(name, paper, created=0, modified=0, properties=None):
     """Capture 7.x header without the modern record marker."""
+    del properties                      # pre-16.x streams carry no table
     nb = name.encode("ascii")
     pb = paper.encode("ascii")
     return (
         bytes(3)
         + struct.pack("<H", len(nb)) + nb + b"\x00"
         + struct.pack("<H", len(pb)) + pb + b"\x00"
+        + struct.pack("<II", created, modified)
     )
 
 
@@ -252,7 +271,7 @@ def _off_page_connector(record_id, record_name, bbox, orientation=0):
 def make_page(
     name, paper="A3", *, nets=None, wires=None, components=None,
     aliases=None, power_symbols=None, off_page_connectors=None, texts=None,
-    graphics=None, legacy=False,
+    graphics=None, legacy=False, created=0, modified=0, properties=None,
 ):
     """Build a synthetic page stream.
 
@@ -278,13 +297,17 @@ def make_page(
         texts: list of (text, bbox), optionally followed by style and color IDs.
         graphics: dictionaries accepted by `_page_graphic`.
         legacy: emit the Capture 7.x page header and wire record variants.
+        created/modified: page timestamps as Unix `time_t`; the modified
+            one becomes the KiCad title-block date.
+        properties: (name_index, value_index) pairs for the page-header
+            property table, as built by `title_block_properties`.
 
     The header is emitted first (so parse_page_header reads it) and the net table
     last (so it wins as the "last anchor" parse_net_table selects).
     """
     header = _legacy_page_header if legacy else _page_header
     wire_record = _legacy_wire if legacy else _wire
-    parts = [header(name, paper)]
+    parts = [header(name, paper, created, modified, properties)]
     for i, (net_id, x1, y1, x2, y2) in enumerate(wires or []):
         parts.append(wire_record(i + 1, net_id, x1, y1, x2, y2))
     for alias in aliases or []:
@@ -425,6 +448,28 @@ def make_library_styles(styles):
     return bytes(out)
 
 
+def title_block_properties(fields, base=0):
+    """Pool entries and page-header property pairs for a title block.
+
+    OrCAD stores title-block field values as (name, value) index pairs in
+    the page header, both indexing the Library value pool. Returns
+    ``(entries, properties)``: append ``entries`` to the pool starting at
+    index ``base``, and pass ``properties`` to ``make_page``.
+
+    ``fields`` maps OrCAD property names ("Title", "Doc", "RevCode",
+    "OrgName", ...) to their values.
+    """
+    entries = []
+    properties = []
+    for name, value in fields.items():
+        name_index = base + len(entries)
+        entries.append(name)
+        value_index = base + len(entries)
+        entries.append(value)
+        properties.append((name_index, value_index))
+    return entries, properties
+
+
 def make_library(values, styles=None, title_block=None):
     """Build the parsed prefix of an OrCAD Library stream."""
     out = bytearray(32)
@@ -443,15 +488,11 @@ def make_library(values, styles=None, title_block=None):
         encoded = value.encode("ascii")
         out += struct.pack("<H", len(encoded)) + encoded + b"\x00"
     if title_block:
-        title_strings = [
-            title_block.get("title", ""),
-            title_block["doc_number"],
-            title_block.get("rev", ""),
-            "SCHEMATIC1",
-        ]
-        for value in filter(None, title_strings):
-            encoded = value.encode("ascii")
-            out += struct.pack("<H", len(encoded)) + encoded + b"\x00"
+        raise TypeError(
+            "make_library(title_block=...) is gone: title-block values live "
+            "in the value pool and are referenced by the page header. Use "
+            "title_block_properties() and make_page(properties=...)."
+        )
     return bytes(out)
 
 

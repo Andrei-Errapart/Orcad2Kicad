@@ -441,12 +441,31 @@ After a binary header, the `Library`
 stream contains a sequence of **u16-LE length-prefixed ASCII strings**
 (`u16_LE(len) + chars(len) + null_terminator`). These serve as:
 
-1. **Field-name headers** (first 7 entries): "1ST PART FIELD" through
-   "7TH PART FIELD".
-2. **Component value data** (remaining entries): a mix of INS instance
-   IDs (`INSTANCE_A`, `INSTANCE_B`, ...), value strings
-   (`10K/1005`, `0.1u/10V/0603/X7R`, `BOARD_CONNECTOR`, ...),
-   title-block fields, library paths, and GUIDs.
+1. **Field-name headers** (first 8 entries): "1ST PART FIELD" through
+   "7TH PART FIELD", then "PCB Footprint".
+2. **The value pool** (remaining entries), preceded by a **u32 entry
+   count**: a mix of INS instance IDs (`INSTANCE_A`, `INSTANCE_B`, ...),
+   value strings (`10K/1005`, `0.1u/10V/0603/X7R`, `BOARD_CONNECTOR`,
+   ...), title-block field names and values, library paths, and GUIDs.
+
+The pool is a **deduplicated heap**: a string is interned the first time
+it is used and referenced by index everywhere after. Two consequences
+matter.
+
+- Adjacency in the pool is insertion order, not structure. Strings that
+  belong to one record can sit thousands of entries apart, and strings
+  that sit next to each other can belong to unrelated records — including
+  **stale runs left by ancestor designs**. In `0100.DSN` the
+  live document number `DOC-2000-001` is interned next to the previous
+  generation's `DOC-1000-001` / `Cover Page (rev A)`, ~1500
+  entries away from that design's actual sheet titles. Nothing in a
+  neighbourhood can be trusted to belong together; always follow an index.
+- The entry count is a plain **u32**. Reading it as a u16 shifts every
+  index by one, and (with a sanity cap of 10000) silently discards the
+  whole pool on large designs, which is what made component values fall
+  back to cell names on boards 0100 and 0114-0122.
+
+The first pool entry is an empty string, so index 0 means "no value".
 
 Page-stream component records carry a **u16 LE value index** (located
 immediately after the ref-name null terminator — see "Component records"
@@ -507,12 +526,11 @@ they are not a general power/signal discriminator: other power-like strings are
 interleaved with component values, INS IDs, GUIDs, library paths, and version
 strings.
 
-#### Title-block field run
+#### Title-block fields
 
-The title-block fields are embedded within the same u16-length-prefixed
-string table described above. `parse_title_block` in `scripts/dsn2kicad`
-locates the live Title / Document Number / Rev values by heuristic; see
-the "Title-block" subsection of "Page Streams" below.
+Title-block field *values* live in this pool, but they are not findable
+from it: they are referenced by index from each page's header. See
+"Title-block fields per page" under "Page Streams" below.
 
 #### Status
 
@@ -1174,25 +1192,79 @@ filtered out, like free-text records.
 
 #### Title-block fields per page
 
-The title-block instance (`TitleBlock0`) is referenced by name in every
-page stream but its field **values** (Title, Document Number, Rev) are
-stored once project-wide in the `Library` stream (see "Library" above).
-`scripts/dsn2kicad` extracts them with `parse_title_block(ole)` and
-emits them in KiCad's `(title_block ...)` block of every page:
+Title-block fields are stored **per page**, in a property table at the
+tail of the page-header record:
 
-| OrCAD title-block field | KiCad slot |
+```
+u16   pair_count       N
+N x {
+  u32 name_index       index into the Library value pool
+  u32 value_index      index into the Library value pool
+}
+```
+
+The table ends exactly where the next record (`FF E4 5C 39`) begins.
+Both indices address the pool described under "Library" above, so the
+field *names* are ordinary pool strings — OrCAD's own vocabulary, near
+the head of the pool because they are interned first:
+
+`Title`, `Doc`, `RevCode`, `Page Number`, `Page Count`, `Page Size`,
+`Page Create Date`, `Page Modify Date`, `Cage Code`, `OrgName`,
+`OrgAddr1`..`OrgAddr4`, `Org_Name`, `Library guid`.
+
+A value index of 0 is the empty pool entry, i.e. an unset field; OrCAD
+then renders the raw placeholder (`<Doc>`, `<RevCode>`) in the drawing.
+The title-block symbol itself (`TitleBlock0`, `TI_ARMMPU_TitleBlock`,
+...) is a `Cache` cell holding only the static frame labels — `Title`,
+`Size`, `Document Number`, `Rev`, `Date:`, `Sheet`, `of` — never values.
+
+The page name, paper size, and both timestamps precede the table inline
+in the header:
+
+```
+[FF E4 5C 39 + 4 bytes]        absent in pre-16.x streams
+u16 len + page name  + NUL
+u16 len + paper size + NUL     "A2", "B", "C", ...
+u32 created                    Unix time_t
+u32 modified                   Unix time_t
+... object-id list ...
+property table (above)
+```
+
+`scripts/dsn2kicad` resolves these in `parsePageHeader` /
+`parsePagePropertyTable` / `resolveTitleBlock` and emits:
+
+| OrCAD field | KiCad slot |
 |---|---|
-| Title          | `(title ...)` |
-| Rev            | `(rev ...)` |
-| Document Number | `(comment 1 ...)` (KiCad has no native Doc# field) |
-| Sheet N of M    | `(comment 2 ...)` |
-| Date           | empty (not stored in DSN; Capture generates at print time) |
+| `Title`   | `(title ...)`, falling back to the page name when unset |
+| `RevCode` | `(rev ...)` |
+| `OrgName` (or `Org_Name`) | `(company ...)` |
+| `Doc`     | `(comment 1 ...)` (KiCad has no native Doc# field) |
+| page-header `modified` | `(date ...)`, as ISO-8601 UTC |
+| sheet position | `(comment 2 "Sheet N of M")` |
 
-**Renamed-clone caveat**: the board DSN files contain leftover
-title-block records from previous clones. `parse_title_block` picks the
-**last** doc number before the `SCHEMATIC1` sentinel
-in `Library` — that's the live record. The earlier doc-number records
-are stale.
+Fields genuinely vary per page: in `0100.DSN` all eleven
+sheets carry distinct titles ("Cover Page", "...  Power
+Management", ...), three distinct dates and two paper sizes, over a
+shared `Doc` and `RevCode`. Designs also use the fields differently —
+boards 0114-0122 put each sheet's own name in `Doc` and label that slot
+"Page Name" in their custom frame.
+
+**Date**: contrary to an earlier note in this document, the date *is*
+stored — it is the page's `modified` timestamp, which Capture renders in
+the frame. It drifts from an exported PDF whenever the DSN is saved
+afterwards, so it is not a reliable cross-check against old PDFs. No
+time zone is recorded; the converter formats UTC.
+
+**Do not** try to recover these fields by scanning the Library pool for
+strings that look like titles or document numbers. That was the previous
+approach and it cannot work: the pool is a deduplicated heap (see
+"Library"), so neighbours are unrelated and stale ancestor records are
+interspersed with live ones. It also forced a document-number matcher so
+narrow that only one issuer's drawings were recognised, while still
+mis-firing on part numbers shaped like document numbers
+(`CONN-AF-01-001`); see `board 0119` in the test
+repository.
 
 #### KiCad R/C vs OrCAD R/C symbol differences
 

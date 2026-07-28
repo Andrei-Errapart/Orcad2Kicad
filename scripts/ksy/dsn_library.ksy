@@ -8,9 +8,9 @@ meta:
 
 doc: |
   The `Library` stream of an OrCAD Capture 16.x .DSN file. Carries the
-  project's font/style table, the u16-length-prefixed value string table,
-  and title-block field values (Title, Document Number, Rev — see also
-  `Views/SCHEMATIC1/Pages/*`).
+  project's font/style table and the u16-length-prefixed value string
+  pool, which holds component values and the title-block field names and
+  values (see also `Views/SCHEMATIC1/Pages/*`).
 
   Two regions:
 
@@ -20,16 +20,17 @@ doc: |
        of zeros.
 
     2. Style records (60 bytes each, packed back-to-back) followed by
-       the value/title-block string run (packed u16-length-prefixed strings).
+       the value string pool (a u32 entry count, then that many packed
+       u16-length-prefixed strings).
 
-  This sketch covers the font/style record structure. The title-block
-  field run is parsed by `dsn2kicad_py.py`'s `parse_title_block`: it
-  enumerates the u16-length strings, finds the `SCHEMATIC1` sentinel
-  string, and walks backward for the last string matching the doc-number
-  pattern `EP\d[A-Z]{2}-AB(-\d{2,4})+` (the live one — DSNs may retain
-  stale doc-numbers from clones/renames). The string just before it is the
-  Title (unless it looks like a `{...}` UUID); the nearest `N.N` string in
-  the few entries after it is the Rev.
+  This sketch covers the font/style record structure. The pool is a
+  deduplicated heap: strings are interned on first use and referenced by
+  index thereafter, so neighbouring entries are unrelated and stale runs
+  from ancestor designs sit alongside live ones. Nothing may be recovered
+  from it by pattern-matching or adjacency — always follow an index.
+
+  Title-block values are reached from each page header's property table
+  (`dsn_page.ksy`), not from this stream directly.
 
   Component values are decoded by `parse_library_value_strings`, which does
   NOT re-implement the string run — it calls `olb_parser.parse_library_stream`

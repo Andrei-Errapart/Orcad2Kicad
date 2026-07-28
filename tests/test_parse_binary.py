@@ -29,27 +29,52 @@ class TestExtractStrings:
         assert dsn2kicad._extract_strings(b'\x00\x01\x02\x03', min_len=2) == []
 
 
-class TestEnumerateU16Strings:
-    def test_two_strings(self, dsn2kicad):
-        data = struct.pack('<H', 5) + b'HELLO' + b'\x00'
-        data += struct.pack('<H', 3) + b'BYE' + b'\x00'
-        results = list(dsn2kicad._enumerate_u16_strings(data))
-        assert len(results) == 2
-        assert results[0][2] == "HELLO"
-        assert results[1][2] == "BYE"
+class TestPagePropertyTable:
+    """The title-block property table at the tail of a page header."""
 
-    def test_empty(self, dsn2kicad):
-        assert list(dsn2kicad._enumerate_u16_strings(b'')) == []
+    def _table(self, pairs):
+        out = struct.pack('<H', len(pairs))
+        for name_idx, value_idx in pairs:
+            out += struct.pack('<II', name_idx, value_idx)
+        return out
 
-    def test_skip_non_ascii(self, dsn2kicad):
-        data = struct.pack('<H', 3) + bytes([0x80, 0x81, 0x82]) + b'\x00'
-        results = list(dsn2kicad._enumerate_u16_strings(data))
-        assert len(results) == 0
+    def test_decodes_pairs(self, dsn2kicad):
+        values = ['', 'Title', 'Cover', 'RevCode', 'B']
+        data = b'\x99' * 16 + self._table([(1, 2), (3, 4)])
+        pairs = dsn2kicad.parse_page_property_table(
+            data, 0, len(data), values,
+        )
+        assert pairs == [(1, 2), (3, 4)]
 
-    def test_skip_too_long(self, dsn2kicad):
-        data = struct.pack('<H', 200) + b'X' * 200 + b'\x00'
-        results = list(dsn2kicad._enumerate_u16_strings(data))
-        assert len(results) == 0
+    def test_rejects_blank_property_name(self, dsn2kicad):
+        # Index 0 is the empty pool entry, so it can never be a name.
+        values = ['', 'Title', 'Cover']
+        data = b'\x99' * 16 + self._table([(0, 2)])
+        assert dsn2kicad.parse_page_property_table(
+            data, 0, len(data), values,
+        ) == []
+
+    def test_rejects_out_of_range_index(self, dsn2kicad):
+        values = ['', 'Title']
+        data = b'\x99' * 16 + self._table([(1, 99)])
+        assert dsn2kicad.parse_page_property_table(
+            data, 0, len(data), values,
+        ) == []
+
+    def test_resolves_title_block(self, dsn2kicad):
+        values = ['', 'Title', 'Cover', 'RevCode', 'B', 'Doc', 'D-7']
+        block = dsn2kicad.resolve_title_block(
+            values, [(1, 2), (3, 4), (5, 6)], 1617261986,
+        )
+        assert block == {
+            'title': 'Cover', 'rev': 'B', 'doc_number': 'D-7',
+            'date': '2021-04-01',
+        }
+
+    def test_resolves_without_timestamp(self, dsn2kicad):
+        values = ['', 'Title', 'Cover']
+        block = dsn2kicad.resolve_title_block(values, [(1, 2)], None)
+        assert block == {'title': 'Cover'}
 
 
 class MockOle:

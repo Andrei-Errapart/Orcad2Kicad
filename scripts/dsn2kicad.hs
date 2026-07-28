@@ -96,6 +96,7 @@ data Page = Page
   { pageStreamName :: FilePath
   , pageOutputName :: FilePath
   , pageTitle :: String
+  , pageTitleBlock :: TitleBlock
   , pagePaper :: String
   , pageNets :: Map.Map Int String
   , pageWires :: [Wire]
@@ -229,11 +230,21 @@ data TitleBlock = TitleBlock
   { titleBlockTitle :: String
   , titleBlockDocumentNumber :: String
   , titleBlockRevision :: String
+  , titleBlockCompany :: String
+  , titleBlockDate :: String
   }
   deriving Show
 
-emptyTitleBlock :: TitleBlock
-emptyTitleBlock = TitleBlock "" "" ""
+-- | Header of a page stream: the name and paper size, the page's
+-- modification time, and the property table that carries the
+-- title-block field values.  See `parsePageHeader`.
+data PageHeader = PageHeader
+  { pageHeaderName :: String
+  , pageHeaderPaper :: String
+  , pageHeaderModified :: Maybe Int
+  , pageHeaderProperties :: [(Int, Int)]
+  }
+  deriving Show
 
 data Pin = Pin
   { pinName :: String
@@ -395,7 +406,6 @@ convertStreams opts sourceBytes members = do
           ]
       cacheSymbols = maybe Map.empty parseCacheSymbols (Map.lookup "Cache" memberMap)
       libraryValues = maybe [] parseLibraryValueStrings libraryBody
-      titleBlock = maybe emptyTitleBlock parseTitleBlock libraryBody
       rawPages = canonicalizePageNetNames
         [parsePage libraryValues name body | (_, _, name, body) <- pageMembers]
       pages = map (refinePageComponents cacheSymbols) rawPages
@@ -410,7 +420,7 @@ convertStreams opts sourceBytes members = do
       pageFiles =
         [ (pageOutputName page, generatePageSch
             dsnDigest opts project cacheSymbols multiUnits globalNets
-            hasOffPageRecords powerRefs textStyles titleBlock pageIndex
+            hasOffPageRecords powerRefs textStyles pageIndex
             pageCount page)
         | (pageIndex, page) <- zip [1..] pages
         ]
@@ -781,7 +791,9 @@ unlessEither False err = Left err
 
 parsePage :: [String] -> FilePath -> BS.ByteString -> Page
 parsePage libraryValues streamName body =
-  let (title, paper) = parsePageHeader body
+  let header = parsePageHeader libraryValues body
+      title = pageHeaderName header
+      paper = pageHeaderPaper header
       nets = parseNetTable body
       wires = parseWires nets body
       aliases = parseNetAliases nets body
@@ -795,6 +807,7 @@ parsePage libraryValues streamName body =
     { pageStreamName = streamName
     , pageOutputName = sanitizePageName (takeFileName streamName) ++ ".kicad_sch"
     , pageTitle = sanitizePageName (if null title then takeFileName streamName else title)
+    , pageTitleBlock = resolveTitleBlock libraryValues header
     , pagePaper = paper
     , pageNets = nets
     , pageWires = wires
@@ -806,11 +819,20 @@ parsePage libraryValues streamName body =
     , pageGraphics = graphics
     }
 
-parsePageHeader :: BS.ByteString -> (String, String)
-parsePageHeader body =
+paperSizes :: [String]
+paperSizes = ["A0", "A1", "A2", "A3", "A4", "A", "B", "C", "D", "E"]
+
+-- | The page header stores the page name and paper size inline, then the
+-- creation and modification times as Unix `time_t`, and ends with the
+-- property table decoded by `parsePagePropertyTable`.
+--
+-- Streams written before OrCAD 16.x carry no record marker and no
+-- property table; those keep the name/paper pair only.
+parsePageHeader :: [String] -> BS.ByteString -> PageHeader
+parsePageHeader values body =
   case findSubFrom recordMarker 0 body >>= parseAt of
     Just parsed -> parsed
-    Nothing -> fromMaybe (fallbackName, "A3") parseLegacyHeader
+    Nothing -> fromMaybe (PageHeader fallbackName "A3" Nothing []) parseLegacyHeader
   where
     parseAt idx = do
       nameLen <- word16LE body (idx + 8)
@@ -820,8 +842,19 @@ parsePageHeader body =
       paperLen <- word16LE body paperPos
       guard (paperLen >= 1 && paperLen <= 5)
       paper <- asciiAt body (paperPos + 2) (fromIntegral paperLen)
-      guard (paper `elem` ["A0", "A1", "A2", "A3", "A4", "A", "B", "C", "D", "E"])
-      pure (name, paper)
+      guard (paper `elem` paperSizes)
+      let afterPaper = paperPos + 2 + fromIntegral paperLen + 1
+      pure PageHeader
+        { pageHeaderName = name
+        , pageHeaderPaper = paper
+        , pageHeaderModified = plausibleTime (word32LE body (afterPaper + 4))
+        , pageHeaderProperties =
+            parsePagePropertyTable values body afterPaper tableEnd
+        }
+      where
+        -- The property table runs up to the start of the next record.
+        tableEnd = fromMaybe (BS.length body)
+          (findSubFrom recordMarker (idx + 4) body)
 
     parseLegacyHeader = do
       nameLen <- word16LE body 3
@@ -832,13 +865,101 @@ parsePageHeader body =
       paperLen <- word16LE body (nameEnd + 1)
       guard (paperLen >= 1 && paperLen <= 5)
       paper <- asciiAt body (nameEnd + 3) (fromIntegral paperLen)
-      guard (paper `elem` ["A0", "A1", "A2", "A3", "A4", "A", "B", "C", "D", "E"])
-      pure (name, paper)
+      guard (paper `elem` paperSizes)
+      let afterPaper = nameEnd + 3 + fromIntegral paperLen + 1
+      pure PageHeader
+        { pageHeaderName = name
+        , pageHeaderPaper = paper
+        , pageHeaderModified = plausibleTime (word32LE body (afterPaper + 4))
+        , pageHeaderProperties = []
+        }
+
+    plausibleTime raw = do
+      stamp <- fromIntegral <$> raw
+      -- 1990-01-01 .. 2040-01-01, to reject zeroed or misaligned fields.
+      guard (stamp > 631152000 && stamp < 2208988800)
+      pure stamp
 
     fallbackName =
       case [s | (_, s) <- extractStrings (BS.take 100 body) 3, "00_" `isPrefixOf` s || length s > 3] of
         s : _ -> s
         [] -> ""
+
+-- | Title-block field values live in a property table at the tail of the
+-- page-header record: a u16 pair count followed by that many
+-- (u32 name index, u32 value index) pairs, both indexing the Library
+-- string pool.  The table ends where the next record begins.
+--
+-- The pair count is recovered by trying each candidate and keeping the
+-- one whose stored count matches and whose name indices all resolve to
+-- non-empty pool entries; property names are never blank.
+parsePagePropertyTable
+  :: [String] -> BS.ByteString -> Int -> Int -> [(Int, Int)]
+parsePagePropertyTable values body lowerBound tableEnd =
+  fromMaybe [] (firstJust [tableOf count | count <- [1 .. 255]])
+  where
+    valueCount = length values
+
+    tableOf count = do
+      let start = tableEnd - 8 * count - 2
+      guard (start >= lowerBound)
+      stored <- word16LE body start
+      guard (fromIntegral stored == count)
+      traverse (pairAt start) [0 .. count - 1]
+
+    pairAt start i = do
+      nameIdx <- fromIntegral <$> word32LE body (start + 2 + 8 * i)
+      valueIdx <- fromIntegral <$> word32LE body (start + 6 + 8 * i)
+      guard (nameIdx >= 0 && nameIdx < valueCount)
+      guard (valueIdx >= 0 && valueIdx < valueCount)
+      name <- lookupList values nameIdx
+      guard (not (null name))
+      pure (nameIdx, valueIdx)
+
+-- | Resolve one page's title-block fields from its property table.
+resolveTitleBlock :: [String] -> PageHeader -> TitleBlock
+resolveTitleBlock values header = TitleBlock
+  { titleBlockTitle = property "Title"
+  , titleBlockDocumentNumber = property "Doc"
+  , titleBlockRevision = property "RevCode"
+  , titleBlockCompany =
+      case property "OrgName" of
+        "" -> property "Org_Name"
+        name -> name
+  , titleBlockDate = maybe "" isoDateFromUnix (pageHeaderModified header)
+  }
+  where
+    property wanted = fromMaybe "" $ firstJust
+      [ lookupList values valueIdx
+      | (nameIdx, valueIdx) <- pageHeaderProperties header
+      , lookupList values nameIdx == Just wanted
+      ]
+
+-- | Unix `time_t` (UTC) as an ISO-8601 date, which is what KiCad's own
+-- date field holds.  The DSN records no time zone.
+isoDateFromUnix :: Int -> String
+isoDateFromUnix stamp =
+  let (y, m, d) = civilFromDays (stamp `div` 86400)
+  in padNum 4 y ++ "-" ++ padNum 2 m ++ "-" ++ padNum 2 d
+  where
+    padNum width n =
+      let digits = show n
+      in replicate (width - length digits) '0' ++ digits
+
+-- | Days since 1970-01-01 to (year, month, day); Howard Hinnant's
+-- civil_from_days.
+civilFromDays :: Int -> (Int, Int, Int)
+civilFromDays days =
+  let z = days + 719468
+      era = (if z >= 0 then z else z - 146096) `div` 146097
+      doe = z - era * 146097
+      yoe = (doe - doe `div` 1460 + doe `div` 36524 - doe `div` 146096) `div` 365
+      doy = doe - (365 * yoe + yoe `div` 4 - yoe `div` 100)
+      mp = (5 * doy + 2) `div` 153
+      d = doy - (153 * mp + 2) `div` 5 + 1
+      m = if mp < 10 then mp + 3 else mp - 9
+      y = yoe + era * 400
+  in (if m <= 2 then y + 1 else y, m, d)
 
 parseNetTable :: BS.ByteString -> Map.Map Int String
 parseNetTable body =
@@ -1847,13 +1968,13 @@ parseLibraryValueStrings body = fromMaybe [] $ do
   (afterMappings, _) <- readLengthStrings body mappingsStart 8
   let stringCountAt = afterMappings + 156
   count32 <- word32LE body stringCountAt
-  count16 <- word16LE body stringCountAt
-  let (stringCount, stringsStart) =
-        if count32 > 10000
-          then (fromIntegral count16, stringCountAt + 2)
-          else (fromIntegral count32, stringCountAt + 4)
-  guard (stringCount >= 0 && stringCount <= 10000)
-  snd <$> readLengthStrings body stringsStart stringCount
+  let stringCount = fromIntegral count32 :: Int
+  -- The count is a plain u32.  Reading it as a u16 (as an earlier
+  -- revision did for counts above 10000) shifts every pool index by one
+  -- and silently drops the whole table on large designs, because the
+  -- sanity cap then rejects it.
+  guard (stringCount >= 0 && stringCount <= 200000)
+  snd <$> readLengthStrings body (stringCountAt + 4) stringCount
 
 readLengthStrings :: BS.ByteString -> Int -> Int -> Maybe (Int, [String])
 readLengthStrings body = go []
@@ -1869,88 +1990,6 @@ readLengthStrings body = go []
               then afterString + 1
               else afterString
       go (BSC.unpack raw : values) nextPos (remaining - 1)
-
-parseTitleBlock :: BS.ByteString -> TitleBlock
-parseTitleBlock body =
-  case reverse liveDocumentIndices of
-    documentIndex : _ ->
-      let documentNumber = values !! documentIndex
-          title = case listAt values (documentIndex - 1) of
-            Just candidate
-              | not ("{" `isPrefixOf` candidate) -> candidate
-            _ -> ""
-          revision = fromMaybe "" $ firstJust
-            [ if isRevision candidate then Just candidate else Nothing
-            | candidate <- take 4 (drop (documentIndex + 1) values)
-            ]
-      in TitleBlock title documentNumber revision
-    [] -> emptyTitleBlock
-  where
-    values = map snd (enumerateU16Strings body)
-    sentinelIndex = fromMaybe (length values) (elemIndex "SCHEMATIC1" values)
-    liveDocumentIndices =
-      [ index
-      | (index, value) <- zip [0..] (take sentinelIndex values)
-      , isDocumentNumber value
-      ]
-
-enumerateU16Strings :: BS.ByteString -> [(Int, String)]
-enumerateU16Strings body = go 0
-  where
-    go off
-      | off + 3 >= BS.length body = []
-      | otherwise =
-          case word16LE body off of
-            Just lengthWord ->
-              let stringLength = fromIntegral lengthWord
-                  stringStart = off + 2
-                  stringEnd = stringStart + stringLength
-              in case asciiAt body stringStart stringLength of
-                   Just value
-                     | stringLength >= 1
-                     , stringLength <= 150
-                     , byteAt body stringEnd == Just 0 ->
-                         (off, value) : go (stringEnd + 1)
-                   _ -> go (off + 1)
-            Nothing -> []
-
--- A title block is located by finding the drawing's document number in the
--- Library string table.  The pattern is deliberately narrow -- "EP<digit><AA>",
--- the literal issuer group "AB", then two-to-four-digit groups, as in
--- "ACME-XX-24-0001" -- and only that one issuer's drawings get a title block;
--- every other design falls back to the page name.
---
--- Do NOT relax this into a generic "letters-letters-digits-digits" shape.  That
--- was tried: ordinary manufacturer part numbers share it (the corpus contains
--- "CONN-AF-01-001" and "CONN-AF-04-002"), and matching one promotes an unrelated
--- component string into the sheet title -- strictly worse than no title block.
--- Recognising further issuers needs a real signal, such as a Library field that
--- identifies the document number, not a looser shape.
-isDocumentNumber :: String -> Bool
-isDocumentNumber value =
-  case splitOn '-' value of
-    prefixGroup : "AB" : numberGroups ->
-      isPrefixGroup prefixGroup
-      && not (null numberGroups)
-      && all isNumberGroup numberGroups
-    _ -> False
-  where
-    isPrefixGroup ['E', 'P', digit, firstLetter, secondLetter] =
-      isDigit digit && isUpperAscii firstLetter && isUpperAscii secondLetter
-    isPrefixGroup _ = False
-    isNumberGroup group =
-      length group >= 2 && length group <= 4 && all isDigit group
-
-isRevision :: String -> Bool
-isRevision value =
-  let (major, rest) = span isDigit value
-  in not (null major)
-     && case rest of
-          '.':minor -> not (null minor) && all isDigit minor
-          _ -> False
-
-isUpperAscii :: Char -> Bool
-isUpperAscii char = char >= 'A' && char <= 'Z'
 
 orcadPageSize :: String -> (Int, Int)
 orcadPageSize paper = Map.findWithDefault (1654, 1170) paper $ Map.fromList
@@ -2839,12 +2878,11 @@ generatePageSch
   -> Bool
   -> Map.Map (FilePath, Int) String
   -> [TextStyle]
-  -> TitleBlock
   -> Int
   -> Int
   -> Page
   -> String
-generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles titleBlock pageIndex pageCount page =
+generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles pageIndex pageCount page =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
@@ -2873,12 +2911,14 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
          , kNo "embedded_fonts"
          ]
   where
+    titleBlock = pageTitleBlock page
+
     emitTitleBlock =
       kNode "title_block" $
         [kNode "title" [kString outputTitle]]
-        ++ [ kNode "rev" [kString (titleBlockRevision titleBlock)]
-           | not (null (titleBlockRevision titleBlock))
-           ]
+        ++ optional "date" (titleBlockDate titleBlock)
+        ++ optional "rev" (titleBlockRevision titleBlock)
+        ++ optional "company" (titleBlockCompany titleBlock)
         ++ [ kNode "comment"
                [kInt 1, kString (titleBlockDocumentNumber titleBlock)]
            | not (null (titleBlockDocumentNumber titleBlock))
@@ -2889,6 +2929,8 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
                    ("Sheet " ++ show pageIndex ++ " of " ++ show pageCount)
                ]
            ]
+      where
+        optional name value = [kNode name [kString value] | not (null value)]
 
     outputTitle
       | null (titleBlockTitle titleBlock) = pageTitle page

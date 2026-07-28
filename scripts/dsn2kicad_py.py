@@ -23,6 +23,7 @@ Usage:
                       [--debug-symbol] <file.DSN> [output_dir]
 """
 
+import datetime
 import json
 import math
 import os
@@ -212,14 +213,22 @@ def get_page_streams(ole):
     return pages
 
 
-def parse_page_header(data):
-    """Parse page header to extract page name and paper size.
+def parse_page_header(data, library_values=None):
+    """Parse a page header.
 
     After the first ff e4 5c 39 marker + 4 zero bytes, the structure is:
-      name_len(2) + name(name_len) + null(1) + paper_len(2) + paper(paper_len) + null(1)
+      name_len(2) + name(name_len) + null(1) + paper_len(2) + paper(paper_len)
+      + null(1) + created(4) + modified(4) + ... + property table
+
+    Returns (page_name, paper_size, modified, properties) where `modified` is
+    a Unix time_t or None, and `properties` is the list of
+    (name_index, value_index) pairs described in
+    doc/ORCAD_FILE_FORMAT.md under "Title-block fields per page".
     """
     page_name = ""
     paper_size = "A3"
+    modified = None
+    properties = []
 
     idx = data.find(RECORD_MARKER)
     if idx >= 0 and idx + 12 < len(data):
@@ -242,6 +251,14 @@ def parse_page_header(data):
                                 ps = data[paper_start:paper_end].decode('ascii', errors='replace')
                                 if ps in ('A0','A1','A2','A3','A4','A','B','C','D','E'):
                                     paper_size = ps
+                                    after = paper_end + 1
+                                    modified = _plausible_time(data, after + 4)
+                                    end = data.find(RECORD_MARKER, idx + 4)
+                                    if end < 0:
+                                        end = len(data)
+                                    properties = parse_page_property_table(
+                                        data, after, end, library_values or [],
+                                    )
 
     if not page_name:
         strings = _extract_strings(data[:100], 3)
@@ -250,7 +267,74 @@ def parse_page_header(data):
                 page_name = s
                 break
 
-    return page_name, paper_size
+    return page_name, paper_size, modified, properties
+
+
+def _plausible_time(data, offset):
+    """A Unix time_t at `offset`, or None if it is zero or out of range."""
+    if offset + 4 > len(data):
+        return None
+    stamp = struct.unpack_from('<I', data, offset)[0]
+    # 1990-01-01 .. 2040-01-01, to reject zeroed or misaligned fields.
+    if 631152000 < stamp < 2208988800:
+        return stamp
+    return None
+
+
+def parse_page_property_table(data, lower_bound, table_end, library_values):
+    """Decode the title-block property table at the tail of a page header.
+
+    The table is a u16 pair count followed by that many
+    (u32 name index, u32 value index) pairs indexing the Library value pool,
+    ending where the next record begins. The count is recovered by trying
+    each candidate and keeping the one whose stored count matches and whose
+    name indices all resolve to non-empty pool entries -- property names are
+    never blank.
+    """
+    for count in range(1, 256):
+        start = table_end - 8 * count - 2
+        if start < lower_bound or start + 2 > len(data):
+            break
+        if struct.unpack_from('<H', data, start)[0] != count:
+            continue
+        pairs = []
+        for i in range(count):
+            at = start + 2 + 8 * i
+            if at + 8 > len(data):
+                break
+            name_idx, value_idx = struct.unpack_from('<II', data, at)
+            if not (name_idx < len(library_values)
+                    and value_idx < len(library_values)
+                    and library_values[name_idx]):
+                break
+            pairs.append((name_idx, value_idx))
+        if len(pairs) == count:
+            return pairs
+    return []
+
+
+def resolve_title_block(library_values, properties, modified):
+    """Resolve one page's title-block fields from its property table."""
+    fields = {}
+    for name_idx, value_idx in properties:
+        if name_idx < len(library_values) and value_idx < len(library_values):
+            fields[library_values[name_idx]] = library_values[value_idx]
+
+    result = {}
+    if fields.get('Title'):
+        result['title'] = fields['Title']
+    if fields.get('Doc'):
+        result['doc_number'] = fields['Doc']
+    if fields.get('RevCode'):
+        result['rev'] = fields['RevCode']
+    company = fields.get('OrgName') or fields.get('Org_Name')
+    if company:
+        result['company'] = company
+    if modified is not None:
+        # ISO-8601 UTC; the DSN records no time zone.
+        result['date'] = datetime.datetime.fromtimestamp(
+            modified, datetime.timezone.utc).strftime('%Y-%m-%d')
+    return result
 
 
 def _extract_strings(data, min_len=2):
@@ -1247,14 +1331,13 @@ def sch_header(paper="A3", title="", date="", rev="", company="",
                comment1="", comment2="", comment3="", comment4=""):
     """Render the KiCad schematic header with optional title-block fields.
 
-    KiCad's (title_block ...) block maps directly to the OrCAD title-block
-    cell instance's stored fields:
-      KiCad (title ...)     ← OrCAD Title field
-      KiCad (date ...)      ← OrCAD Date field (not stored in DSN; pass "" or
-                              fill from file timestamp at caller's choice)
-      KiCad (rev ...)       ← OrCAD Rev field
-      KiCad (company ...)   ← OrCAD Organization
-      KiCad (comment N ...) ← OrCAD-specific fields (Document Number → comment 1)
+    KiCad's (title_block ...) block maps directly to the per-page OrCAD
+    title-block properties (see doc/ORCAD_FILE_FORMAT.md):
+      KiCad (title ...)     ← OrCAD Title
+      KiCad (date ...)      ← OrCAD page-header modified time, ISO-8601 UTC
+      KiCad (rev ...)       ← OrCAD RevCode
+      KiCad (company ...)   ← OrCAD OrgName / Org_Name
+      KiCad (comment N ...) ← OrCAD-specific fields (Doc → comment 1)
     """
     uid = new_uuid()
     tb_parts = []
@@ -4243,7 +4326,9 @@ def generate_page_sch(page_name, paper, wires, components, power_syms,
     parts.append(sch_header(
         paper,
         title=tb.get('title', '') or page_name,
+        date=tb.get('date', ''),
         rev=tb.get('rev', ''),
+        company=tb.get('company', ''),
         comment1=tb.get('doc_number', ''),
         comment2=sheet_note,
     ))
@@ -5774,92 +5859,6 @@ def register_cache_cells(cache_cells, cache_body_rects=None,
 
 
 # ---------------------------------------------------------------------------
-# Title-block field extraction (from Library stream)
-# ---------------------------------------------------------------------------
-
-DOC_NUMBER_RE = re.compile(r'^EP\d[A-Z]{2}-AB(-\d{2,4})+$')
-
-
-def _enumerate_u16_strings(data):
-    """Yield every back-to-back (u16 length + ASCII bytes + null) string in data."""
-    off = 0
-    while off + 3 < len(data):
-        L = struct.unpack_from('<H', data, off)[0]
-        if 1 <= L <= 150 and off + 2 + L + 1 <= len(data):
-            sb = data[off + 2:off + 2 + L]
-            if all(0x20 <= b <= 0x7e for b in sb) and data[off + 2 + L] == 0:
-                yield off, L, sb.decode('ascii')
-                off += 2 + L + 1
-                continue
-        off += 1
-
-
-def parse_title_block(ole):
-    """Extract OrCAD title-block fields from the Library stream.
-
-    Returns a dict with keys {title, doc_number, rev, company}, any of
-    which may be absent. Date is not stored in DSN and is left empty.
-
-    Heuristic: the Library stream contains all the title-block fields as
-    a packed run of `u16-length + ASCII + null` strings. The fields appear
-    as [..., Title, DocNumber, Rev?, UUID?, ...]. The DSN may carry
-    leftover doc-numbers from previous clones/renames; the *last*
-    matching record before `SCHEMATIC1` (or end-of-file if not found) is
-    the live one. We:
-      1. Find the SCHEMATIC1 marker; if absent, fall back to the last
-         match in the whole stream.
-      2. Walk backward to the nearest string matching the doc-number
-         pattern.
-      3. Take the immediately-preceding string as the Title (skipping
-         UUID-looking values starting with `{`).
-      4. Take the nearest short version-like string (`1.0`, `1.1`, …)
-         in a small window after the DocNumber as the Rev.
-
-    Returns {} if Library is missing or no doc-number pattern is found.
-    """
-    try:
-        data = ole.openstream('Library').read()
-    except Exception:
-        return {}
-
-    strings = list(_enumerate_u16_strings(data))
-    if not strings:
-        return {}
-
-    # Locate the live title-block: take the LAST EP-doc-number match
-    # before the SCHEMATIC1 sentinel (if present), else last in stream.
-    sentinel_idx = next((i for i, (_, _, s) in enumerate(strings)
-                        if s == 'SCHEMATIC1'), len(strings))
-    live_doc_idx = None
-    for i in range(sentinel_idx - 1, -1, -1):
-        if DOC_NUMBER_RE.match(strings[i][2]):
-            live_doc_idx = i
-            break
-    if live_doc_idx is None:
-        return {}
-
-    i = live_doc_idx
-    doc_num = strings[i][2]
-    title = ''
-    if i > 0:
-        prev = strings[i - 1][2]
-        if not prev.startswith('{'):
-            title = prev
-    rev = ''
-    for j in range(i + 1, min(i + 5, len(strings))):
-        t = strings[j][2]
-        if re.fullmatch(r'\d+\.\d+', t):
-            rev = t
-            break
-    result = {'doc_number': doc_num}
-    if title:
-        result['title'] = title
-    if rev:
-        result['rev'] = rev
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Library style table (font/weight/italic per text style ID)
 # ---------------------------------------------------------------------------
 
@@ -6063,13 +6062,7 @@ def convert_dsn(ole, dsn_bytes, *, project_name,
         print("Loading KiCad Device R/C symbols...")
         load_kicad_device_library()
 
-    # Parse title-block fields (project-wide, applied to every page)
-    title_block = parse_title_block(ole)
-    if title_block:
-        bits = [f"{k}={v!r}" for k, v in title_block.items()]
-        print(f"  Title block: {', '.join(bits)}")
-    else:
-        print(f"  Title block: (none found in Library stream)")
+    # Title-block fields are per page; see the page loop below.
 
     # Parse the Library stream's style table (font/weight/italic per style ID).
     # Text records on each page reference these by style_id (1-based).
@@ -6188,9 +6181,14 @@ def convert_dsn(ole, dsn_bytes, *, project_name,
         page_key = stream_path.split("/")[-1]
         data = page_data_cache[stream_path]
 
-        page_name, paper = parse_page_header(data)
+        page_name, paper, modified, page_properties = parse_page_header(
+            data, _library_value_strings,
+        )
         if not page_name:
             page_name = page_key
+        title_block = resolve_title_block(
+            _library_value_strings, page_properties, modified,
+        )
 
         safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', page_key)
         safe_name = re.sub(r'_+', '_', safe_name).strip('_')

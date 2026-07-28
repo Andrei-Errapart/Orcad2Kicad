@@ -988,17 +988,12 @@ def parse_library_stream(data: bytes) -> Library:
     ps.ansi_grid_refs = struct.unpack_from('<I', data, offset)[0]; offset += 4
     lib.page_settings = ps
 
-    # strLst — try u32 first, fallback to u16 if it looks wrong
+    # strLst — a plain u32 count. Reading it as a u16 above 10000 (as an
+    # earlier revision did) shifts every index in str_lst by one, which
+    # silently corrupts every value looked up through it.
     if offset + 4 <= len(data):
-        str_lst_len_u32 = struct.unpack_from('<I', data, offset)[0]
-        str_lst_len_u16 = struct.unpack_from('<H', data, offset)[0]
-        # Heuristic: if u32 value is unreasonably large, use u16
-        if str_lst_len_u32 > 10000:
-            str_lst_len = str_lst_len_u16
-            offset += 2
-        else:
-            str_lst_len = str_lst_len_u32
-            offset += 4
+        str_lst_len = struct.unpack_from('<I', data, offset)[0]
+        offset += 4
     else:
         str_lst_len = 0
 

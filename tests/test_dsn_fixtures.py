@@ -42,7 +42,22 @@ class TestMakeOle:
 class TestMakePage:
     def test_header_name_and_paper(self, dsn_fixtures, dsn2kicad):
         page = dsn_fixtures.make_page("01_FOO", paper="A4")
-        assert dsn2kicad.parse_page_header(page) == ("01_FOO", "A4")
+        assert dsn2kicad.parse_page_header(page) == ("01_FOO", "A4", None, [])
+
+    def test_header_timestamp_and_properties(self, dsn_fixtures, dsn2kicad):
+        values = ["", "Title", "Cover Sheet"]
+        page = dsn_fixtures.make_page(
+            "01_FOO", paper="A4", modified=1617261986, properties=[(1, 2)],
+            nets={5: "GND"}, wires=[(5, 0, 0, 100, 0)],
+        )
+        name, paper, modified, properties = dsn2kicad.parse_page_header(
+            page, values,
+        )
+        assert (name, paper, modified) == ("01_FOO", "A4", 1617261986)
+        assert properties == [(1, 2)]
+        assert dsn2kicad.resolve_title_block(values, properties, modified) == {
+            "title": "Cover Sheet", "date": "2021-04-01",
+        }
 
     def test_net_table_roundtrip(self, dsn_fixtures, dsn2kicad):
         page = dsn_fixtures.make_page("01_FOO", nets={5: "GND", 7: "VCC"})

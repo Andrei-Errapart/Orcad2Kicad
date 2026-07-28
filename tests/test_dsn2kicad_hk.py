@@ -308,15 +308,21 @@ def test_dsn2kicad_hk_rejects_python_only_debug_flags():
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
-    page = dsn_fixtures.make_page("01_METADATA")
-    library = dsn_fixtures.make_library(
-        [],
-        title_block={
-            "title": "Evaluation Board",
-            "doc_number": "ACME-XX-24-0001-02",
-            "rev": "1.2",
+    pool = ["filler"]
+    entries, properties = dsn_fixtures.title_block_properties(
+        {
+            "Title": "Evaluation Board",
+            "Doc": "ACME-XX-24-0001-02",
+            "RevCode": "1.2",
+            "OrgName": "Example Corp",
         },
+        base=len(pool),
     )
+    page = dsn_fixtures.make_page(
+        "01_METADATA", properties=properties, modified=1617261986,
+        nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+    )
+    library = dsn_fixtures.make_library(pool + entries)
     dsn = tmp_path / "metadata.DSN"
     out_dir = tmp_path / "out"
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Library": library}))
@@ -337,10 +343,66 @@ def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
         "title", '"Evaluation Board"',
     ]
     assert kicad_sexpr.find_first(title_block, "rev") == ["rev", '"1.2"']
+    assert kicad_sexpr.find_first(title_block, "date") == ["date", '"2021-04-01"']
+    assert kicad_sexpr.find_first(title_block, "company") == [
+        "company", '"Example Corp"',
+    ]
     assert kicad_sexpr.find_all(title_block, "comment") == [
         ["comment", "1", '"ACME-XX-24-0001-02"'],
         ["comment", "2", '"Sheet 1 of 1"'],
     ]
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_title_block_is_per_page(dsn_fixtures, tmp_path):
+    """Title and date come from each page's own property table."""
+    pool = ["Title", "Cover Sheet", "Power Tree", "Doc", "DOC-7", "RevCode", "B"]
+    shared = [(pool.index("Doc"), pool.index("DOC-7")),
+              (pool.index("RevCode"), pool.index("B"))]
+    pages = {
+        "Views/SCHEMATIC1/Pages/01_COVER": dsn_fixtures.make_page(
+            "01_COVER", modified=1617261986,
+            properties=[(0, pool.index("Cover Sheet"))] + shared,
+            nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+        ),
+        "Views/SCHEMATIC1/Pages/02_POWER": dsn_fixtures.make_page(
+            "02_POWER", modified=1608508800,
+            properties=[(0, pool.index("Power Tree"))] + shared,
+            nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+        ),
+    }
+    dsn = tmp_path / "perpage.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip(
+        dict(pages, Library=dsn_fixtures.make_library(pool))
+    ))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    def title_block_of(filename):
+        tree = kicad_sexpr.parse(
+            (out_dir / filename).read_text(encoding="utf-8")
+        )
+        return kicad_sexpr.find_first(tree, "title_block")
+
+    cover = title_block_of("01_COVER.kicad_sch")
+    power = title_block_of("02_POWER.kicad_sch")
+    assert kicad_sexpr.find_first(cover, "title") == ["title", '"Cover Sheet"']
+    assert kicad_sexpr.find_first(power, "title") == ["title", '"Power Tree"']
+    assert kicad_sexpr.find_first(cover, "date") == ["date", '"2021-04-01"']
+    assert kicad_sexpr.find_first(power, "date") == ["date", '"2020-12-21"']
+    # Document number and revision are shared, and both pages carry them.
+    for block in (cover, power):
+        assert kicad_sexpr.find_first(block, "rev") == ["rev", '"B"']
+        assert kicad_sexpr.find_all(block, "comment")[0] == [
+            "comment", "1", '"DOC-7"',
+        ]
 
 
 def _expected_haskell_uuid(dsn_bytes, category, object_index):

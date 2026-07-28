@@ -46,6 +46,16 @@ doc: |
     - page_ellipse_record       (decorative ellipses / circles)
     - page_polygon_record       (filled polygons, e.g. LED triangles)
 
+  The page header ends with the title-block property table: a u16 pair
+  count followed by that many (u32 name index, u32 value index) pairs,
+  both indexing the `Library` value pool, running up to the next record
+  marker. It carries this page's Title, Doc, RevCode, Page Number, Page
+  Count and organisation fields. The page name, paper size and the
+  created/modified `time_t` pair precede it inline; the modified stamp is
+  the date OrCAD renders in the frame. See `parsePagePropertyTable` in
+  dsn2kicad.hs and "Title-block fields per page" in
+  `doc/ORCAD_FILE_FORMAT.md`.
+
   Not yet modeled: hierarchical block references and the TitleBlock cell
   instance. Off-page connectors are not represented as a declarative type
   below yet, but their record layout and electrical hotpoint transform are

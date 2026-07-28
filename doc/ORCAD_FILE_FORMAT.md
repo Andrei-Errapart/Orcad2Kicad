@@ -445,8 +445,9 @@ The `Library` stream is the project's **style table + title-block field storage*
 #### Value string table
 
 After a binary header, the `Library`
-stream contains a sequence of **u16-LE length-prefixed ASCII strings**
-(`u16_LE(len) + chars(len) + null_terminator`). These serve as:
+stream contains a sequence of **u16-LE length-prefixed strings**
+(`u16_LE(len) + chars(len) + null_terminator`), in the authoring machine's
+Windows ANSI codepage (see [String encoding](#string-encoding)). These serve as:
 
 1. **Field-name headers** (first 8 entries): "1ST PART FIELD" through
    "7TH PART FIELD", then "PCB Footprint".
@@ -475,6 +476,41 @@ matter.
   (`test_pool_count_is_u32`).
 
 The first pool entry is an empty string, so index 0 means "no value".
+
+#### String encoding
+
+Pool strings are **not ASCII**. They are bytes in the Windows ANSI codepage of
+the machine that authored the design, and **the file records nowhere which
+codepage that was**. Two plausible sources were checked and neither works:
+
+- There is **no OLE `\x05SummaryInformation` stream** in any DSN examined, so
+  the standard compound-document codepage property is unavailable.
+- The style records' **`lfCharSet` byte (offset +25) is useless for this**. It
+  describes the *font*, not the text: designs whose pool is plainly GBK still
+  report `ANSI_CHARSET` (0) and `SYMBOL_CHARSET` (2), because the fonts they
+  use (Arial, Courier New) are ANSI fonts.
+
+Four codepages occur across the corpus — CP1252, CP932 (Shift-JIS), CP936
+(GBK) and CP950 (Big5) — so the encoding has to be inferred. The reliable
+signal is the **font face name** at style-record offset +28: a small closed
+vocabulary that reads as a real font name in exactly one codepage. Board 0120
+stores `CE A2 C8 ED D1 C5 BA DA`, which is `微软雅黑` (Microsoft YaHei) in GBK
+and gibberish in everything else; boards 0001-0003 store `ＭＳ ゴシック` and
+`メイリオ` in Shift-JIS.
+
+Content sniffing alone is **not** sufficient and must never be used on its own
+to pick a double-byte codepage: board 0100's `0°C+70°C` (a single `B0` byte) is
+also a valid GBK sequence decoding to `0癈+70癈`, so a validity probe would
+corrupt correct Western text. The converter therefore requires either font-name
+evidence, or high bytes that are overwhelmingly *paired* (genuine double-byte
+text is ~100% paired; CP1252 text with isolated accents is ~0%), before it will
+choose a double-byte codepage. See `detectSourceEncoding` in `dsn2kicad.hs`,
+and `--source-encoding` to override it.
+
+One design can also **mix codepages in a single pool**: board 0100 carries both
+a CP1252 `B0` and a GBK `A1 E3`, both meaning `°`. No whole-file choice is
+correct there, so strings the chosen codepage cannot decode fall back to CP1252
+individually.
 
 Page-stream component records carry a **u16 LE value index** (located
 immediately after the ref-name null terminator — see "Component records"

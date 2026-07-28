@@ -30,7 +30,8 @@ CPython runs, including in a browser via Pyodide. See
 Full schematic conversion:
 
 ```
-scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet] <file.DSN> [output_dir]
+scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet]
+                  [--source-encoding=NAME] <file.DSN> [output_dir]
 ```
 
 Converts all schematic pages, generates a root schematic with hierarchical sheet
@@ -117,6 +118,15 @@ Options:
   KiCad editor as in any native schematic.
 - `--no-worksheet` — Do not emit or reference the project-local worksheet; KiCad
   will use its configured/default drawing sheet instead.
+- `--source-encoding=NAME` — Force the codepage used to read text from the
+  `Library` string pool (component values, title-block fields). OrCAD writes
+  that text in the authoring machine's Windows ANSI codepage and records
+  nowhere which one it was, so the converter normally detects it from the
+  design's font names; this overrides the detection when it has no evidence to
+  work from or gets it wrong. Accepts `utf-8`, `cp1252` (`windows-1252`,
+  `ansi`), `cp932` (`shift-jis`, `sjis`), `cp936` (`gbk`, `gb2312`) and `cp950`
+  (`big5`). Without it a Chinese-authored design's `MP3302DJ–LF–Z` would read as
+  `MP3302DJ¨CLF¨CZ`. See `doc/ORCAD_FILE_FORMAT.md` § String encoding.
 - `--debug-bbox` *(Python entrypoint only)* — Draw debug rectangles around
   component bounding boxes.
 - `--debug-ref-val` *(Python entrypoint only)* — Overlay text-placement markers
@@ -238,6 +248,20 @@ Walks the OLE compound document and prints all parseable records from every stre
 pip install -e ".[dev]"
 pytest
 ```
+
+## Regenerating the codepage tables
+
+The legacy Windows codepage tables (CP932 / CP936 / CP950 / CP1252) used to
+decode `Library` string-pool text are generated into `scripts/dsn2kicad.hs`
+between the `GENERATED CODEPAGE TABLES` markers. They come from Python's own
+codecs, so no third-party package is needed:
+
+```
+python3 scripts/gen_codepage_tables.py
+```
+
+The converter carries its own tables because it has no C FFI — iconv is
+unavailable, and the WASM target rules it out regardless.
 
 ## Regenerating the font tables
 

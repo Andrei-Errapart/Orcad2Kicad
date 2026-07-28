@@ -35,6 +35,9 @@ scripts/olb2xml <file.OLB>              # dump OLB library as XML
 
 # Regenerate the committed font metric tables after changing the char/font set
 python3 scripts/gen_text_metrics.py     # needs dev extras (freetype-py + fonttools)
+
+# Regenerate the embedded Windows codepage tables (stdlib only, no dev extras)
+python3 scripts/gen_codepage_tables.py
 ```
 
 The only **runtime** dependency is `olefile` (pure Python) — `freetype-py` /
@@ -92,6 +95,16 @@ Everything happens in memory:
   Arial Narrow / Courier New advance widths, plus KiCad Newstroke).
   **`text_metrics_data.py` is generated** by `gen_text_metrics.py` — never
   hand-edit it; edit the generator and regenerate.
+- `gen_codepage_tables.py` — generates the CP932/CP936/CP950/CP1252 tables
+  **inline in `dsn2kicad.hs`**, between the `GENERATED CODEPAGE TABLES`
+  markers (~185 KB, about half that file). Same rule as the font tables: never
+  hand-edit the block, edit the generator. They decode the `Library` string
+  pool, which OrCAD writes in the authoring machine's Windows ANSI codepage
+  without recording which one — `detectSourceEncoding` infers it from the
+  design's font names, `--source-encoding` overrides. Read
+  `doc/ORCAD_FILE_FORMAT.md` § String encoding before touching any of this;
+  in particular, content sniffing alone must never select a double-byte
+  codepage (`0°C` is also valid GBK).
 - `scripts/kicad_symbols/` — bundled `power.kicad_sym` / `Device.kicad_sym`
   (CC-BY-SA 4.0 + KiCad Library Exception, see `NOTICE`), used only for
   `--kicad-power` / `--kicad-rc` so no KiCad install is required.

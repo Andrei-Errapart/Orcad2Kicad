@@ -53,6 +53,7 @@ the Python tooling.
 | `Dsn/Page` | `parsePage` and the page-stream record parsers | 900 |
 | `Dsn/Cache` | `parseCacheSymbols`, cache graphics | 450 |
 | `Dsn/Library` | raw pool strings, raw style records | 120 |
+| `Dsn/Record` | record markers, page tags, cell-name scanning | 60 |
 | `Model` | domain types, `RenderConfig`, naming/derivation helpers | 350 |
 | `Orcad/Geometry` | coordinates, rotation, wire topology | 465 |
 | `Text/Layout` | text measurement and placement | 285 |
@@ -135,6 +136,25 @@ A naive split has import cycles. Each is fixed by a targeted move:
 | `Orcad.Geometry → Dsn.Page` | `synthesizeBusEntries` calls `busMemberPrefix` | `busMemberPrefix` is pure string parsing → `Model` |
 | `Uuid → Types`, `Uuid → Encoding` | `pageObjectUuid` takes a `Page`; `deterministicUuid` uses `utf8Encode` | page-aware UUID helpers → `Emit.Page`; `utf8Encode` → `Utf8` leaf |
 | `Text.Layout → Sexpr` | `componentFieldAt` returns `KExpr` | `Text.Layout` returns a placement result `(x, y, angle)`; `Emit.Page` builds the `kAt` node |
+| `Dsn.Cache ↔ Dsn.Page` | `recordMarker` lives with the page parsers; `parseComponents` calls `findCellMatches` | both are shared record-scanning primitives → new `Dsn.Record` |
+| `Model → Orcad.Geometry` | `symbolPinsForOutput` calls `symbolOrigin` | it computes pin geometry → `Orcad.Geometry` (which may depend on `Model`, not the reverse) |
+| `Convert → Main` | `convertStreams` takes `Options` | `ConvertOptions` lives in `Convert`; `CliOptions` in `Main` wraps it |
+
+The partition was checked mechanically against a reference graph of all 324
+top-level bindings. With the moves above applied it is a DAG in eight layers:
+
+```
+L0  Binary, Codepage.Tables, Sha256, Text.MetricsTables, Utf8
+L1  Dsn.Record, Encoding, Model, Uuid
+L2  Container, Dsn.Library, Orcad.Geometry
+L3  Dsn.Cache, Dsn.Page, Sexpr, Text.Layout
+L4  Emit.Project, Emit.Symbol
+L5  Emit.Page
+L6  Convert
+L7  Main
+```
+
+This layering is the extraction order in the migration plan.
 
 ## Build and tooling changes
 
@@ -171,22 +191,25 @@ later verification step.
 Bottom-up. Each step compiles, passes the full acceptance check, and is a
 separate commit that can be reverted alone.
 
+Following the layering above:
+
 1. Tooling (items 1–5 above). The cache-key regression test cannot be written
    yet — there is nothing to import — so step 1 lands the `-i` flag, the
    multi-file hashing and the argv helper against the still-single module,
    proving only that nothing broke.
-2. Generated leaves: `Codepage/Tables`, `Text/MetricsTables`. Plus `Binary`,
-   `Sha256`, `Utf8`. **This step adds the cache-key regression test**: touch
+2. **L0** — `Codepage/Tables`, `Text/MetricsTables`, `Binary`, `Sha256`,
+   `Utf8`. **This step adds the cache-key regression test**: touch
    `Text/MetricsTables.hs`, assert the wrapper's key changes and a new binary
    is produced. It is the first step where a stale cache could hide a bug, so
    it is the first step where the test can exist.
-3. `Encoding`, `Uuid`, `Container`.
-4. `Model` — including the `RenderConfig` rewiring, as its own commit, since it
-   is the only step that touches signatures broadly.
-5. `Orcad/Geometry`, `Text/Layout` (including the `componentFieldAt` split).
-6. `Dsn/Library`, `Dsn/Cache`, `Dsn/Page`.
-7. `Sexpr`, then `Emit/Symbol`, `Emit/Page`, `Emit/Project`.
-8. `Convert`, leaving `Main` as CLI and IO only.
+3. **L1** — `Dsn/Record`, `Encoding` (with the detector inversion), `Uuid`,
+   and `Model` **including the `RenderConfig` rewiring as its own commit**,
+   since it is the only change that touches signatures broadly.
+4. **L2** — `Container`, `Dsn/Library`, `Orcad/Geometry`.
+5. **L3** — `Dsn/Cache`, `Dsn/Page`, `Sexpr`, `Text/Layout` (with the
+   `componentFieldAt` split).
+6. **L4–L5** — `Emit/Project`, `Emit/Symbol`, then `Emit/Page`.
+7. **L6–L7** — `Convert`, leaving `Main` as CLI and IO only.
 
 ## Acceptance
 

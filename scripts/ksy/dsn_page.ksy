@@ -29,7 +29,7 @@ doc: |
   Currently modeled record types:
     - page_header               (first record in the stream)
     - wire_body                 (wire segments, type 0x30)
-    - net_alias_record          (net-name labels, type 0x30 with x1==0)
+    - net_alias_record          (page-local net-name labels, type 0x30 with x1==0)
     - power_symbol_body         (GND/VCC instances)
     - off-page connector placements (decoded by dsn2kicad.hs from the
                                       StructGraphicInst records)
@@ -57,9 +57,10 @@ doc: |
   `doc/ORCAD_FILE_FORMAT.md`.
 
   Not yet modeled: hierarchical block references and the TitleBlock cell
-  instance. Off-page connectors are not represented as a declarative type
-  below yet, but their record layout and electrical hotpoint transform are
-  implemented in dsn2kicad.hs.
+  instance. Off-page connectors, which are the source records for cross-page
+  signal labels, are not represented as a declarative type below yet, but
+  their record layout and electrical hotpoint transform are implemented in
+  dsn2kicad.hs.
 
   Graphic-primitive color: each rectangle / line / ellipse / polygon
   record (and each page_text_record) is preceded by a StructGraphicInst
@@ -195,8 +196,10 @@ types:
 
   net_alias_record:
     doc: |
-      A net-name label (net alias) placed on a wire. Shares the marker and
-      the `0x30` subtype with `wire_body`, but instead of valid wire
+      A page-local net-name label (net alias) placed on a wire. It does not
+      confer cross-page scope; that comes from an OFFPAGE symbol instance.
+      The record shares the marker and the `0x30` subtype with `wire_body`,
+      but instead of valid wire
       endpoints it carries an ASCII net name, and the field at the wire's
       `x1` offset (marker+20) is **zero** — that zero is what `parse_net_aliases`
       uses to tell aliases apart from wires.

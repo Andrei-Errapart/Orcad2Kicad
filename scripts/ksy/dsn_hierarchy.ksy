@@ -7,11 +7,13 @@ meta:
     - dsn_common
 
 doc: |
-  The Hierarchy stream contains cross-page net connectivity. dsn2kicad
-  parses it with `parse_hierarchy_nets` and logs the number of hierarchy
-  nets found, but the current converter does not use this stream to decide
-  which nets become KiCad global labels. Global labels are derived from the
-  per-page net tables by finding net names that appear on multiple pages.
+  The Hierarchy stream contains the design-wide net catalog and trailing
+  pin-to-net connectivity blocks. dsn2kicad parses the marker-framed net
+  names with `parse_hierarchy_nets` for diagnostics, but the decoded portion
+  does not identify label scope or placement. Signal globals are represented
+  on page streams by placed OFFPAGE symbol instances; power-symbol instances
+  carry global power scope. Repeated names in per-page net tables are not a
+  global-label marker.
 
   Header begins with `B1` (0x42 0x31) followed by the schematic name
   (`SCHEMATIC1`). After the header, net records follow, each framed by

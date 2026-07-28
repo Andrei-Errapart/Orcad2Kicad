@@ -630,11 +630,14 @@ From the one small-board Hierarchy stream, 16 nets were extracted:
 
 After the net name records, there are repeating blocks containing `BH` markers and binary data — likely the pin-to-net connectivity records linking component pins to nets. These records are ~26 bytes each and repeat once per connection point.
 
-**The Hierarchy stream provides cross-page net-name information.** Net names can
-be used to determine which nets are global (appear on multiple pages → global
-labels in KiCad) versus local (single page → local labels). The per-page net
-tables in each page stream provide the actual wire-to-net assignments currently
-used by `scripts/dsn2kicad`.
+**The Hierarchy stream provides a design-wide net catalog, not label scope.**
+The decoded net records identify names and IDs, but do not identify page
+placement or whether a label is local or global. A name appearing in multiple
+page net tables is therefore not sufficient evidence for a KiCad global label.
+Signal globals are recorded as placed `OFFPAGE...` symbol instances in the page
+streams; their electrical hotpoints resolve through the page net table. Power
+symbol instances provide global power scope. The per-page net tables provide
+the wire-to-net assignments used by `scripts/dsn2kicad`.
 
 ### Page Streams
 

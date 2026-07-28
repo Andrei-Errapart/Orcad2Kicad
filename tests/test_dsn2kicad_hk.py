@@ -932,6 +932,73 @@ def test_dsn2kicad_hk_rejects_duplicate_page_output_names(dsn_fixtures, tmp_path
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_disambiguates_page_named_after_project(
+    dsn_fixtures, tmp_path,
+):
+    dsn = tmp_path / "same-name.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        "Views/SCHEMATIC1/Pages/same-name":
+            dsn_fixtures.make_page("same-name"),
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    root = out_dir / "same-name.kicad_sch"
+    page = out_dir / "same-name_sheet.kicad_sch"
+    assert root.exists()
+    assert page.exists()
+    root_tree = kicad_sexpr.parse(root.read_text(encoding="utf-8"))
+    sheet = kicad_sexpr.find_first(root_tree, "sheet")
+    sheetfile = next(
+        prop for prop in kicad_sexpr.find_all(sheet, "property")
+        if kicad_sexpr.strip_quotes(prop[1]) == "Sheetfile"
+    )
+    assert kicad_sexpr.strip_quotes(sheetfile[2]) == "same-name_sheet.kicad_sch"
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_rejects_cyclic_ole_directory(
+    dsn_fixtures, tmp_path,
+):
+    dsn_bytes = bytearray(dsn_fixtures.make_ole({
+        PAGE: dsn_fixtures.make_page("01_CYCLE"),
+    }))
+    # The synthetic OLE lays out Root Entry as SID 0 and Views as SID 1.
+    # Point Views' right sibling back to itself.
+    views_sid = 1
+    directory_offset = 512
+    entry_size = 128
+    right_sibling_offset = 72
+    struct.pack_into(
+        "<I",
+        dsn_bytes,
+        directory_offset + views_sid * entry_size + right_sibling_offset,
+        views_sid,
+    )
+    dsn = tmp_path / "cycle.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_bytes)
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "OLE directory entry cycle at SID 1" in result.stderr
+    assert not out_dir.exists()
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_extends_pin_hotpoints_and_wires(dsn_fixtures, tmp_path):
     page = dsn_fixtures.make_page(
         "01_EXTEND",
@@ -1247,12 +1314,18 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
             ("TP", "CB1", 0, 10, 90, 0),
             ("TP", "CB2", 0, 10, 110, 0),
         ],
+        off_page_connectors=[
+            ("OFFPAGELEFT-L", (20, 140, 120, 160), 0),
+        ],
     )
     page2 = dsn_fixtures.make_page(
         "02_CONNECT",
         nets={2: "SHARED"},
         wires=[(2, 0, 0, 20, 0)],
         components=[("TP", "G2", 0, 0, 0, 0)],
+        off_page_connectors=[
+            ("OFFPAGELEFT-L", (20, -10, 120, 10), 0),
+        ],
     )
     cache = dsn_fixtures.make_cache({
         "TP": [("P", 0, 0, 10, 0, 0x21)],
@@ -1641,7 +1714,9 @@ def test_dsn2kicad_hk_uses_explicit_off_page_connectors(
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
-def test_dsn2kicad_hk_net_names_are_case_insensitive(dsn_fixtures, tmp_path):
+def test_dsn2kicad_hk_repeated_net_names_stay_local(
+    dsn_fixtures, tmp_path,
+):
     page_names = ["RailName", "RAILNAME", "RailName"]
     members = {"Cache": dsn_fixtures.make_cache({
         "TP": [("P", 0, 0, 10, 0, 0x21)],
@@ -1671,9 +1746,10 @@ def test_dsn2kicad_hk_net_names_are_case_insensitive(dsn_fixtures, tmp_path):
         tree = kicad_sexpr.parse(
             (out_dir / f"Page{page_number}.kicad_sch").read_text(encoding="utf-8")
         )
+        assert not kicad_sexpr.find_all(tree, "global_label")
         assert [
             kicad_sexpr.strip_quotes(label[1])
-            for label in kicad_sexpr.find_all(tree, "global_label")
+            for label in kicad_sexpr.find_all(tree, "label")
         ] == ["RailName"]
 
     kicad_cli = shutil.which("kicad-cli")
@@ -1689,7 +1765,7 @@ def test_dsn2kicad_hk_net_names_are_case_insensitive(dsn_fixtures, tmp_path):
             timeout=30,
         )
         assert export_result.returncode == 0, export_result.stderr
-        assert (("TP1", "1"), ("TP2", "1"), ("TP3", "1")) in (
+        assert (("TP1", "1"), ("TP2", "1"), ("TP3", "1")) not in (
             _net_pin_groups(netlist)
         )
 

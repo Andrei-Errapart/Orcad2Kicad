@@ -24,7 +24,7 @@ kept in sync as the parser grew — locate functions by name, not by line.
 | `dsn_page.ksy` | `Views/SCHEMATIC1/Pages/<page>` | `dsn2kicad_py.py`: `parse_page_header`, `parse_net_table`, `parse_wires`, `parse_net_aliases`, `parse_components`, `_parse_pin_records`, `parse_power_symbols`, `parse_text_annotations`, `parse_page_graphics`, `_parse_page_polygon` |
 | `dsn_cache.ksy` | `Cache` | `dsn2kicad_py.py`: `parse_cache_cells`, `_parse_cache_graphics`, `_parse_cache_pin_numbers`, `parse_cache_pin_visibility`, `parse_cache_bboxes`, `extract_orcad_power_glyphs` |
 | `dsn_library.ksy` | `Library` | `dsn2kicad_py.py`: `parse_library_styles` (60-byte style records); `parse_library_value_strings` (via `olb_parser.parse_library_stream`) |
-| `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `dsn2kicad_py.py`: `parse_hierarchy_nets` (parsed/logged; global-label decisions currently come from per-page net-table overlap) |
+| `dsn_hierarchy.ksy` | `Views/SCHEMATIC1/Hierarchy/Hierarchy` | `dsn2kicad_py.py`: `parse_hierarchy_nets` (parsed/logged as a net catalog; decoded records do not identify label scope or placement) |
 | `dsn_directory.ksy` | `Cells Directory`, `Parts Directory`, etc. | **docs only** — from external stream inspection; not parsed by `dsn2kicad_py.py` |
 
 `dsn2kicad_py.py` opens only these DSN streams: each `Views/SCHEMATIC1/Pages/<page>`,

@@ -408,20 +408,18 @@ convertStreams opts sourceBytes members = do
       libraryValues = maybe [] parseLibraryValueStrings libraryBody
       rawPages = canonicalizePageNetNames
         [parsePage libraryValues name body | (_, _, name, body) <- pageMembers]
-      pages = map (refinePageComponents cacheSymbols) rawPages
+      refinedPages = map (refinePageComponents cacheSymbols) rawPages
+      pages = map (disambiguatePageOutputName project) refinedPages
       textStyles = maybe [] parseLibraryTextStyles libraryBody
       multiUnits = detectMultiUnitComponents pages
-      globalNets = globalNetNames pages
-      hasOffPageRecords = any (not . null . pageOffPageConnectors) pages
       powerRefs = assignPowerReferences pages
       project = optProjectName opts
       pageCount = length pages
       dsnDigest = sha256 sourceBytes
       pageFiles =
         [ (pageOutputName page, generatePageSch
-            dsnDigest opts project cacheSymbols multiUnits globalNets
-            hasOffPageRecords powerRefs textStyles pageIndex
-            pageCount page)
+            dsnDigest opts project cacheSymbols multiUnits powerRefs
+            textStyles pageIndex pageCount page)
         | (pageIndex, page) <- zip [1..] pages
         ]
       worksheetFiles =
@@ -452,6 +450,12 @@ pageStreamPath path =
     ["Views", viewName, "Pages", pageName]
       | not (null viewName) && not (null pageName) -> Just (viewName, pageName)
     _ -> Nothing
+
+disambiguatePageOutputName :: String -> Page -> Page
+disambiguatePageOutputName project page
+  | pageOutputName page == project ++ ".kicad_sch" =
+      page { pageOutputName = project ++ "_sheet.kicad_sch" }
+  | otherwise = page
 
 splitSlash :: String -> [String]
 splitSlash = splitOn '/'
@@ -627,23 +631,30 @@ parseDirectoryEntries bytes =
 collectOleStreams :: OleFile -> Either String [(FilePath, BS.ByteString)]
 collectOleStreams ole = do
   root <- directoryEntryAt (oleDirectory ole) 0
-  collectChildren [] (dirChild root)
+  (_, streams) <- collectChildren (Set.singleton 0) [] (dirChild root)
+  Right streams
   where
-    collectChildren _ Nothing = Right []
-    collectChildren prefix (Just sid) = do
-      entry <- directoryEntryAt (oleDirectory ole) sid
-      left <- collectChildren prefix (dirLeft entry)
-      current <- collectEntry prefix entry
-      right <- collectChildren prefix (dirRight entry)
-      Right (left ++ current ++ right)
+    collectChildren seen _ Nothing = Right (seen, [])
+    collectChildren seen prefix (Just sid)
+      | Set.member sid seen =
+          Left ("OLE directory entry cycle at SID " ++ show sid)
+      | otherwise = do
+          entry <- directoryEntryAt (oleDirectory ole) sid
+          let seen' = Set.insert sid seen
+          (afterLeft, left) <- collectChildren seen' prefix (dirLeft entry)
+          (afterCurrent, current) <- collectEntry afterLeft prefix entry
+          (afterRight, right) <-
+            collectChildren afterCurrent prefix (dirRight entry)
+          Right (afterRight, left ++ current ++ right)
 
-    collectEntry prefix entry
-      | dirType entry == 1 = collectChildren (prefix ++ [dirName entry]) (dirChild entry)
-      | dirType entry == 5 = collectChildren prefix (dirChild entry)
+    collectEntry seen prefix entry
+      | dirType entry == 1 =
+          collectChildren seen (prefix ++ [dirName entry]) (dirChild entry)
+      | dirType entry == 5 = collectChildren seen prefix (dirChild entry)
       | dirType entry == 2 = do
           body <- readOleStream ole entry
-          Right [(intercalate "/" (prefix ++ [dirName entry]), body)]
-      | otherwise = Right []
+          Right (seen, [(intercalate "/" (prefix ++ [dirName entry]), body)])
+      | otherwise = Right (seen, [])
 
 readOleStream :: OleFile -> DirEntry -> Either String BS.ByteString
 readOleStream ole entry
@@ -1109,21 +1120,6 @@ sanitizePageName = trimUnderscores . collapseUnderscores . map sanitize
 
     trimUnderscores = reverse . dropWhile (== '_') . reverse . dropWhile (== '_')
 
-globalNetNames :: [Page] -> Set.Set String
-globalNetNames pages =
-  Map.keysSet $ Map.filter ((> 1) . Set.size) netPages
-  where
-    netPages = foldl addPage Map.empty (zip [(1 :: Int)..] pages)
-
-    addPage current (pageIndex, page) =
-      foldl
-        (\nets name ->
-          if null name
-            then nets
-            else Map.insertWith Set.union name (Set.singleton pageIndex) nets)
-        current
-        (Map.elems (pageNets page))
-
 canonicalizePageNetNames :: [Page] -> [Page]
 canonicalizePageNetNames pages = map canonicalizePage pages
   where
@@ -1308,8 +1304,8 @@ computeJunctions wires = sortOn id $ Set.toList $ Set.fromList
       Map.empty
       wires
 
-placeWireLabels :: Set.Set String -> Set.Set String -> [Wire] -> [NetLabel]
-placeWireLabels globalNets powerNets wires =
+placeWireLabels :: Set.Set String -> [Wire] -> [NetLabel]
+placeWireLabels powerNets wires =
   concat
     [ concatMap (labelsForComponent name) (wireComponents netWires)
     | (name, netWires) <- Map.toList groupedByName
@@ -1324,10 +1320,9 @@ placeWireLabels globalNets powerNets wires =
           (wireNetName wire) [wire] groups
 
     labelsForComponent name component =
-      [ let global = Set.member name globalNets
-            outwardAngle = wireAngleAt point component
-            angle = if global then outwardAngle else (outwardAngle + 180) `mod` 360
-        in NetLabel global name (fst point) (snd point) angle
+      [ let outwardAngle = wireAngleAt point component
+            angle = (outwardAngle + 180) `mod` 360
+        in NetLabel False name (fst point) (snd point) angle
       | point <- freeEndpoints component
       ]
 
@@ -1359,16 +1354,11 @@ placeWireLabels globalNets powerNets wires =
 data BusEntry = BusEntry Int Int Int Int
   deriving Show
 
-synthesizeBusEntries :: [Wire] -> [Wire] -> ([BusEntry], Set.Set (Int, Int), Set.Set String)
+synthesizeBusEntries :: [Wire] -> [Wire] -> ([BusEntry], Set.Set (Int, Int))
 synthesizeBusEntries busWires regularWires =
   let entries = mapMaybe entryForWire regularWires
   in ( entries
      , Set.fromList [(x + dx, y + dy) | BusEntry x y dx dy <- entries]
-     , Set.fromList
-         [ wireNetName wire
-         | wire <- regularWires
-         , any (isMemberOf (wireNetName wire) . fst) busPrefixes
-         ]
      )
   where
     busPoints = Map.fromListWith Set.union
@@ -2874,15 +2864,13 @@ generatePageSch
   -> String
   -> Map.Map String CacheSymbol
   -> MultiUnitRegistry
-  -> Set.Set String
-  -> Bool
   -> Map.Map (FilePath, Int) String
   -> [TextStyle]
   -> Int
   -> Int
   -> Page
   -> String
-generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOffPageRecords powerRefs textStyles pageIndex pageCount page =
+generatePageSch uuidSeed opts _project cacheSymbols multiUnits powerRefs textStyles pageIndex pageCount page =
   renderKicad $
     kNode "kicad_sch" $
       [ kNode "version" [kInt 20260306]
@@ -3065,7 +3053,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       | oldPoint /= wirePoint1 wire && oldPoint /= wirePoint2 wire = True
       | otherwise = not (wireEndpointCanMove wire oldPoint newPoint)
     subtractPoint (x1, y1) (x2, y2) = (x1 - x2, y1 - y2)
-    (busEntries, busEntryLandings, busMemberNets) =
+    (busEntries, busEntryLandings) =
       synthesizeBusEntries busWires regularWires
     junctions = computeJunctions regularWires
     powerNets = Set.fromList
@@ -3075,8 +3063,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       ]
     regularLabels =
       [ label
-      | label <- placeWireLabels
-          (Set.difference generatedGlobalNets busMemberNets) powerNets regularWires
+      | label <- placeWireLabels powerNets regularWires
       , let point = (netLabelX label, netLabelY label)
       , not (Set.member point pinPositions)
       , not (Set.member point powerPositions)
@@ -3086,7 +3073,7 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       ]
     busLabels =
       [ label
-      | label <- placeWireLabels busGlobalNets Set.empty busWires
+      | label <- placeWireLabels Set.empty busWires
       , not (Set.member (netLabelX label, netLabelY label) busEntryLandings)
       , not (Set.member (netLabelX label, netLabelY label) offPagePositions)
       ]
@@ -3096,6 +3083,10 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       , not (Set.member (netLabelX alias, netLabelY alias) powerPositions)
       , not (Set.member (netLabelX alias, netLabelY alias) offPagePositions)
       ]
+    -- OrCAD net aliases are page-local.  Cross-page signal scope is recorded
+    -- by placed OFFPAGE symbols, while power-symbol instances carry global
+    -- power scope.  A net-table name repeated on another page is not itself a
+    -- scope marker.
     explicitOffPageLabels =
       [ NetLabel True (offPageNetName connector)
           (offPageX connector) (offPageY connector) (offPageAngle connector)
@@ -3105,12 +3096,6 @@ generatePageSch uuidSeed opts _project cacheSymbols multiUnits globalNets hasOff
       ]
     labels = unique
       (regularLabels ++ explicitAliases ++ busLabels ++ explicitOffPageLabels)
-    generatedGlobalNets
-      | hasOffPageRecords = Set.empty
-      | otherwise = globalNets
-    busGlobalNets
-      | hasOffPageRecords = Set.empty
-      | otherwise = Set.fromList (map wireNetName busWires)
     offPagePositions = Set.fromList
       [ (offPageX connector, offPageY connector)
       | connector <- pageOffPageConnectors page

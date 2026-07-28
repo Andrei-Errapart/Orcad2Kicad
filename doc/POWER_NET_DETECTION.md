@@ -3,6 +3,9 @@
 Investigation notes for data-driven power net classification from OrCAD
 power-port records in `scripts/dsn2kicad`.
 
+Findings measured on a real design cite it by **board number** ("board 0001").
+Those designs live in the integration corpus in the test repository, not here.
+
 ## Binary Format Investigation
 
 ### Locations examined
@@ -122,14 +125,14 @@ where `rot = (orient >> 8) & 3`, `width = 20`, and `height = 10` for observed
 OrCAD power-port logical boxes. This replaces the previous per-record hotpoint
 equations for `GND`, `VCC_BAR`, `VCC`, and `VCC_CIRCLE`.
 
-The `VCC`/`VCC_CIRCLE` transform is confirmed on `board 0120`;
-all 114 records land exactly on parsed wire endpoints or component pins.
+The `VCC`/`VCC_CIRCLE` transform is confirmed on board 0120; all 114 records
+land exactly on parsed wire endpoints or component pins.
 
 The resolved record name also selects the emitted KiCad power-symbol geometry.
 For positive power symbols, `scripts/dsn2kicad` first tries to extract matching
 OrCAD `GlobalSymbol` primitive graphics from the DSN Cache (`VCC_BAR`,
 `VCC_CIRCLE`, etc.) and emits those as project-local KiCad power symbols.
-Ground-like Cache glyph names are also accepted; `board 0005` uses `GND2` for
+Ground-like Cache glyph names are also accepted; board 0005 uses `GND2` for
 the resolved net `GROUND_POWER` and `GND_SIGNAL` for the resolved net of the
 same name. GND-style symbols still use the controlled KiCad GND triangle path.
 
@@ -151,7 +154,7 @@ comparing to the DSN-unit values implied by generated KiCad output.
 
 ### Validation on test 0001
 
-Across all page streams in `board 0001`:
+Across all page streams on board 0001:
 
 | Symbol | Hotpoints matching a wire endpoint | Notes |
 |--------|------------------------------------|-------|
@@ -448,7 +451,7 @@ These approaches were investigated and confirmed not viable:
 
 ## Test Data Reference
 
-Test case: `board 0001`
+Test case: board 0001
 
 Hotpoint-based classification confirms these VCC_BAR-style power nets:
 ```

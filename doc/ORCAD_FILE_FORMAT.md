@@ -8,6 +8,13 @@ The current local fixtures cover multiple boards, including small two-page
 schematics and a larger multi-page schematic. Each fixture has a DSN and, where
 available, a matching PDF export for visual cross-checking.
 
+Observations below that could only be made on a real design cite it by **board
+number** — "board 0100", "boards 0114–0122". These identify designs in the
+integration corpus, which lives in the test repository, not here; this repo
+carries no real design data. Wherever a claim can be reduced to behaviour, it
+is instead pinned by a synthetic fixture in `tests/`, and the test name is
+given in parentheses so the claim can be checked without the corpus.
+
 ---
 
 ## DSN File Format (OrCAD Capture Schematic)
@@ -455,15 +462,17 @@ matter.
 - Adjacency in the pool is insertion order, not structure. Strings that
   belong to one record can sit thousands of entries apart, and strings
   that sit next to each other can belong to unrelated records — including
-  **stale runs left by ancestor designs**. In `0100.DSN` the
-  live document number `DOC-2000-001` is interned next to the previous
-  generation's `DOC-1000-001` / `Cover Page (rev A)`, ~1500
-  entries away from that design's actual sheet titles. Nothing in a
-  neighbourhood can be trusted to belong together; always follow an index.
+  **stale runs left by ancestor designs**. On board 0100 the live document
+  number is interned next to the previous generation's document number and
+  cover-page title, ~1500 entries away from that design's actual sheet
+  titles. Nothing in a neighbourhood can be trusted to belong together;
+  always follow an index
+  (`test_pool_neighbours_may_be_stale_ancestors`).
 - The entry count is a plain **u32**. Reading it as a u16 shifts every
   index by one, and (with a sanity cap of 10000) silently discards the
   whole pool on large designs, which is what made component values fall
-  back to cell names on boards 0100 and 0114-0122.
+  back to cell names on boards 0100 and 0114–0122
+  (`test_pool_count_is_u32`).
 
 The first pool entry is an empty string, so index 0 means "no value".
 
@@ -1243,12 +1252,12 @@ property table (above)
 | page-header `modified` | `(date ...)`, as ISO-8601 UTC |
 | sheet position | `(comment 2 "Sheet N of M")` |
 
-Fields genuinely vary per page: in `0100.DSN` all eleven
-sheets carry distinct titles ("Cover Page", "...  Power
-Management", ...), three distinct dates and two paper sizes, over a
-shared `Doc` and `RevCode`. Designs also use the fields differently —
-boards 0114-0122 put each sheet's own name in `Doc` and label that slot
-"Page Name" in their custom frame.
+Fields genuinely vary per page: on board 0100 all eleven sheets carry
+distinct titles ("... Cover Page", "...  Power Management", ...), three
+distinct dates and two paper sizes, over a shared `Doc` and `RevCode`
+(`test_dsn2kicad_hk_title_block_is_per_page`). Designs also use the
+fields differently — boards 0114–0122 put each sheet's own name in `Doc`
+and label that slot "Page Name" in their custom frame.
 
 **Date**: contrary to an earlier note in this document, the date *is*
 stored — it is the page's `modified` timestamp, which Capture renders in
@@ -1263,8 +1272,8 @@ approach and it cannot work: the pool is a deduplicated heap (see
 interspersed with live ones. It also forced a document-number matcher so
 narrow that only one issuer's drawings were recognised, while still
 mis-firing on part numbers shaped like document numbers
-(`CONN-AF-01-001`); see `board 0119` in the test
-repository.
+(`CONN-AF-01-001` and similar). Resolve `Doc` from the page property
+table instead (`test_part_number_is_not_mistaken_for_doc_number`).
 
 #### KiCad R/C vs OrCAD R/C symbol differences
 

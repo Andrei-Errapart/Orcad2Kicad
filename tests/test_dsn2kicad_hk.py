@@ -405,6 +405,159 @@ def test_dsn2kicad_hk_title_block_is_per_page(dsn_fixtures, tmp_path):
         ]
 
 
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_pool_neighbours_may_be_stale_ancestors(dsn_fixtures, tmp_path):
+    """Pool adjacency is meaningless; only the property indices are load-bearing.
+
+    The Library pool is a deduplicated heap, so a live title-block value can be
+    interned right beside a stale run left by an ancestor design, far from the
+    live sheet title. Resolution must follow the page-header property indices.
+    Any implementation that reads a value's neighbours fails here.
+    """
+    # A stale ancestor run, with the live document number interned in the
+    # middle of it -- exactly the trap a neighbour scan falls into.
+    pool = [
+        "filler",
+        "DOC-1000-001",             # ancestor document number
+        "Cover Page (rev A)",       # ancestor sheet title
+        "DOC-2000-001",             # live document number, stale neighbours
+        "Power Management (rev A)",  # ancestor sheet title
+    ]
+    live_doc_index = pool.index("DOC-2000-001")
+    # ...and the live title interned much later, nowhere near its document.
+    pool += [f"pad{n}" for n in range(40)]
+    entries, properties = dsn_fixtures.title_block_properties(
+        {"Title": "Live Cover Page", "RevCode": "C"}, base=len(pool),
+    )
+    pool += entries
+    # Point Doc at the live value by index, across the whole pool.
+    doc_name_index = len(pool)
+    pool += ["Doc"]
+    properties = list(properties) + [(doc_name_index, live_doc_index)]
+
+    page = dsn_fixtures.make_page(
+        "01_COVER", properties=properties, modified=1617261986,
+        nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+    )
+    dsn = tmp_path / "ancestors.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        PAGE: page, "Library": dsn_fixtures.make_library(pool),
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    tree = kicad_sexpr.parse(
+        (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    )
+    title_block = kicad_sexpr.find_first(tree, "title_block")
+    assert kicad_sexpr.find_first(title_block, "title") == [
+        "title", '"Live Cover Page"',
+    ]
+    # The live document number, not either stale ancestor beside it.
+    assert kicad_sexpr.find_all(title_block, "comment")[0] == [
+        "comment", "1", '"DOC-2000-001"',
+    ]
+    schematic = (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    assert "DOC-1000-001" not in schematic
+    assert "Cover Page (rev A)" not in schematic
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_pool_count_is_u32(dsn_fixtures, tmp_path):
+    """The pool entry count is u32; a u16 read shifts every index by one.
+
+    `make_library` writes the count with `<I`. Reading only its low half leaves
+    the two high (zero) bytes unconsumed, which the parser then takes as a
+    zero-length first string -- shifting every subsequent index and making
+    component values fall back to cell names.
+    """
+    pool = ["unused", "Part Reference", "Value", "22k", "100n"]
+    page = dsn_fixtures.make_page(
+        "01_VALUES", nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+        components=[
+            ("RES", "R1", pool.index("22k"), 20, 20, 0),
+            ("RES", "R2", pool.index("100n"), 60, 20, 0),
+        ],
+    )
+    cache = dsn_fixtures.make_cache({
+        "RES": [("1", 0, 0, 10, 0, 0x21), ("2", 20, 0, 10, 0, 0x21)],
+    })
+    dsn = tmp_path / "u32pool.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        PAGE: page, "Cache": cache,
+        "Library": dsn_fixtures.make_library(pool),
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    tree = kicad_sexpr.parse(
+        (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    )
+    values = {}
+    for symbol in kicad_sexpr.find_all(tree, "symbol"):
+        if not kicad_sexpr.find_first(symbol, "lib_id"):
+            continue
+        properties = {
+            kicad_sexpr.strip_quotes(prop[1]): kicad_sexpr.strip_quotes(prop[2])
+            for prop in kicad_sexpr.find_all(symbol, "property")
+        }
+        values[properties["Reference"]] = properties["Value"]
+    # Off-by-one from a u16 read would yield "Value"/"22k"; a discarded pool
+    # would fall back to the cell name "RES".
+    assert values == {"R1": "22k", "R2": "100n"}
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_part_number_is_not_mistaken_for_doc_number(dsn_fixtures, tmp_path):
+    """`Doc` comes from the property table, never from a pool string search.
+
+    Part numbers share the letters-letters-digits-digits shape of document
+    numbers, so any matcher scanning the pool promotes an unrelated component
+    string into the title block.
+    """
+    # A part-number-shaped string sits in the pool ahead of the real document
+    # number, so a pool scan reaches it first.
+    pool = ["filler", "CONN-AF-01-001", "CONN-AF-04-002"]
+    entries, properties = dsn_fixtures.title_block_properties(
+        {"Title": "Evaluation Board", "Doc": "ACME-XX-24-0001-02"},
+        base=len(pool),
+    )
+    page = dsn_fixtures.make_page(
+        "01_TITLE", properties=properties, modified=1617261986,
+        nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+    )
+    dsn = tmp_path / "partnum.DSN"
+    out_dir = tmp_path / "out"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        PAGE: page, "Library": dsn_fixtures.make_library(pool + entries),
+    }))
+
+    result = subprocess.run(
+        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    schematic = (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    tree = kicad_sexpr.parse(schematic)
+    title_block = kicad_sexpr.find_first(tree, "title_block")
+    assert kicad_sexpr.find_all(title_block, "comment")[0] == [
+        "comment", "1", '"ACME-XX-24-0001-02"',
+    ]
+    assert "CONN-AF-01-001" not in schematic
+    assert "CONN-AF-04-002" not in schematic
+
+
 def _expected_haskell_uuid(dsn_bytes, category, object_index):
     dsn_digest = hashlib.sha256(dsn_bytes).digest()
     object_key = f"{category}:{object_index}".encode("utf-8")

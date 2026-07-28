@@ -9,7 +9,8 @@ component placements, and a symbol library. The converter is still incomplete, t
 
 - GHC (for `scripts/dsn2kicad`, the primary entrypoint — it compiles
   `scripts/dsn2kicad.hs` on first use and caches the binary)
-- Python 3.9+ (for `scripts/dsn2kicad_py`, the alternate Python entrypoint)
+- Python 3.9+ (optional — for `scripts/dsn2kicad_py`, the feature-frozen
+  alternate Python entrypoint, and for the test suite)
 - `olefile` (for reading OLE Compound Documents) — the **only** Python runtime dependency
 
 ```
@@ -57,11 +58,25 @@ regular OLE `.DSN` files through its own Compound File reader.
 `scripts/dsn2kicad_py` is the alternate Python entrypoint, wrapping the module in
 `scripts/dsn2kicad_py.py`. It creates a small Python virtualenv on first use under
 the user's cache directory, falling back to the temp directory if needed. Set
-`ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment. The two
-implementations are compared by real-design output and exported-netlist
-regressions; the Python one remains the reference for the browser/Pyodide path.
-The debug-overlay flags are currently implemented by this Python entrypoint
-only:
+`ORCAD2KICAD_VENV=/path/to/venv` to force a specific environment.
+
+**The Python converter is feature-frozen.** New converter features and format
+support land in `scripts/dsn2kicad.hs` only. The two implementations are no
+longer kept at feature parity, and Python lagging behind Haskell is expected
+rather than a defect. Python is still maintained for two specific purposes:
+
+1. It is the reference implementation for the browser/Pyodide path.
+2. It is an independent differential oracle. The unit tests convert the same
+   DSN through both implementations and require the exported KiCad netlists to
+   agree — a meaningful correctness check on a reverse-engineered binary format
+   with no published specification.
+
+Changes to the Python converter are therefore limited to fixes that serve those
+two purposes. The longer-term intent is to replace the Pyodide path with a
+WebAssembly build of the Haskell converter, after which the Python
+implementation is retired.
+
+The debug-overlay flags are implemented by this Python entrypoint only:
 
 ```
 scripts/dsn2kicad_py [--debug-bbox] [--debug-ref-val] [--debug-symbol] <file.DSN> [output_dir]
@@ -157,9 +172,17 @@ files use a different binary layout and cannot be parsed.
 
 ### Browser / in-memory use (Pyodide)
 
-The converter has no native dependencies and reads/writes nothing from disk in
-its core path, so it runs unchanged in a browser single-page app under
-[Pyodide](https://pyodide.org). Use the in-memory entry point instead of the CLI:
+The Python converter has no native dependencies and reads/writes nothing from
+disk in its core path, so it runs unchanged in a browser single-page app under
+[Pyodide](https://pyodide.org).
+
+Note that this path is frozen at the Python converter's current feature level —
+it does not gain features added to the Haskell converter. The intended
+replacement is a WebAssembly build of `scripts/dsn2kicad.hs`, whose core is
+already a pure `DSN bytes -> [(filename, contents)]` function with all file I/O
+confined to its `main` shell.
+
+Use the in-memory entry point instead of the CLI:
 
 ```python
 import dsn2kicad

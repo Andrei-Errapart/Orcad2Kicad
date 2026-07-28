@@ -14,6 +14,27 @@ formats are in `scripts/ksy/`. Project documentation is in `doc/`, while `README
 contains user-facing usage and limitations. Tests and fixtures live under `tests/`,
 including OLB fixture pairs in `tests/test_data_olb/`.
 
+## Implementation Policy: Haskell Is the Only Growing Converter
+
+`scripts/dsn2kicad.hs` is the converter. `scripts/dsn2kicad_py.py` is
+**feature-frozen** and is not kept at parity with it.
+
+- Land all new converter features, format support, and output changes in the
+  Haskell implementation. Do not port them to Python.
+- A capability the Haskell converter has and the Python one lacks is expected,
+  not a bug. Do not file it or fix it as a parity gap.
+- Change `dsn2kicad_py.py` only for the two things it still exists to do: serve
+  the browser/Pyodide path, and act as the differential netlist oracle in
+  `tests/test_dsn2kicad_hk.py`. A Python fix outside those two reasons should
+  instead be a Haskell fix.
+- The differential tests compare exported **netlist connectivity**
+  (`_net_pin_groups`), not output text, so Haskell features that Python lacks do
+  not break them. If one does start failing, fix the Haskell side or narrow the
+  comparison — do not add the missing feature to Python to make it pass.
+
+The intended endgame is a WebAssembly build of the Haskell converter replacing
+the Pyodide path, after which the Python implementation is deleted.
+
 ## Build, Test, and Development Commands
 
 - `pip install -e ".[dev]"`: install the project with pytest and development-only

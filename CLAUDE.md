@@ -43,6 +43,14 @@ and has no native deps, so the core path runs unchanged in a browser via Pyodide
 
 ## Architecture
 
+**The Python converter is feature-frozen — put new work in the Haskell one.**
+`scripts/dsn2kicad.hs` is the converter that grows; `scripts/dsn2kicad_py.py` is
+kept only for the browser/Pyodide path and as the differential netlist oracle in
+`tests/test_dsn2kicad_hk.py`. The two are **not** kept at feature parity, so a
+gap between them is expected rather than a bug. Do not port Haskell features
+into Python, and do not "fix" Python to close a parity gap. See `AGENTS.md`
+(Implementation Policy) for the full rule.
+
 **Pipeline:** OLE compound document (`.DSN`) → parse the streams
 (`Views/SCHEMATIC1/Pages/*`, `Cache`, `Library`, `Hierarchy`) → emit KiCad files.
 Everything happens in memory:
@@ -55,18 +63,22 @@ Everything happens in memory:
 
 **Key modules (all under `scripts/`):**
 
-- `dsn2kicad_py.py` (~6300 lines) — the converter monolith. Roughly ordered as:
+- `dsn2kicad.hs` (~6700 lines) — **the converter.** Native Haskell, reached via
+  the `scripts/dsn2kicad` wrapper, which compiles and caches it with GHC. Reads
+  both ZIP-backed synthetic fixtures and regular OLE `.DSN` files through its own
+  Compound File reader, and emits complete KiCad projects with sheets, symbols,
+  graphics, connectivity, and worksheets. Imports only boot libraries (`base`,
+  `bytestring`, `containers`, `array`, `directory`, `filepath`) with no C FFI.
+  Its core is pure — conversion returns `Either String [(FilePath, String)]` and
+  all file I/O lives in `main` / `writeOutput` — which is what makes the intended
+  WASM build tractable.
+- `dsn2kicad_py.py` (~6400 lines) — the **feature-frozen** Python converter
+  monolith, reached via the `scripts/dsn2kicad_py` wrapper. Roughly ordered as:
   `parse_*` (binary stream decoders) → `sch_*` / `lib_symbol_*` (KiCad
   S-expression emitters) → geometry/placement helpers → `generate_page_sch` /
   `generate_root_sch` / `generate_project` → `convert_dsn`. Find things by
-  function name, not line number. It is reached via the `scripts/dsn2kicad_py`
-  shell wrapper. `scripts/dsn2kicad` is the **primary** entrypoint: a wrapper that
-  compiles and caches `scripts/dsn2kicad.hs`, the native Haskell implementation,
-  which is the reference for everything except the browser/Pyodide path. It reads both
-  ZIP-backed synthetic fixtures and regular OLE `.DSN` files, and emits complete
-  KiCad projects with sheets, symbols, graphics, connectivity, and worksheets.
-  Its focused regression suite compares real-design output and exported
-  netlists with the Python converter.
+  function name, not line number. Still the reference for the browser/Pyodide
+  path, and the netlist-level comparison target in the Haskell regression suite.
 - `olb_parser.py` — binary reader for OLB / DSN `Package` & `Library` streams
   (a Python port of OpenOrCadParser's prefix/checkpoint framework). Source of
   component values and pin-name/number visibility.

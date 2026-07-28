@@ -31,13 +31,34 @@ else
 fi
 
 # Content hash as the cache key: editing the source rebuilds automatically.
+# Any digest will do -- the key only has to change when the source does -- so
+# fall back through the tools a minimal system is likely to have.
 if command -v shasum >/dev/null 2>&1; then
     STAMP=$(shasum -a 256 "$HS_SCRIPT")
-else
+elif command -v sha256sum >/dev/null 2>&1; then
     STAMP=$(sha256sum "$HS_SCRIPT")
+elif command -v md5sum >/dev/null 2>&1; then
+    STAMP=$(md5sum "$HS_SCRIPT")
+elif command -v md5 >/dev/null 2>&1; then
+    STAMP=$(md5 -q "$HS_SCRIPT")
+else
+    echo "dsn2kicad: no checksum tool found (tried shasum, sha256sum, md5sum, md5)." >&2
+    echo "Install one, or use $SCRIPT_DIR/dsn2kicad_py for the Python converter." >&2
+    exit 1
 fi
 STAMP=${STAMP%% *}
 BINARY="$CACHE_DIR/dsn2kicad-$STAMP"
+
+# Each cached binary is ~27 MB and content-addressed, so every edit of the
+# source strands the previous one forever.  Sweep anything untouched for a day,
+# along with build directories orphaned by an interrupted or killed compile.
+# The binary this run needs is exempt and has its mtime refreshed below, so one
+# in daily use is never evicted.
+if [ -d "$CACHE_DIR" ]; then
+    find "$CACHE_DIR" -maxdepth 1 ! -path "$CACHE_DIR" \
+        ! -name "dsn2kicad-$STAMP" -mtime +0 \
+        -exec rm -rf {} + 2>/dev/null || true
+fi
 
 if [ ! -x "$BINARY" ]; then
     if ! command -v ghc >/dev/null 2>&1; then
@@ -46,13 +67,19 @@ if [ ! -x "$BINARY" ]; then
         exit 1
     fi
     mkdir -p "$CACHE_DIR"
-    BUILD_DIR=$(mktemp -d "$CACHE_DIR/.build-$STAMP.XXXXXX")
+    BUILD_DIR=
     cleanup_build()
     {
-        rm -rf "$BUILD_DIR"
+        if [ -n "$BUILD_DIR" ]; then
+            rm -rf "$BUILD_DIR"
+        fi
     }
+    # Armed before mktemp runs: a signal arriving between the directory being
+    # created and its name being recorded would otherwise strand it in the
+    # cache, and only the daily sweep above would ever collect it.
     trap cleanup_build 0
     trap 'exit 1' HUP INT TERM
+    BUILD_DIR=$(mktemp -d "$CACHE_DIR/.build-$STAMP.XXXXXX")
 
     mkdir -p "$BUILD_DIR/objects"
     echo "Compiling dsn2kicad (Haskell) at $BINARY" >&2
@@ -68,5 +95,8 @@ if [ ! -x "$BINARY" ]; then
     cleanup_build
     trap - 0 HUP INT TERM
 fi
+
+# Records this binary as in use, so the sweep above keeps it for another day.
+touch "$BINARY" 2>/dev/null || true
 
 exec "$BINARY" "$@"

@@ -34,6 +34,11 @@ scripts/dsn2kicad [--kicad-power] [--kicad-rc] [--kicad-fonts] [--no-worksheet]
                   [--source-encoding=NAME] <file.DSN> [output_dir]
 ```
 
+`scripts/dsn2kicad.hs` is not directly executable. The converter is split
+across modules under `scripts/hs/`, which GHC finds through `-i`, and a
+shebang cannot supply a script-relative include path. Use the
+`scripts/dsn2kicad` wrapper, or `runghc -iscripts/hs scripts/dsn2kicad.hs`.
+
 Converts all schematic pages, generates a root schematic with hierarchical sheet
 references, a symbol library, a KiCad project file, and, by default, a
 project-local zero-margin worksheet (`.kicad_wks`). The worksheet keeps KiCad's

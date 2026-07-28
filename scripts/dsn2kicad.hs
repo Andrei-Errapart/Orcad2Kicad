@@ -1,8 +1,11 @@
-#!/usr/bin/env runghc
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- Copyright (C) 2026 Andrei Errapart
 -- SPDX-License-Identifier: GPL-2.0-or-later
+
+-- Entry point.  Not directly executable: with the converter split across
+-- modules GHC needs -i, which a shebang cannot supply.  Use scripts/dsn2kicad.
+module Main (main) where
 
 import Control.Monad (forM_, guard, unless)
 import Data.Array (Array, (!), array, listArray)

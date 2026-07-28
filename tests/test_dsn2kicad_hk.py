@@ -19,6 +19,18 @@ DSN2KICAD_HK = SCRIPTS_DIR / "dsn2kicad.hs"
 DSN2KICAD_PY = SCRIPTS_DIR / "dsn2kicad_py.py"
 PAGE = "Views/SCHEMATIC1/Pages/Page1"
 
+HS_DIR = SCRIPTS_DIR / "hs"
+
+
+def hk_argv(*args):
+    """argv for running the Haskell converter under runghc.
+
+    The .hs file is no longer directly executable: with multiple modules GHC
+    needs -i, which a shebang cannot provide.  Every test goes through here.
+    """
+    return ["runghc", f"-i{HS_DIR}", str(DSN2KICAD_HK), *[str(a) for a in args]]
+
+
 sys.path.insert(0, str(SCRIPTS_DIR))
 import kicad_sexpr  # noqa: E402
 
@@ -160,7 +172,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -221,7 +233,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
 
     repeat_out = tmp_path / "repeat-out"
     repeat_result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(repeat_out)],
+        hk_argv(dsn, repeat_out),
         capture_output=True,
         text=True,
         timeout=30,
@@ -295,7 +307,7 @@ def test_dsn2kicad_wrapper_concurrent_first_launch(dsn_fixtures, tmp_path):
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_rejects_python_only_debug_flags():
     result = subprocess.run(
-        [str(DSN2KICAD_HK), "--debug-bbox"],
+        hk_argv("--debug-bbox"),
         capture_output=True,
         text=True,
         timeout=30,
@@ -328,7 +340,7 @@ def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Library": library}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -378,7 +390,7 @@ def test_dsn2kicad_hk_title_block_is_per_page(dsn_fixtures, tmp_path):
     ))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -446,7 +458,7 @@ def test_pool_neighbours_may_be_stale_ancestors(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
@@ -495,7 +507,7 @@ def test_pool_count_is_u32(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
@@ -543,7 +555,7 @@ def test_part_number_is_not_mistaken_for_doc_number(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
@@ -584,7 +596,7 @@ def test_dsn2kicad_hk_uuids_are_content_seeded(dsn_fixtures, tmp_path):
         out_dir = project_dir / "out"
 
         result = subprocess.run(
-            [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+            hk_argv(dsn, out_dir),
             capture_output=True,
             text=True,
             timeout=30,
@@ -621,7 +633,7 @@ def test_dsn2kicad_hk_uuids_do_not_depend_on_source_filename(
         out_dir = project_dir / "out"
 
         result = subprocess.run(
-            [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+            hk_argv(dsn, out_dir),
             capture_output=True,
             text=True,
             timeout=30,
@@ -663,7 +675,7 @@ def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path, sector_size):
     )
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -719,7 +731,7 @@ def test_dsn2kicad_hk_discovers_pages_in_named_views(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -814,7 +826,7 @@ def test_dsn2kicad_hk_legacy_cache_and_page_records(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -898,7 +910,7 @@ def test_dsn2kicad_hk_rejects_dsn_without_page_streams(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({"Cache": b"not a page"}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -920,7 +932,7 @@ def test_dsn2kicad_hk_rejects_duplicate_page_output_names(dsn_fixtures, tmp_path
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -943,7 +955,7 @@ def test_dsn2kicad_hk_disambiguates_page_named_after_project(
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -987,7 +999,7 @@ def test_dsn2kicad_hk_rejects_cyclic_ole_directory(
     dsn.write_bytes(dsn_bytes)
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1021,7 +1033,7 @@ def test_dsn2kicad_hk_extends_pin_hotpoints_and_wires(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1173,7 +1185,7 @@ def test_dsn2kicad_hk_pins_land_exactly_on_their_wires(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=60,
@@ -1216,7 +1228,7 @@ def test_dsn2kicad_hk_multi_unit_symbols(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1339,7 +1351,7 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1499,7 +1511,7 @@ def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
     out_dir = tmp_path / "out"
     dsn.write_bytes(dsn_fixtures.make_zip(members))
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1579,7 +1591,7 @@ def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
     if kicad_cli:
         rc_out = tmp_path / "rc-out"
         rc_result = subprocess.run(
-            [str(DSN2KICAD_HK), "--kicad-rc", str(dsn), str(rc_out)],
+            hk_argv("--kicad-rc", dsn, rc_out),
             capture_output=True,
             text=True,
             timeout=30,
@@ -1661,7 +1673,7 @@ def test_dsn2kicad_hk_uses_explicit_off_page_connectors(
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1735,7 +1747,7 @@ def test_dsn2kicad_hk_repeated_net_names_stay_local(
     out_dir = tmp_path / "out"
     dsn.write_bytes(dsn_fixtures.make_zip(members))
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1783,7 +1795,7 @@ def test_dsn2kicad_hk_root_matrix_and_worksheet(dsn_fixtures, tmp_path):
 
     out_dir = tmp_path / "with-worksheet"
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1810,7 +1822,7 @@ def test_dsn2kicad_hk_root_matrix_and_worksheet(dsn_fixtures, tmp_path):
 
     no_worksheet_dir = tmp_path / "without-worksheet"
     result = subprocess.run(
-        [str(DSN2KICAD_HK), "--no-worksheet", str(dsn), str(no_worksheet_dir)],
+        hk_argv("--no-worksheet", dsn, no_worksheet_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1890,7 +1902,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
 
     default_out = tmp_path / "default-out"
     default_result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(default_out)],
+        hk_argv(dsn, default_out),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1905,14 +1917,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
     assert '(symbol "power:CUSTOM_RAIL"' in default_schematic
 
     result = subprocess.run(
-        [
-            str(DSN2KICAD_HK),
-            "--kicad-power",
-            "--kicad-rc",
-            "--kicad-fonts",
-            str(dsn),
-            str(out_dir),
-        ],
+        hk_argv("--kicad-power", "--kicad-rc", "--kicad-fonts", dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -1985,7 +1990,7 @@ def test_dsn2kicad_hk_kicad_rc_uses_cache_hotpoints(dsn_fixtures, tmp_path):
     for args in ([str(dsn), str(default_out)],
                  ["--kicad-rc", str(dsn), str(rc_out)]):
         result = subprocess.run(
-            [str(DSN2KICAD_HK), *args], capture_output=True, text=True, timeout=30,
+            hk_argv(*args), capture_output=True, text=True, timeout=30,
         )
         assert result.returncode == 0, result.stderr
 
@@ -2037,7 +2042,7 @@ def test_dsn2kicad_hk_native_power_symbols(dsn_fixtures, tmp_path):
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -2169,7 +2174,7 @@ def test_dsn2kicad_hk_component_fields_and_page_artwork(dsn_fixtures, tmp_path):
     }))
 
     result = subprocess.run(
-        [str(DSN2KICAD_HK), str(dsn), str(out_dir)],
+        hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
         timeout=30,
@@ -2292,10 +2297,8 @@ def test_dsn2kicad_hk_reference_placement_uses_font_metrics(
     out_dir = tmp_path / "out"
     dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
 
-    argv = [str(DSN2KICAD_HK)]
-    if kicad_fonts:
-        argv.append("--kicad-fonts")
-    argv += [str(dsn), str(out_dir)]
+    flags = ["--kicad-fonts"] if kicad_fonts else []
+    argv = hk_argv(*flags, dsn, out_dir)
     result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
 

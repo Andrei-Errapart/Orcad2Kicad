@@ -30,24 +30,66 @@ else
     fi
 fi
 
-# Content hash as the cache key: editing the source rebuilds automatically.
-# Any digest will do -- the key only has to change when the source does -- so
-# fall back through the tools a minimal system is likely to have.
+# Content hash as the cache key: editing any source file rebuilds
+# automatically.  Any digest will do -- the key only has to change when an
+# input does -- so fall back through the tools a minimal system is likely to
+# have.
 if command -v shasum >/dev/null 2>&1; then
-    STAMP=$(shasum -a 256 "$HS_SCRIPT")
+    DIGEST="shasum -a 256"
 elif command -v sha256sum >/dev/null 2>&1; then
-    STAMP=$(sha256sum "$HS_SCRIPT")
+    DIGEST="sha256sum"
 elif command -v md5sum >/dev/null 2>&1; then
-    STAMP=$(md5sum "$HS_SCRIPT")
+    DIGEST="md5sum"
 elif command -v md5 >/dev/null 2>&1; then
-    STAMP=$(md5 -q "$HS_SCRIPT")
+    DIGEST="md5 -q"
 else
     echo "dsn2kicad: no checksum tool found (tried shasum, sha256sum, md5sum, md5)." >&2
     echo "Install one, or use $SCRIPT_DIR/dsn2kicad_py for the Python converter." >&2
     exit 1
 fi
+
+GHC_FLAGS="-O1"
+
+# The key covers every module, each one's path (so a rename counts as a
+# change), and the compile flags.  Paths are made relative and sorted in the C
+# locale so the key does not depend on where the checkout lives -- which also
+# means taking only the digest from each line, since the checksum tools echo
+# back the absolute filename they were given.
+STAMP=$(
+    {
+        echo "$GHC_FLAGS"
+        find "$SCRIPT_DIR" -name '*.hs' -type f \
+            | sed "s|^$SCRIPT_DIR/||" | LC_ALL=C sort \
+            | while IFS= read -r rel; do
+                line=$($DIGEST "$SCRIPT_DIR/$rel")
+                printf '%s %s\n' "$rel" "${line%% *}"
+            done
+    } | $DIGEST
+)
 STAMP=${STAMP%% *}
-BINARY="$CACHE_DIR/dsn2kicad-$STAMP"
+
+# The GHC version belongs in the key too -- a compiler upgrade otherwise keeps
+# serving a binary built by the old one.  It goes in the filename rather than
+# the hash so that a machine with no GHC can still run a previously built
+# binary, which is the point of the cache.
+if command -v ghc >/dev/null 2>&1; then
+    GHC_TAG=$(ghc --numeric-version 2>/dev/null || echo unknown)
+else
+    GHC_TAG=
+fi
+
+if [ -n "$GHC_TAG" ]; then
+    BINARY="$CACHE_DIR/dsn2kicad-$STAMP-$GHC_TAG"
+else
+    BINARY=
+    for candidate in "$CACHE_DIR/dsn2kicad-$STAMP-"*; do
+        if [ -x "$candidate" ]; then
+            BINARY=$candidate
+            break
+        fi
+    done
+    [ -n "$BINARY" ] || BINARY="$CACHE_DIR/dsn2kicad-$STAMP-unknown"
+fi
 
 # Each cached binary is ~27 MB and content-addressed, so every edit of the
 # source strands the previous one forever.  Sweep anything untouched for a day,
@@ -56,7 +98,7 @@ BINARY="$CACHE_DIR/dsn2kicad-$STAMP"
 # in daily use is never evicted.
 if [ -d "$CACHE_DIR" ]; then
     find "$CACHE_DIR" -maxdepth 1 ! -path "$CACHE_DIR" \
-        ! -name "dsn2kicad-$STAMP" -mtime +0 \
+        ! -name "$(basename "$BINARY")" -mtime +0 \
         -exec rm -rf {} + 2>/dev/null || true
 fi
 
@@ -83,7 +125,8 @@ if [ ! -x "$BINARY" ]; then
 
     mkdir -p "$BUILD_DIR/objects"
     echo "Compiling dsn2kicad (Haskell) at $BINARY" >&2
-    ghc -O1 \
+    ghc $GHC_FLAGS \
+        -i"$SCRIPT_DIR/hs" \
         -outputdir "$BUILD_DIR/objects" \
         "$HS_SCRIPT" \
         -o "$BUILD_DIR/dsn2kicad" >&2

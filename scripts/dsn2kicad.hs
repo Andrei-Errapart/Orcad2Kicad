@@ -8,22 +8,22 @@
 module Main (main) where
 
 import Binary
-  ( byteAt, word16LE, word32LE, word64LE, int16LE, int32LE
-  , sliceAt, words32LE, readI32Quad, readI32Oct
+  ( byteAt, word16LE, word32LE, int16LE, int32LE
+  , readI32Quad, readI32Oct
   , findSubFrom, findSubBefore, findAll, findAllFrom
-  , asciiAt, asciiPrefixAt, isPrintableAscii, extractStrings
-  , word64ToInt, word32ToInt, maybeWord32ToInt, showHex32
-  , need, unlessEither, firstJust, lookupList, listAt, orElse
+  , asciiAt, isPrintableAscii, extractStrings
+  , maybeWord32ToInt
+  , unlessEither, firstJust, lookupList, listAt, orElse
   , unique, splitSlash, dedupeConsecutive
   )
+import Container (parseOleStreams, parseStoredZip, isZipArchive, ZipMember(..))
 import Control.Monad (forM_, guard, unless)
 import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, ord, toLower, toUpper)
+import Data.Char (isAlpha, isAlphaNum, isSpace, ord, toLower, toUpper)
 import Data.List
-  ( elemIndex
-  , intercalate
+  ( intercalate
   , isInfixOf
   , isPrefixOf
   , isSuffixOf
@@ -32,7 +32,11 @@ import Data.List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
-import Data.Word (Word8, Word32)
+import Data.Word (Word8)
+import Dsn.Library
+  ( libraryRawStrings, libraryFaceNameBytes
+  , parseLibraryValueStrings, parseLibraryTextStyles
+  )
 import Dsn.Record
   ( recordMarker, netTableAnchor, textRecordType
   , pageRectTag, pageLineTag, pageEllipseTag, pagePolygonTag
@@ -40,8 +44,7 @@ import Dsn.Record
   )
 import Encoding
   ( SourceEncoding, sourceEncodingByName, sourceEncodingNames
-  , encodingFlagPrefix, decodeLibraryString, detectSourceEncoding
-  , decodeUtf16LeName
+  , encodingFlagPrefix, detectSourceEncoding
   )
 import Model
   ( Page(..), Wire(..), NetLabel(..), OffPageConnector(..)
@@ -54,7 +57,7 @@ import Model
   , CacheSymbol(..), MultiUnitRegistry(..)
   , RenderConfig(..)
   , emptyCacheSymbol, cacheSymbolIsEmpty
-  , busMemberPrefix, isBusNetName
+  , isBusNetName
   , componentUnitInfo, componentLibName, powerReferenceName
   , isRefDesignator, sanitizePageName
   , isGroundPowerName, powerRecordStyle
@@ -64,6 +67,17 @@ import Model
   , orcadPalette, paperSizes
   )
 import Numeric (showFFloat)
+import Orcad.Geometry
+  ( unitToMm, orcadPageSize
+  , wirePoint1, wirePoint2, pointOnWire
+  , computeJunctions, placeWireLabels
+  , BusEntry(..), synthesizeBusEntries, explicitAliasCovers
+  , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput
+  , directionFromVector, ellipsePoints, arcMidpoint, arcPoints
+  , componentAngleFor
+  , standardDevicePinPoint, transformPowerAnchor, offPageHotpoint
+  , powerSymbolAngle, powerValueAngle, normalizeCachePolygon
+  )
 import Sha256 (sha256)
 import System.Directory
   ( createDirectoryIfMissing
@@ -80,9 +94,6 @@ import System.IO (hPutStrLn, hSetEncoding, stderr, stdout, utf8)
 import Text.MetricsTables (FaceMetrics(..), fontMetrics)
 import Utf8 (utf8Encode)
 import Uuid (deterministicUuid, stableObjectUuid)
-
-unitToMm :: Double
-unitToMm = 0.254
 
 data Options = Options
   { optDsnPath :: FilePath
@@ -101,32 +112,6 @@ renderConfigOf opts = RenderConfig
   , useKicadRc = optKicadRc opts
   , useKicadFonts = optKicadFonts opts
   }
-
-data ZipMember = ZipMember FilePath BS.ByteString
-  deriving Show
-
-data DirEntry = DirEntry
-  { dirName :: String
-  , dirType :: Word8
-  , dirLeft :: Maybe Int
-  , dirRight :: Maybe Int
-  , dirChild :: Maybe Int
-  , dirStartSector :: Word32
-  , dirStreamSize :: Int
-  }
-  deriving Show
-
-data OleFile = OleFile
-  { oleBytes :: BS.ByteString
-  , oleSectorSize :: Int
-  , oleMiniSectorSize :: Int
-  , oleMiniCutoff :: Int
-  , oleFat :: Map.Map Int Word32
-  , oleMiniFat :: Map.Map Int Word32
-  , oleMiniStream :: BS.ByteString
-  , oleDirectory :: [DirEntry]
-  }
-  deriving Show
 
 main :: IO ()
 main = do
@@ -231,9 +216,6 @@ usage = do
   hPutStrLn stderr $
     "Debug flags are implemented by scripts/dsn2kicad_py only."
 
-isZipArchive :: BS.ByteString -> Bool
-isZipArchive = BS.isPrefixOf (BS.pack [0x50, 0x4b, 0x03, 0x04])
-
 convertZipBytes :: Options -> BS.ByteString -> Either String [(FilePath, String)]
 convertZipBytes opts bytes = do
   members <- parseStoredZip bytes
@@ -325,282 +307,6 @@ writeOutput opts files = do
   forM_ files $ \(name, content) ->
     BS.writeFile (optOutputDir opts </> name) (utf8Encode content)
   putStrLn ("Done -> " ++ optOutputDir opts ++ "/")
-
-parseStoredZip :: BS.ByteString -> Either String [ZipMember]
-parseStoredZip bytes = go 0 []
-  where
-    go off acc
-      | off + 4 > BS.length bytes = Right (reverse acc)
-      | u32 off == Just 0x04034b50 = do
-          flags <- need "ZIP flags" (u16 (off + 6))
-          compression <- need "ZIP compression method" (u16 (off + 8))
-          compressedSize <- need "ZIP compressed size" (u32 (off + 18))
-          nameLen <- need "ZIP filename length" (u16 (off + 26))
-          extraLen <- need "ZIP extra length" (u16 (off + 28))
-          let dataStart =
-                off + 30 + fromIntegral nameLen + fromIntegral extraLen
-              dataEnd = dataStart + fromIntegral compressedSize
-              nameStart = off + 30
-              nameEnd = nameStart + fromIntegral nameLen
-          unlessEither (flags .&. 0x0008 == 0) $
-            "ZIP data descriptors are not supported by the native Haskell reader"
-          unlessEither (compression == 0) $
-            "only stored ZIP members are supported by the native Haskell reader"
-          unlessEither (dataEnd <= BS.length bytes && nameEnd <= BS.length bytes) $
-            "truncated ZIP member"
-          let name = BSC.unpack (BS.take (fromIntegral nameLen) (BS.drop nameStart bytes))
-              body = BS.take (fromIntegral compressedSize) (BS.drop dataStart bytes)
-          go dataEnd (ZipMember name body : acc)
-      | otherwise = Right (reverse acc)
-
-    u16 = word16LE bytes
-    u32 = word32LE bytes
-
-oleMagic :: BS.ByteString
-oleMagic = BS.pack [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
-
-maxRegularSector, endOfChain, noStream :: Word32
-maxRegularSector = 0xfffffffa
-endOfChain = 0xfffffffe
-noStream = 0xffffffff
-
-parseOleStreams :: BS.ByteString -> Either String [(FilePath, BS.ByteString)]
-parseOleStreams bytes = do
-  ole <- parseOleFile bytes
-  collectOleStreams ole
-
-parseOleFile :: BS.ByteString -> Either String OleFile
-parseOleFile bytes = do
-  unlessEither (BS.isPrefixOf oleMagic bytes) "not an OLE compound document"
-  sectorShift <- need "OLE sector shift" (word16LE bytes 0x1e)
-  miniSectorShift <- need "OLE mini sector shift" (word16LE bytes 0x20)
-  numFatSectors <- need "OLE FAT sector count" (word32LE bytes 0x2c)
-  firstDirSector <- need "OLE first directory sector" (word32LE bytes 0x30)
-  miniCutoff <- need "OLE mini stream cutoff" (word32LE bytes 0x38)
-  firstMiniFatSector <- need "OLE first mini FAT sector" (word32LE bytes 0x3c)
-  numMiniFatSectors <- need "OLE mini FAT sector count" (word32LE bytes 0x40)
-  firstDifatSector <- need "OLE first DIFAT sector" (word32LE bytes 0x44)
-  numDifatSectors <- need "OLE DIFAT sector count" (word32LE bytes 0x48)
-
-  unlessEither (sectorShift == 9 || sectorShift == 12) $
-    "unsupported OLE sector size shift: " ++ show sectorShift
-  unlessEither (miniSectorShift == 6) $
-    "unsupported OLE mini sector size shift: " ++ show miniSectorShift
-
-  let sectorSize = 2 ^ (fromIntegral sectorShift :: Int)
-      miniSectorSize = 2 ^ (fromIntegral miniSectorShift :: Int)
-      headerFatSectors =
-        filter isRegularSector
-          [ sid
-          | i <- [0 .. 108]
-          , Just sid <- [word32LE bytes (0x4c + i * 4)]
-          ]
-  difatSectors <- parseDifatSectors bytes sectorSize firstDifatSector numDifatSectors
-  let fatSectorIds =
-        take (fromIntegral numFatSectors) (headerFatSectors ++ difatSectors)
-  unlessEither (length fatSectorIds == fromIntegral numFatSectors) $
-    "truncated OLE FAT sector list"
-  fatEntries <- concat <$> mapM (sectorWords bytes sectorSize) fatSectorIds
-  let fat = Map.fromList (zip [0..] fatEntries)
-
-  dirBytes <- readSectorChainBytes bytes sectorSize fat firstDirSector
-  dirs <- parseDirectoryEntries dirBytes
-  root <- directoryEntryAt dirs 0
-  miniFatBytes <-
-    if numMiniFatSectors == 0 || not (isRegularSector firstMiniFatSector)
-      then Right BS.empty
-      else readSectorChainBytesLimit
-             bytes sectorSize fat firstMiniFatSector (fromIntegral numMiniFatSectors)
-  let miniFat = Map.fromList (zip [0..] (words32LE miniFatBytes))
-  miniStream <-
-    if dirStreamSize root == 0 || not (isRegularSector (dirStartSector root))
-      then Right BS.empty
-      else readSectorChainBytesTake
-             bytes sectorSize fat (dirStartSector root) (dirStreamSize root)
-
-  Right OleFile
-    { oleBytes = bytes
-    , oleSectorSize = sectorSize
-    , oleMiniSectorSize = miniSectorSize
-    , oleMiniCutoff = fromIntegral miniCutoff
-    , oleFat = fat
-    , oleMiniFat = miniFat
-    , oleMiniStream = miniStream
-    , oleDirectory = dirs
-    }
-
-parseDifatSectors
-  :: BS.ByteString -> Int -> Word32 -> Word32 -> Either String [Word32]
-parseDifatSectors bytes sectorSize firstSector count = go firstSector count []
-  where
-    entriesPerSector = sectorSize `div` 4 - 1
-
-    go _ 0 acc = Right (reverse acc)
-    go sid remaining acc
-      | not (isRegularSector sid) = Left "truncated OLE DIFAT chain"
-      | otherwise = do
-          sector <- need "OLE DIFAT sector" (readSector bytes sectorSize sid)
-          let wordsInSector = words32LE sector
-              entries = take entriesPerSector wordsInSector
-              nextSid =
-                fromMaybe endOfChain $
-                  word32LE sector (sectorSize - 4)
-          go nextSid (remaining - 1) (reverse (filter isRegularSector entries) ++ acc)
-
-sectorWords :: BS.ByteString -> Int -> Word32 -> Either String [Word32]
-sectorWords bytes sectorSize sid = do
-  sector <- need ("OLE sector " ++ show sid) (readSector bytes sectorSize sid)
-  Right (words32LE sector)
-
-parseDirectoryEntries :: BS.ByteString -> Either String [DirEntry]
-parseDirectoryEntries bytes =
-  mapM parseEntry [0, 128 .. BS.length bytes - 128]
-  where
-    parseEntry off = do
-      entry <- need "OLE directory entry" (sliceAt bytes off 128)
-      nameLen <- need "OLE directory name length" (word16LE entry 64)
-      objectType <- need "OLE directory object type" (byteAt entry 66)
-      leftSid <- need "OLE left sibling id" (word32LE entry 68)
-      rightSid <- need "OLE right sibling id" (word32LE entry 72)
-      childSid <- need "OLE child id" (word32LE entry 76)
-      startSector <- need "OLE stream start sector" (word32LE entry 116)
-      size64 <- need "OLE stream size" (word64LE entry 120)
-      size <- word64ToInt "OLE stream size" size64
-      let usableNameBytes
-            | nameLen >= 2 && nameLen <= 64 = fromIntegral nameLen - 2
-            | otherwise = 0
-          name = decodeUtf16LeName (BS.take usableNameBytes entry)
-      Right DirEntry
-        { dirName = name
-        , dirType = objectType
-        , dirLeft = sidToMaybe leftSid
-        , dirRight = sidToMaybe rightSid
-        , dirChild = sidToMaybe childSid
-        , dirStartSector = startSector
-        , dirStreamSize = size
-        }
-
-collectOleStreams :: OleFile -> Either String [(FilePath, BS.ByteString)]
-collectOleStreams ole = do
-  root <- directoryEntryAt (oleDirectory ole) 0
-  (_, streams) <- collectChildren (Set.singleton 0) [] (dirChild root)
-  Right streams
-  where
-    collectChildren seen _ Nothing = Right (seen, [])
-    collectChildren seen prefix (Just sid)
-      | Set.member sid seen =
-          Left ("OLE directory entry cycle at SID " ++ show sid)
-      | otherwise = do
-          entry <- directoryEntryAt (oleDirectory ole) sid
-          let seen' = Set.insert sid seen
-          (afterLeft, left) <- collectChildren seen' prefix (dirLeft entry)
-          (afterCurrent, current) <- collectEntry afterLeft prefix entry
-          (afterRight, right) <-
-            collectChildren afterCurrent prefix (dirRight entry)
-          Right (afterRight, left ++ current ++ right)
-
-    collectEntry seen prefix entry
-      | dirType entry == 1 =
-          collectChildren seen (prefix ++ [dirName entry]) (dirChild entry)
-      | dirType entry == 5 = collectChildren seen prefix (dirChild entry)
-      | dirType entry == 2 = do
-          body <- readOleStream ole entry
-          Right (seen, [(intercalate "/" (prefix ++ [dirName entry]), body)])
-      | otherwise = Right (seen, [])
-
-readOleStream :: OleFile -> DirEntry -> Either String BS.ByteString
-readOleStream ole entry
-  | dirStreamSize entry == 0 = Right BS.empty
-  | dirStreamSize entry < oleMiniCutoff ole =
-      readMiniSectorChainBytesTake
-        (oleMiniStream ole)
-        (oleMiniSectorSize ole)
-        (oleMiniFat ole)
-        (dirStartSector entry)
-        (dirStreamSize entry)
-  | otherwise =
-      readSectorChainBytesTake
-        (oleBytes ole)
-        (oleSectorSize ole)
-        (oleFat ole)
-        (dirStartSector entry)
-        (dirStreamSize entry)
-
-directoryEntryAt :: [DirEntry] -> Int -> Either String DirEntry
-directoryEntryAt entries sid
-  | sid >= 0 && sid < length entries = Right (entries !! sid)
-  | otherwise = Left ("OLE directory SID out of range: " ++ show sid)
-
-readSectorChainBytes
-  :: BS.ByteString -> Int -> Map.Map Int Word32 -> Word32 -> Either String BS.ByteString
-readSectorChainBytes bytes sectorSize fat startSid = do
-  chain <- sectorChain fat startSid
-  sectors <- mapM (need "OLE chained sector" . readSector bytes sectorSize) chain
-  Right (BS.concat sectors)
-
-readSectorChainBytesLimit
-  :: BS.ByteString
-  -> Int
-  -> Map.Map Int Word32
-  -> Word32
-  -> Int
-  -> Either String BS.ByteString
-readSectorChainBytesLimit bytes sectorSize fat startSid limit = do
-  chain <- take limit <$> sectorChain fat startSid
-  sectors <- mapM (need "OLE chained sector" . readSector bytes sectorSize) chain
-  Right (BS.concat sectors)
-
-readSectorChainBytesTake
-  :: BS.ByteString -> Int -> Map.Map Int Word32 -> Word32 -> Int -> Either String BS.ByteString
-readSectorChainBytesTake bytes sectorSize fat startSid size = do
-  body <- readSectorChainBytes bytes sectorSize fat startSid
-  unlessEither (BS.length body >= size) "truncated OLE stream chain"
-  Right (BS.take size body)
-
-readMiniSectorChainBytesTake
-  :: BS.ByteString -> Int -> Map.Map Int Word32 -> Word32 -> Int -> Either String BS.ByteString
-readMiniSectorChainBytesTake miniStream miniSectorSize miniFat startSid size = do
-  chain <- sectorChain miniFat startSid
-  sectors <- mapM readMiniSector chain
-  let body = BS.concat sectors
-  unlessEither (BS.length body >= size) "truncated OLE mini stream chain"
-  Right (BS.take size body)
-  where
-    readMiniSector sid = do
-      sidInt <- word32ToInt "OLE mini sector id" sid
-      let start = sidInt * miniSectorSize
-      need "OLE mini sector" (sliceAt miniStream start miniSectorSize)
-
-sectorChain :: Map.Map Int Word32 -> Word32 -> Either String [Word32]
-sectorChain table startSid = go Map.empty [] startSid
-  where
-    -- Termination rests on `seen`: every visited sector is recorded, and a
-    -- sector missing from the FAT ends the walk, so the chain cannot outrun the
-    -- table.  An additional length check would be redundant and, because it
-    -- measured the accumulator, quadratic in the chain length.
-    go seen acc sid
-      | sid == endOfChain = Right (reverse acc)
-      | not (isRegularSector sid) =
-          Left ("unexpected OLE sector marker in chain: " ++ showHex32 sid)
-      | Map.member (fromIntegral sid :: Int) seen = Left "OLE sector chain cycle"
-      | otherwise = do
-          sidInt <- word32ToInt "OLE sector id" sid
-          next <- need ("OLE FAT entry for sector " ++ show sidInt) (Map.lookup sidInt table)
-          go (Map.insert sidInt () seen) (sid : acc) next
-
-readSector :: BS.ByteString -> Int -> Word32 -> Maybe BS.ByteString
-readSector bytes sectorSize sid = do
-  sidInt <- maybeWord32ToInt sid
-  let start = (sidInt + 1) * sectorSize
-  sliceAt bytes start sectorSize
-
-sidToMaybe :: Word32 -> Maybe Int
-sidToMaybe sid
-  | sid == noStream = Nothing
-  | otherwise = maybeWord32ToInt sid
-
-isRegularSector :: Word32 -> Bool
-isRegularSector sid = sid <= maxRegularSector
 
 parsePage :: [String] -> FilePath -> BS.ByteString -> Page
 parsePage libraryValues streamName body =
@@ -880,238 +586,6 @@ parseNetAliases nets body = mapMaybe parseAt (findAll recordMarker body)
         , netLabelAngle = 0
         }
 
-wirePoint1 :: Wire -> (Int, Int)
-wirePoint1 wire = (wireX1 wire, wireY1 wire)
-
-wirePoint2 :: Wire -> (Int, Int)
-wirePoint2 wire = (wireX2 wire, wireY2 wire)
-
-pointOnWire :: (Int, Int) -> Wire -> Bool
-pointOnWire (px, py) wire =
-  let (x1, y1) = wirePoint1 wire
-      (x2, y2) = wirePoint2 wire
-      cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1)
-  in cross == 0
-     && min x1 x2 <= px && px <= max x1 x2
-     && min y1 y2 <= py && py <= max y1 y2
-
-data WireSpatialIndex = WireSpatialIndex
-  { horizontalWires :: Map.Map Int [(Int, Wire)]
-  , verticalWires :: Map.Map Int [(Int, Wire)]
-  , diagonalWires :: [(Int, Wire)]
-  }
-
-buildWireSpatialIndex :: [(Int, Wire)] -> WireSpatialIndex
-buildWireSpatialIndex = foldl addWire (WireSpatialIndex Map.empty Map.empty [])
-  where
-    addWire index indexed@(_, wire)
-      | wireY1 wire == wireY2 wire = index
-          { horizontalWires = Map.insertWith (++)
-              (wireY1 wire) [indexed] (horizontalWires index)
-          }
-      | wireX1 wire == wireX2 wire = index
-          { verticalWires = Map.insertWith (++)
-              (wireX1 wire) [indexed] (verticalWires index)
-          }
-      | otherwise = index { diagonalWires = indexed : diagonalWires index }
-
-indexedWiresAt :: (Int, Int) -> WireSpatialIndex -> [(Int, Wire)]
-indexedWiresAt point@(x, y) index =
-  filter (pointOnWire point . snd) $
-    Map.findWithDefault [] y (horizontalWires index)
-    ++ Map.findWithDefault [] x (verticalWires index)
-    ++ diagonalWires index
-
-wireComponents :: [Wire] -> [[Wire]]
-wireComponents wires = collectComponents allIndices
-  where
-    indexed = zip [(0 :: Int)..] wires
-    wireMap = Map.fromList indexed
-    spatial = buildWireSpatialIndex indexed
-    allIndices = Set.fromList (map fst indexed)
-    adjacency = foldl addConnections initialAdjacency indexed
-    initialAdjacency = Map.fromList [(idx, Set.empty) | (idx, _) <- indexed]
-
-    addConnections current (idx, wire) =
-      foldl (connectAt idx) current [wirePoint1 wire, wirePoint2 wire]
-
-    connectAt idx current point = foldl (connect idx) current
-      [ otherIdx
-      | (otherIdx, _) <- indexedWiresAt point spatial
-      , otherIdx /= idx
-      ]
-
-    connect left current right =
-      Map.insertWith Set.union left (Set.singleton right) $
-        Map.insertWith Set.union right (Set.singleton left) current
-
-    collectComponents remaining =
-      case Set.minView remaining of
-        Nothing -> []
-        Just (start, _) ->
-          let members = reachable Set.empty [start]
-              component = mapMaybe (`Map.lookup` wireMap) (Set.toAscList members)
-          in component : collectComponents (Set.difference remaining members)
-
-    reachable visited [] = visited
-    reachable visited (current:pending)
-      | Set.member current visited = reachable visited pending
-      | otherwise =
-          let neighbours = Set.toList $ Map.findWithDefault Set.empty current adjacency
-          in reachable (Set.insert current visited) (neighbours ++ pending)
-
-wireDirectionsAt :: (Int, Int) -> [Wire] -> [(Int, Int)]
-wireDirectionsAt point wires = unique
-  [ normalizeDirection (x - fst point, y - snd point)
-  | wire <- wires
-  , pointOnWire point wire
-  , (x, y) <- [wirePoint1 wire, wirePoint2 wire]
-  , (x, y) /= point
-  ]
-  where
-    normalizeDirection (dx, dy) =
-      let divisor = gcd (abs dx) (abs dy)
-      in if divisor == 0 then (0, 0) else (dx `div` divisor, dy `div` divisor)
-
-computeJunctions :: [Wire] -> [(Int, Int)]
-computeJunctions wires = sortOn id $ Set.toList $ Set.fromList
-  [ point
-  | netWires <- Map.elems groupedByNet
-  , let spatial = buildWireSpatialIndex (zip [(0 :: Int)..] netWires)
-  , point <- unique [p | wire <- netWires, p <- [wirePoint1 wire, wirePoint2 wire]]
-  , let touching = map snd (indexedWiresAt point spatial)
-  , length (wireDirectionsAt point touching) >= 3
-  ]
-  where
-    groupedByNet = foldl
-      (\groups wire ->
-        Map.insertWith (\new old -> old ++ new)
-          (wireNetId wire) [wire] groups)
-      Map.empty
-      wires
-
-placeWireLabels :: Set.Set String -> [Wire] -> [NetLabel]
-placeWireLabels powerNets wires =
-  concat
-    [ concatMap (labelsForComponent name) (wireComponents netWires)
-    | (name, netWires) <- Map.toList groupedByName
-    , not (Set.member name powerNets)
-    ]
-  where
-    groupedByName = foldl addWire Map.empty wires
-
-    addWire groups wire
-      | null (wireNetName wire) = groups
-      | otherwise = Map.insertWith (\new old -> old ++ new)
-          (wireNetName wire) [wire] groups
-
-    labelsForComponent name component =
-      [ let outwardAngle = wireAngleAt point component
-            angle = (outwardAngle + 180) `mod` 360
-        in NetLabel False name (fst point) (snd point) angle
-      | point <- freeEndpoints component
-      ]
-
-    freeEndpoints component = Map.keys $ Map.filter (== 1) endpointCounts
-      where
-        endpointCounts = foldl
-          (\counts point -> Map.insertWith (+) point (1 :: Int) counts)
-          Map.empty
-          [ point
-          | wire <- component
-          , point <- [wirePoint1 wire, wirePoint2 wire]
-          ]
-
-    wireAngleAt point component =
-      case [other | wire <- component, Just other <- [otherEndpoint point wire]] of
-        (otherX, otherY) : _ ->
-          let dx = fst point - otherX
-              dy = snd point - otherY
-          in if abs dx >= abs dy
-               then if dx > 0 then 0 else 180
-               else if dy > 0 then 270 else 90
-        [] -> 0
-
-    otherEndpoint point wire
-      | wirePoint1 wire == point = Just (wirePoint2 wire)
-      | wirePoint2 wire == point = Just (wirePoint1 wire)
-      | otherwise = Nothing
-
-data BusEntry = BusEntry Int Int Int Int
-  deriving Show
-
-synthesizeBusEntries :: [Wire] -> [Wire] -> ([BusEntry], Set.Set (Int, Int))
-synthesizeBusEntries busWires regularWires =
-  let entries = mapMaybe entryForWire regularWires
-  in ( entries
-     , Set.fromList [(x + dx, y + dy) | BusEntry x y dx dy <- entries]
-     )
-  where
-    busPoints = Map.fromListWith Set.union
-      [ (wireNetName wire, Set.fromList [wirePoint1 wire, wirePoint2 wire])
-      | wire <- busWires
-      , not (null (wireNetName wire))
-      ]
-    busPrefixes =
-      [ (busName, prefix)
-      | busName <- Map.keys busPoints
-      , Just prefix <- [busMemberPrefix busName]
-      ]
-
-    isMemberOf netName busName =
-      case lookup busName busPrefixes of
-        Nothing -> False
-        Just prefix ->
-          let suffix = drop (length prefix) netName
-          in prefix `isPrefixOf` netName && not (null suffix) && all isDigit suffix
-
-    entryForWire wire = do
-      busName <- firstJust
-        [ if isMemberOf (wireNetName wire) name then Just name else Nothing
-        | (name, _) <- busPrefixes
-        ]
-      points <- Map.lookup busName busPoints
-      firstJust
-        [ busEntryAt endpoint points
-        | endpoint <- [wirePoint1 wire, wirePoint2 wire]
-        ]
-
-    -- A bus entry is the diagonal stub between a member wire's endpoint and the
-    -- bus it taps.  Every candidate is one grid step away on both axes, so they
-    -- are all equidistant; ordering by (dy, dx) just picks one deterministically.
-    busEntryAt (x, y) points =
-      case sortOn (\(dx, dy) -> (dy, dx))
-        [ (dx, dy)
-        | (busX, busY) <- Set.toList points
-        , let dx = busX - x
-              dy = busY - y
-        , abs dx == 10 && abs dy == 10
-        ] of
-        (dx, dy) : _ -> Just (BusEntry x y dx dy)
-        [] -> Nothing
-
-explicitAliasCovers :: [Wire] -> [NetLabel] -> NetLabel -> Bool
-explicitAliasCovers wires aliases generated = any covered matchingAliases
-  where
-    matchingAliases =
-      [ alias
-      | alias <- aliases
-      , netLabelName alias == netLabelName generated
-      ]
-    matchingWires =
-      [ wire
-      | wire <- wires
-      , wireNetName wire == netLabelName generated
-      ]
-    generatedPoint = (netLabelX generated, netLabelY generated)
-
-    covered alias = any componentContainsBoth (wireComponents matchingWires)
-      where
-        aliasPoint = (netLabelX alias, netLabelY alias)
-        componentContainsBoth component =
-          any (pointOnWire generatedPoint) component
-          && any (pointOnWire aliasPoint) component
-
 parseComponents :: [String] -> Map.Map Int String -> BS.ByteString -> [Component]
 parseComponents libraryValues nets body =
   mapMaybe parseIndexedMatch (zip [(0 :: Int)..] matches)
@@ -1270,33 +744,6 @@ parseOffPageConnectors body = mapMaybe parseAt (findAll recordMarker body)
         , offPageMatched = False
         }
 
-offPageHotpoint :: String -> (Int, Int, Int, Int) -> Int -> ((Int, Int), Int)
-offPageHotpoint name (rawX1, rawY1, rawX2, rawY2) orient =
-  let upper = map toUpper name
-      pointsRight = any (`isSuffixOf` upper) ["-R", "/R", "-IN"]
-      orientation = (orient `div` 256) .&. 0x07
-      initialX :: Int
-      initialX = if pointsRight then 1 else -1
-      mirroredX = if orientation .&. 0x04 /= 0 then negate initialX else initialX
-      (directionX, directionY) = case orientation .&. 0x03 of
-        1 -> (0, negate mirroredX)
-        2 -> (negate mirroredX, 0)
-        3 -> (0, mirroredX)
-        _ -> (mirroredX, 0)
-      x1 = min rawX1 rawX2
-      x2 = max rawX1 rawX2
-      y1 = min rawY1 rawY2
-      y2 = max rawY1 rawY2
-      midX = (x1 + x2) `div` 2
-      midY = (y1 + y2) `div` 2
-  in if directionX < 0
-       then ((x1, midY), 0)
-       else if directionX > 0
-         then ((x2, midY), 180)
-         else if directionY < 0
-           then ((midX, y1), 270)
-           else ((midX, y2), 90)
-
 resolveOffPageConnectors
   :: [Wire] -> [Component] -> [NetLabel] -> [OffPageConnector]
   -> [OffPageConnector]
@@ -1414,20 +861,6 @@ parsePowerSymbols body =
             _ -> (Nothing, Nothing)
         _ -> (Nothing, Nothing)
 
-
-transformPowerAnchor
-  :: PowerStyle -> (Int, Int, Int, Int, Int, Int) -> Int -> (Int, Int)
-transformPowerAnchor style (_, _, _, _, x1, y1) orient =
-  case (orient `div` 256) .&. 0x03 of
-    0 -> (x1 + anchorX, y1 + anchorY)
-    1 -> (x1 + anchorY, y1 + width - anchorX)
-    2 -> (x1 + width - anchorX, y1 + height - anchorY)
-    _ -> (x1 + height - anchorY, y1 + anchorX)
-  where
-    anchorX = 10
-    anchorY = if style == PowerGround then 0 else 10
-    width = 20
-    height = 10
 
 resolvePowerSymbols :: [Wire] -> [Component] -> [PowerSymbol] -> [PowerSymbol]
 resolvePowerSymbols wires components = map resolve
@@ -1578,100 +1011,6 @@ parsePageGraphics paper body = mapMaybe parseAt (findAll recordMarker body)
       | point == nextPoint = points
     addPoint point points = point : points
 
-parseLibraryTextStyles :: BS.ByteString -> [TextStyle]
-parseLibraryTextStyles body = go 0
-  where
-    go idx
-      | idx + 60 > BS.length body = []
-      | isStyleStart idx = case parseAt idx of
-          Just style -> style : go (idx + 60)
-          Nothing -> go (idx + 1)
-      | otherwise = go (idx + 1)
-
-    isStyleStart idx =
-      case [byteAt body (idx + offset) | offset <- [0..3]] of
-        [Just b0, Just 0xff, Just 0xff, Just 0xff] -> b0 >= 0x80
-        _ -> False
-
-    parseAt idx = do
-      tag <- int32LE body idx
-      escapement <- int32LE body (idx + 8)
-      weight <- fromIntegral <$> word32LE body (idx + 16)
-      italic <- (== 0xff) <$> byteAt body (idx + 20)
-      let face = asciiPrefixAt body (idx + 28) 30
-      pure TextStyle
-        { textStyleTag = tag
-        , textStyleWeight = weight
-        , textStyleItalic = italic
-        , textStyleEscapement = escapement
-        , textStyleFace = face
-        }
-
--- | Raw font face names carrying high bytes.  Mirrors the 60-byte style-record
--- stride of `parseLibraryTextStyles`, but keeps the bytes: the face name is the
--- one place a design reliably names its own script.
-libraryFaceNameBytes :: BS.ByteString -> [BS.ByteString]
-libraryFaceNameBytes body = unique (go 0)
-  where
-    go idx
-      | idx + 60 > BS.length body = []
-      | isStyleStart idx =
-          let name = BS.takeWhile (/= 0) (BS.take 30 (BS.drop (idx + 28) body))
-          in [name | BS.any (>= 0x80) name] ++ go (idx + 60)
-      | otherwise = go (idx + 1)
-
-    isStyleStart idx =
-      case [byteAt body (idx + offset) | offset <- [0 .. 3]] of
-        [Just b0, Just 0xff, Just 0xff, Just 0xff] -> b0 >= 0x80
-        _ -> False
-
-parseLibraryValueStrings :: SourceEncoding -> BS.ByteString -> [String]
-parseLibraryValueStrings enc =
-  map (decodeLibraryString enc) . libraryRawStrings
-
-libraryRawStrings :: BS.ByteString -> [BS.ByteString]
-libraryRawStrings body = fromMaybe [] $ do
-  textFontCount <- fromIntegral <$> word16LE body 48
-  let afterFonts = 50 + max 0 (textFontCount - 1) * 60
-  extraCount <- fromIntegral <$> word16LE body afterFonts
-  let mappingsStart = afterFonts + 2 + extraCount * 2 + 8
-  (afterMappings, _) <- readLengthStrings body mappingsStart 8
-  let stringCountAt = afterMappings + 156
-  count32 <- word32LE body stringCountAt
-  let stringCount = fromIntegral count32 :: Int
-  -- The count is a plain u32.  Reading it as a u16 (as an earlier
-  -- revision did for counts above 10000) shifts every pool index by one
-  -- and silently drops the whole table on large designs, because the
-  -- sanity cap then rejects it.
-  guard (stringCount >= 0 && stringCount <= 200000)
-  snd <$> readLengthStrings body (stringCountAt + 4) stringCount
-
--- Kept as raw bytes: the pool's encoding is not known until
--- `detectSourceEncoding` has seen these strings.
-readLengthStrings
-  :: BS.ByteString -> Int -> Int -> Maybe (Int, [BS.ByteString])
-readLengthStrings body = go []
-  where
-    go values pos 0 = Just (pos, reverse values)
-    go values pos remaining = do
-      stringLen <- fromIntegral <$> word16LE body pos
-      guard (stringLen >= 0 && pos + 2 + stringLen <= BS.length body)
-      let stringStart = pos + 2
-          raw = BS.take stringLen (BS.drop stringStart body)
-          afterString = stringStart + stringLen
-          nextPos = if byteAt body afterString == Just 0
-              then afterString + 1
-              else afterString
-      go (raw : values) nextPos (remaining - 1)
-
-orcadPageSize :: String -> (Int, Int)
-orcadPageSize paper = Map.findWithDefault (1654, 1170) paper $ Map.fromList
-  [ ("A4", (1170, 827)), ("A3", (1654, 1170)), ("A2", (2340, 1654))
-  , ("A1", (3311, 2340)), ("A0", (4681, 3311)), ("A", (1100, 850))
-  , ("B", (1700, 1100)), ("C", (2200, 1700)), ("D", (3400, 2200))
-  , ("E", (4400, 3400))
-  ]
-
 pageRecordColor :: BS.ByteString -> Int -> Rgba
 pageRecordColor body markerAt =
   let colorIndex = maybe 48 fromIntegral (byteAt body (markerAt - 37))
@@ -1748,19 +1087,6 @@ refinePageComponents cacheSymbols page = page
     meanPoint points =
       let count = fromIntegral (length points)
       in (sum (map fst points) / count, sum (map snd points) / count)
-
-forwardOrcadPoint
-  :: (Double, Double) -> Int -> (Double, Double) -> (Double, Double)
-forwardOrcadPoint (x, y) orient (centerX, centerY) =
-  let relativeX = x - centerX
-      relativeY = y - centerY
-      mirroredX = if orient .&. 0x04 /= 0 then negate relativeX else relativeX
-      rotated = case orient .&. 0x03 of
-        1 -> (relativeY, negate mirroredX)
-        2 -> (negate mirroredX, negate relativeY)
-        3 -> (negate relativeY, mirroredX)
-        _ -> (mirroredX, relativeY)
-  in (fst rotated + centerX, snd rotated + centerY)
 
 parseCacheSymbols :: BS.ByteString -> Map.Map String CacheSymbol
 parseCacheSymbols body = Map.mapWithKey attachPinNumbers parsedSymbols
@@ -2188,36 +1514,6 @@ parseCacheGraphics body start scanEnd = go start emptyCacheSymbol
 
     validGraphicCoords = all (\v -> abs v < 5000)
     validPointCoords = all (\(x, y) -> validGraphicCoords [x, y])
-
-normalizeCachePolygon :: [(Int, Int)] -> ([(Int, Int)], [Segment])
-normalizeCachePolygon vertices =
-  case closedPoints of
-    first : rest ->
-      case elemIndex first rest of
-        Just idx
-          | length closedPoints >= 4 ->
-              let closeIdx = idx + 1
-                  filled = take closeIdx closedPoints
-                  trailing = drop (closeIdx + 1) closedPoints
-              in (filled, trailingSegments first trailing)
-        _ -> (closedPoints, [])
-    [] -> ([], [])
-  where
-    deduped = dedupeConsecutive vertices
-    closedPoints =
-      case deduped of
-        [] -> []
-        first : _
-          | length deduped >= 2 && last deduped == first -> init deduped
-          | otherwise -> deduped
-
-    trailingSegments _ [] = []
-    trailingSegments start (point:rest) = go start (point:rest)
-
-    go _ [] = []
-    go lastPoint (point:rest) =
-      Segment (fst lastPoint) (snd lastPoint) (fst point) (snd point)
-      : go point rest
 
 data KExpr
   = KAtom String
@@ -3313,41 +2609,6 @@ symbolVisibilityNodes name symbol =
   where
     (hidePinNames, hidePinNumbers) = symbolPinVisibility name symbol
 
-symbolPinsForOutput :: String -> CacheSymbol -> [Pin]
-symbolPinsForOutput name symbol = map extendPin pins
-  where
-    pins = cachePins symbol
-    (_, hidePinNumbers) = symbolPinVisibility name symbol
-    longestNumber = maximum (0 : map (length . pinNumber) pins)
-    numberLength = if hidePinNumbers then 10 else (longestNumber + 1) * 5
-    minimumLength = fromIntegral (max 10 numberLength) :: Double
-    (originX, originY) = symbolOrigin symbol
-
-    extendPin pin
-      | currentLength >= minimumLength - 0.01 = pin
-      | otherwise =
-          let (inwardX, inwardY) = inwardDirection pin
-          in pin
-            { pinHotX = round (fromIntegral (pinBodyX pin) - inwardX * minimumLength)
-            , pinHotY = round (fromIntegral (pinBodyY pin) - inwardY * minimumLength)
-            }
-      where
-        dx = fromIntegral (pinBodyX pin - pinHotX pin)
-        dy = fromIntegral (pinBodyY pin - pinHotY pin)
-        currentLength = sqrt (dx * dx + dy * dy)
-
-    inwardDirection pin
-      | distance > 0.01 = (dx / distance, dy / distance)
-      | abs centerDx >= abs centerDy =
-          (if centerDx <= 0 then 1 else -1, 0)
-      | otherwise = (0, if centerDy <= 0 then 1 else -1)
-      where
-        dx = fromIntegral (pinBodyX pin - pinHotX pin)
-        dy = fromIntegral (pinBodyY pin - pinHotY pin)
-        distance = sqrt (dx * dx + dy * dy)
-        centerDx = fromIntegral (pinHotX pin) - originX
-        centerDy = fromIntegral (pinHotY pin) - originY
-
 symbolUnitNodes :: String -> Int -> CacheSymbol -> [KExpr]
 symbolUnitNodes name unitNumber symbol =
   [ kNode "symbol"
@@ -3529,92 +2790,6 @@ translateOverline ('\\':next:rest) =
     collectOverlined chars remaining = (reverse chars, remaining)
 translateOverline (char:rest) = char : translateOverline rest
 
-symbolOrigin :: CacheSymbol -> (Double, Double)
-symbolOrigin symbol =
-  case cachePins symbol of
-    pins@(_:_) ->
-      let xs = [pinHotX pin | pin <- pins]
-          ys = [pinHotY pin | pin <- pins]
-      in midpoint xs ys
-    [] ->
-      case graphicCoords of
-        [] -> (0, 0)
-        coords ->
-          let xs = [x | (x, _) <- coords]
-              ys = [y | (_, y) <- coords]
-          in midpoint xs ys
-  where
-    graphicCoords =
-      concatMap rectCoords (cacheRects symbol)
-      ++ concatMap segmentCoords (cacheLines symbol)
-      ++ concatMap ellipseCoords (cacheEllipses symbol)
-      ++ concatMap arcCoords (cacheArcs symbol)
-      ++ concatMap polygonCoords (cachePolygons symbol)
-      ++ concatMap polylineCoords (cachePolylines symbol)
-      ++ concatMap textCoords (cacheTexts symbol)
-
-    rectCoords (Rect x1 y1 x2 y2) = [(x1, y1), (x2, y2)]
-    segmentCoords (Segment x1 y1 x2 y2) = [(x1, y1), (x2, y2)]
-    ellipseCoords (Ellipse x1 y1 x2 y2) = [(x1, y1), (x2, y2)]
-    arcCoords (ArcShape x1 y1 x2 y2 sx sy ex ey) =
-      [(x1, y1), (x2, y2), (sx, sy), (ex, ey)]
-    polygonCoords (Polygon points) = points
-    polylineCoords (Polyline points) = points
-    textCoords (TextAnnotation x1 y1 x2 y2 ax ay _) =
-      [(x1, y1), (x2, y2), (ax, ay)]
-
-    midpoint xs ys = (gridMidpoint xs, gridMidpoint ys)
-
--- Midpoint of an extent, snapped to OrCAD's integer grid.  Every symbol-local
--- coordinate is measured as (coordinate - origin), so an origin landing on a
--- half unit -- which a plain (min + max) / 2 does whenever the extent spans an
--- odd number of units -- shifts the entire symbol, pins included, half a unit
--- (0.127 mm) away from the wires drawn on the page.  The placement anchor is a
--- whole unit, so it cannot absorb the half.  Snapping here keeps pins exactly on
--- the page grid; the body moves by at most half a unit, which is invisible.
-gridMidpoint :: [Int] -> Double
-gridMidpoint values = fromIntegral ((minimum values + maximum values) `div` 2)
-
-directionFromVector :: Double -> Double -> Int
-directionFromVector dx dy
-  | abs dx >= abs dy = if dx >= 0 then 0 else 180
-  | dy < 0 = 270
-  | otherwise = 90
-
-ellipsePoints :: Double -> Double -> Double -> Double -> Int -> [(Double, Double)]
-ellipsePoints cx cy rx ry steps =
-  [ let angle = 2 * pi * fromIntegral i / fromIntegral steps
-    in (cx + rx * cos angle, cy + ry * sin angle)
-  | i <- [0 .. steps]
-  ]
-
-arcMidpoint
-  :: Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double
-  -> (Double, Double)
-arcMidpoint cx cy rx ry sx sy ex ey =
-  let aStart = atan2 (safeDiv (sy - cy) ry) (safeDiv (sx - cx) rx)
-      rawEnd = atan2 (safeDiv (ey - cy) ry) (safeDiv (ex - cx) rx)
-      aEnd = if rawEnd <= aStart then rawEnd + 2 * pi else rawEnd
-      aMid = (aStart + aEnd) / 2
-  in (cx + rx * cos aMid, cy + ry * sin aMid)
-
-arcPoints
-  :: Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Int
-  -> [(Double, Double)]
-arcPoints cx cy rx ry sx sy ex ey steps =
-  [ let angle = aStart + (aEnd - aStart) * fromIntegral i / fromIntegral steps
-    in (cx + rx * cos angle, cy + ry * sin angle)
-  | i <- [0 .. steps]
-  ]
-  where
-    aStart = atan2 (safeDiv (sy - cy) ry) (safeDiv (sx - cx) rx)
-    rawEnd = atan2 (safeDiv (ey - cy) ry) (safeDiv (ex - cx) rx)
-    aEnd = if rawEnd <= aStart then rawEnd + 2 * pi else rawEnd
-
-safeDiv :: Double -> Double -> Double
-safeDiv _ denom | abs denom < 0.000001 = 0
-safeDiv numerator denom = numerator / denom
-
 generateProject :: String -> Bool -> String
 generateProject project emitWorksheet =
   unlines $
@@ -3683,43 +2858,6 @@ generateWorksheet =
     , "  (line (start 26 8.5) (end 26 2))"
     , ")"
     ]
-
-orientToAngle :: Int -> Int
-orientToAngle orient = case orient .&. 0x03 of
-  0 -> 0
-  1 -> 90
-  2 -> 180
-  _ -> 270
-
-componentAngle :: Component -> Int
-componentAngle component =
-  let angle = orientToAngle (compOrient component)
-  in if compOrient component .&. 0x04 /= 0
-       then (360 - angle) `mod` 360
-       else angle
-
-componentAngleFor :: RenderConfig -> Component -> Int
-componentAngleFor cfg component
-  | useKicadRc cfg && compCell component `elem` ["R", "C"] =
-      (90 - orientToAngle (compOrient component)) `mod` 360
-  | otherwise = componentAngle component
-
-standardDevicePinPoint :: Component -> String -> Maybe (Int, Int)
-standardDevicePinPoint component rawNumber = do
-  localY <- Map.lookup effectiveNumber (Map.fromList [("1", 15), ("2", -15)])
-  let angle = (90 - orientToAngle (compOrient component)) `mod` 360
-      (rotatedX, rotatedY) = case angle of
-        90 -> (-localY, 0)
-        180 -> (0, -localY)
-        270 -> (localY, 0)
-        _ -> (0, localY)
-  pure (compX component + rotatedX, compY component + rotatedY)
-  where
-    mirrored = compOrient component .&. 0x04 /= 0
-    effectiveNumber
-      | mirrored && rawNumber == "1" = "2"
-      | mirrored && rawNumber == "2" = "1"
-      | otherwise = rawNumber
 
 -- KiCad's outline-font renderer applies m_outlineFontSizeCompensation = 1.4 when
 -- scaling glyphs, so a (size 10 10) value renders at 14 mm em-height. Under
@@ -3960,15 +3098,6 @@ pageTextLinePosition pageText size rotation lineIndex lineCount =
       else size * 1.2
     step = fromIntegral (lineIndex + 1) * lineHeight
     descender = 0.30 * size
-
-powerSymbolAngle :: PowerSymbol -> Int
-powerSymbolAngle symbol = ((powerOrient symbol `div` 256) .&. 0x03) * 90
-
-powerValueAngle :: PowerSymbol -> Int
-powerValueAngle symbol =
-  let angle = fromMaybe (powerSymbolAngle symbol) (powerValueRotation symbol)
-      relative = (angle - powerSymbolAngle symbol) `mod` 360
-  in if relative >= 180 then relative - 180 else relative
 
 -- Returns the KiCad centre anchor in **millimetres** for a power symbol's value
 -- text, placed the same way component Reference/Value fields are.

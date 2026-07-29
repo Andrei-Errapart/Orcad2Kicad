@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# GHC build artifacts
+#   A hand-run `ghc -i scripts/hs ...` without -outputdir writes .hi/.o next
+#   to each source file instead of a build directory, scattering them across
+#   scripts/ and scripts/hs/**.
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o

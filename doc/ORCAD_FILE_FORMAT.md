@@ -504,8 +504,8 @@ also a valid GBK sequence decoding to `0癈+70癈`, so a validity probe would
 corrupt correct Western text. The converter therefore requires either font-name
 evidence, or high bytes that are overwhelmingly *paired* (genuine double-byte
 text is ~100% paired; CP1252 text with isolated accents is ~0%), before it will
-choose a double-byte codepage. See `detectSourceEncoding` in `dsn2kicad.hs`,
-and `--source-encoding` to override it.
+choose a double-byte codepage. See `detectSourceEncoding` in
+`scripts/hs/Encoding.hs`, and `--source-encoding` to override it.
 
 One design can also **mix codepages in a single pool**: board 0100 carries both
 a CP1252 `B0` and a GBK `A1 E3`, both meaning `°`. No whole-file choice is

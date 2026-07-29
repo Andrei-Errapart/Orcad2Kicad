@@ -7,7 +7,7 @@
 module Dsn.Record
   ( recordMarker, netTableAnchor, textRecordType
   , pageRectTag, pageLineTag, pageEllipseTag, pagePolygonTag
-  , findCellMatches, isCellChar
+  , findCellMatches
   ) where
 
 import Binary (byteAt, findAll)

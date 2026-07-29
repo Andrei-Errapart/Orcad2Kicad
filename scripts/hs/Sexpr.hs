@@ -9,9 +9,9 @@ module Sexpr
   , kAtom, kString, kNode, kInt, kDouble, kRawNum
   , kNo, kYes, kAt, kUuid, kCoord, kXy
   , kStroke, kFillType, kPolylineShape, kCircleShape, kArcShape
-  , kTextEffects, kColor, kStyledTextEffects, kStyledProperty
+  , kTextEffects, kStyledTextEffects, kStyledProperty
   , kColoredStroke, kPageFill, kProperty, kHiddenProperty
-  , renderKicad, esc, escJson, fmt
+  , renderKicad, esc, escJson
   ) where
 
 import Data.Char (ord)

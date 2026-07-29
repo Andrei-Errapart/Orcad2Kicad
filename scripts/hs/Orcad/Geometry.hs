@@ -7,12 +7,11 @@
 module Orcad.Geometry
   ( unitToMm, orcadPageSize
   , wirePoint1, wirePoint2, pointOnWire
-  , WireSpatialIndex, buildWireSpatialIndex, indexedWiresAt
-  , wireComponents, wireDirectionsAt, computeJunctions, placeWireLabels
+  , computeJunctions, placeWireLabels
   , BusEntry(..), synthesizeBusEntries, explicitAliasCovers
-  , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput, gridMidpoint
-  , directionFromVector, ellipsePoints, arcMidpoint, arcPoints, safeDiv
-  , orientToAngle, componentAngle, componentAngleFor
+  , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput
+  , directionFromVector, ellipsePoints, arcMidpoint, arcPoints
+  , componentAngleFor
   , standardDevicePinPoint, transformPowerAnchor, offPageHotpoint
   , powerSymbolAngle, powerValueAngle, normalizeCachePolygon
   ) where

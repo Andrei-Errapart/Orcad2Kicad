@@ -18,9 +18,9 @@ module Model
   , busMemberPrefix, isBusNetName
   , componentUnitInfo, componentLibName, powerReferenceName
   , isRefDesignator, sanitizePageName
-  , isGroundPowerName, powerRecordStyle, isCapacitorCellName
-  , pinElectricalType, pinRecordHidesNumber, symbolPinVisibility
-  , assignUnitNumbers, detectMultiUnitComponents, assignPowerReferences
+  , isGroundPowerName, powerRecordStyle
+  , pinElectricalType, symbolPinVisibility
+  , detectMultiUnitComponents, assignPowerReferences
   , canonicalizePageNetNames, disambiguatePageOutputName
   , orcadPalette, paperSizes
   ) where

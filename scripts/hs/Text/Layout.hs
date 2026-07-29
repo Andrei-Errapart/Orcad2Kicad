@@ -7,10 +7,7 @@
 -- placements as plain numbers rather than 'Sexpr.KExpr' nodes, so measurement
 -- stays independent of S-expression construction.
 module Text.Layout
-  ( measureTextWidth, measureTextHeight, measureFaceName
-  , textBoxDims, orcadTextTopLeftToCenter
-  , kicadFontSizeCompensation, newstrokeCapInflation
-  , defaultComponentTextStyle, textStyleForId, normalizedTextRotation
+  ( defaultComponentTextStyle, textStyleForId, normalizedTextRotation
   , nonEmptyTextLines, pageTextSize, pageTextLinePosition
   , componentFieldPlacement, powerValueCenter
   , orcadOverlineToKicad

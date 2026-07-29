@@ -71,8 +71,12 @@ Everything happens in memory:
   wrapper, which compiles and caches the whole tree with GHC (`-i scripts/hs`).
   `scripts/dsn2kicad.hs` is **`Main` only** — CLI parsing, IO, `writeOutput`,
   `CliOptions` — and is **not directly executable** (no shebang, not marked
-  executable); always go through the wrapper, never `runghc`/`./dsn2kicad.hs`
-  directly. Reads both ZIP-backed synthetic fixtures and regular OLE `.DSN`
+  executable); a shebang cannot supply the `-i scripts/hs` include path a
+  split module tree needs, so `./dsn2kicad.hs` cannot work. For normal use go
+  through the `scripts/dsn2kicad` wrapper; `runghc -iscripts/hs
+  scripts/dsn2kicad.hs` (what `tests/test_dsn2kicad_hk.py` uses) is a fine ad
+  hoc alternative that supplies the include path itself. Reads both
+  ZIP-backed synthetic fixtures and regular OLE `.DSN`
   files, and emits complete KiCad projects with sheets, symbols, graphics,
   connectivity, and worksheets. Imports only boot libraries (`base`,
   `bytestring`, `containers`, `array`, `directory`, `filepath`) with no C FFI.
@@ -102,8 +106,12 @@ Everything happens in memory:
   the whole pipeline; L7 (`Main`) is CLI and IO only. **New code goes in the
   lowest layer that can hold it.** Before the split nothing enforced this —
   e.g. `componentAngleFor`, a pure coordinate function, quietly took the CLI
-  `Options` record — and export lists plus the layer order are what now make
-  that mistake a compile error instead of an invisible habit. Full
+  `Options` record. GHC itself does not enforce the layer order (import
+  *cycles* are a compile error, but a one-way import against the grain is
+  not), so `tests/test_haskell_layering.py` is what catches that mistake now:
+  it derives every module's layer from the table above, parses each module's
+  `import` lines, and fails with the offending module pair if one imports
+  sideways or up, or if a module lacks an explicit export list. Full
   module-by-module contents, the cycle-breaking moves, and the
   `RenderConfig`/`ConvertOptions` split are in
   `doc/specs/2026-07-28-module-split-design.md`.

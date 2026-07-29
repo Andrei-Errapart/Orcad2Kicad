@@ -3,7 +3,7 @@
 
 -- | Deterministic UUIDs, seeded from the DSN digest so an edit on one page
 -- never churns UUIDs on unrelated pages.
-module Uuid (deterministicUuid, formatUuid, stableObjectUuid) where
+module Uuid (deterministicUuid, stableObjectUuid) where
 
 import qualified Data.ByteString as BS
 import Data.Bits ((.&.), (.|.))

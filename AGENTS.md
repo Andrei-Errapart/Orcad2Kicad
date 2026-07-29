@@ -59,11 +59,14 @@ of hand-editing the table.
 The Haskell converter (`scripts/dsn2kicad.hs` plus `scripts/hs/`) follows the
 same generated-file rule (`scripts/hs/Codepage/Tables.hs` and
 `scripts/hs/Text/MetricsTables.hs` are generated; edit the generator, not the
-table) plus two module-boundary rules: every non-`Main` module carries an
-explicit export list (checked by `-Wmissing-export-lists` in the warning
-build), and imports must respect the layer order in
+table) plus two module-boundary rules: every module including `Main` carries
+an explicit export list, and imports must respect the layer order in
 `doc/specs/2026-07-28-module-split-design.md` — a module may depend only on
-its own layer or lower, never sideways or up.
+its own layer or lower, never sideways or up. Neither rule is a compile
+error (GHC only rejects import *cycles*, not sideways/upward imports against
+the layer order); both are enforced by `tests/test_haskell_layering.py`,
+which discovers every module, checks each has an export list, and checks
+every import respects the layer table.
 
 ## Testing Guidelines
 

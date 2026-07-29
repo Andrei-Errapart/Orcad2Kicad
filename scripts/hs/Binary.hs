@@ -8,10 +8,10 @@ module Binary
   ( byteAt, word16LE, word32LE, word64LE, int16LE, int32LE
   , sliceAt, words32LE, readI32Quad, readI32Oct
   , findSubFrom, findSubBefore, findAll, findAllFrom
-  , asciiAt, asciiPrefixAt, isPrintableAscii, byteToChar, extractStrings
+  , asciiAt, asciiPrefixAt, isPrintableAscii, extractStrings
   , word64ToInt, word32ToInt, maybeWord32ToInt, showHex32
   , need, unlessEither, firstJust, lookupList, listAt, orElse
-  , unique, splitOn, splitSlash, stripStringPrefix, dedupeConsecutive
+  , unique, splitSlash, stripStringPrefix, dedupeConsecutive
   , commonStringPrefix, trimTrailingUnderscores
   ) where
 

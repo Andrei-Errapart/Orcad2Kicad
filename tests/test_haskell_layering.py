@@ -25,6 +25,7 @@ LAYERS = {
     "Dsn.Record": 1, "Encoding": 1, "Model": 1, "Uuid": 1,
     "Container": 2, "Dsn.Library": 2, "Orcad.Geometry": 2,
     "Dsn.Cache": 3, "Dsn.Page": 3, "Sexpr": 3, "Text.Layout": 3,
+    "Orcad.PinRelocation": 3,
     "Emit.Project": 4, "Emit.Symbol": 4,
     "Emit.Page": 5,
     "Convert": 6,

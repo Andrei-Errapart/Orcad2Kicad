@@ -10,6 +10,7 @@ module Orcad.Geometry
   , computeJunctions, placeWireLabels
   , BusEntry(..), synthesizeBusEntries, explicitAliasCovers
   , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput
+  , placedPinPoint, powerHotPoints
   , directionFromVector, ellipsePoints, arcMidpoint, arcPoints
   , componentAngleFor
   , standardDevicePinPoint, transformPowerAnchor, offPageHotpoint
@@ -519,3 +520,22 @@ powerValueAngle symbol =
       relative = (angle - powerSymbolAngle symbol) `mod` 360
   in if relative >= 180 then relative - 180 else relative
 
+-- | Page position of one of a placed component's cache pins, after the
+-- component's own rotation/mirror is applied about its symbol origin.
+placedPinPoint :: Component -> CacheSymbol -> Pin -> (Int, Int)
+placedPinPoint component symbol pin =
+  let center@(centerX, centerY) = symbolOrigin symbol
+      (hotX, hotY) = forwardOrcadPoint
+        (fromIntegral (pinHotX pin), fromIntegral (pinHotY pin))
+        (compOrient component)
+        center
+  in ( round (fromIntegral (compX component) + hotX - centerX)
+     , round (fromIntegral (compY component) + hotY - centerY)
+     )
+
+-- | The connection points of a page's power symbols.
+powerHotPoints :: Page -> Set.Set (Int, Int)
+powerHotPoints page = Set.fromList
+  [ (powerHotX symbol, powerHotY symbol)
+  | symbol <- pagePowerSymbols page
+  ]

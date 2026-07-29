@@ -24,15 +24,15 @@ import Model
   , emptyCacheSymbol
   , componentUnitInfo, componentLibName, powerReferenceName
   )
+import Orcad.PinRelocation (PinRelocation(..), pinRelocation)
 import Orcad.Geometry
   ( unitToMm
-  , wirePoint1, wirePoint2, pointOnWire
   , computeJunctions, placeWireLabels
   , BusEntry(..), synthesizeBusEntries, explicitAliasCovers
-  , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput
+  , symbolOrigin
+  , placedPinPoint, powerHotPoints
   , ellipsePoints
   , componentAngleFor
-  , standardDevicePinPoint
   , powerSymbolAngle, powerValueAngle
   )
 import Sexpr
@@ -91,6 +91,15 @@ generatePageSch uuidSeed cfg _project cacheSymbols multiUnits powerRefs textStyl
          , kNo "embedded_fonts"
          ]
   where
+    -- Pin movement (native pin lengthening, and --kicad-rc device swaps) is
+    -- resolved once, in Orcad.PinRelocation; the emitters below only consume
+    -- the result.
+    relocation = pinRelocation cfg cacheSymbols page
+    adjustedWirePoint = relocatedWirePoint relocation
+    rcBridgePairs = relocationBridges relocation
+    regularWires = relocationWires relocation
+    powerPositions = powerHotPoints page
+
     titleBlock = pageTitleBlock page
 
     emitTitleBlock =
@@ -133,13 +142,6 @@ generatePageSch uuidSeed cfg _project cacheSymbols multiUnits powerRefs textStyl
         , kStroke "0.15" "default"
         , kUuid (pageObjectUuid uuidSeed page 1 wireIndex)
         ]
-
-    adjustedWirePoint wire point =
-      case Map.lookup point rcPinAdjustmentMap of
-        Just newPoint
-          | wireEndpointCanMove wire point newPoint -> newPoint
-        _ -> Map.findWithDefault point point nativePinAdjustmentMap
-
     emitBus busIndex wire =
       kNode "bus"
         [ kNode "pts"
@@ -159,92 +161,7 @@ generatePageSch uuidSeed cfg _project cacheSymbols multiUnits powerRefs textStyl
         , kStroke "0" "default"
         , kUuid (pageObjectUuid uuidSeed page 13 entryIndex)
         ]
-
-    regularWires =
-      [ wire
-      | wire <- pageWires page
-      , not (wireIsBus wire)
-      , not (Set.member (orderedWirePoints wire) rcInternalConnections)
-      ]
     busWires = filter wireIsBus (pageWires page)
-    nativePinAdjustments =
-      [ (oldPoint, newPoint)
-      | component <- pageComponents page
-      , not (useKicadRc cfg && compCell component `elem` ["R", "C"])
-      , Just symbol <- [Map.lookup (compCell component) cacheSymbols]
-      , (oldPin, newPin) <- zip
-          (cachePins symbol)
-          (symbolPinsForOutput (compCell component) symbol)
-      , let oldPoint = placedPinPoint component symbol oldPin
-            newPoint = placedPinPoint component symbol newPin
-      , oldPoint /= newPoint
-      ]
-    rcPinAdjustments = [(oldPoint, newPoint) | (_, oldPoint, newPoint) <- rcPinMoves]
-    nativePinAdjustmentMap = Map.fromList nativePinAdjustments
-    rcPinAdjustmentMap = Map.fromList rcPinAdjustments
-    rcInternalConnections = Set.fromList
-      [ orderPoints firstPoint secondPoint
-      | component <- pageComponents page
-      , useKicadRc cfg
-      , compCell component `elem` ["R", "C"]
-      , [firstPoint, secondPoint] <- [rcOriginalPinPoints component]
-      ]
-    orderedWirePoints wire = orderPoints (wirePoint1 wire) (wirePoint2 wire)
-    orderPoints first second = if first <= second then (first, second) else (second, first)
-    rcBridgePairs = unique
-      [ (oldPoint, newPoint)
-      | (reference, oldPoint, newPoint) <- rcPinMoves
-      , Set.member oldPoint powerPositions
-        || hasOtherPinAt reference oldPoint
-        || any (wireKeepsOldPoint oldPoint newPoint) regularWires
-        || any (\alias -> (netLabelX alias, netLabelY alias) == oldPoint)
-             (pageNetAliases page)
-      ]
-    rcPinMoves =
-      [ (compRef component, oldPoint, newPoint)
-      | component <- pageComponents page
-      , useKicadRc cfg
-      , compCell component `elem` ["R", "C"]
-      , (pinNumberText, oldPoint) <- zip ["1", "2"] (rcOriginalPinPoints component)
-      , Just newPoint <- [standardDevicePinPoint component pinNumberText]
-      , oldPoint /= newPoint
-      ]
-    rcOriginalPinPoints component =
-      case Map.lookup (compCell component) cacheSymbols of
-        Just symbol
-          | [firstPin, secondPin] <- cachePins symbol ->
-              map (placedPinPoint component symbol) [firstPin, secondPin]
-        _ ->
-          [ (pagePinX pin, pagePinY pin)
-          | pin <- compPagePins component
-          ]
-    pinOwners =
-      [ ((pagePinX pin, pagePinY pin), compRef component)
-      | component <- pageComponents page
-      , pin <- compPagePins component
-      ]
-      ++
-      [ (placedPinPoint component symbol pin, compRef component)
-      | component <- pageComponents page
-      , Just symbol <- [Map.lookup (compCell component) cacheSymbols]
-      , pin <- cachePins symbol
-      ]
-    hasOtherPinAt reference point = any
-      (\(pinPoint, owner) -> pinPoint == point && owner /= reference)
-      pinOwners
-    wireEndpointCanMove wire oldPoint newPoint =
-      let otherPoint = if oldPoint == wirePoint1 wire
-            then wirePoint2 wire
-            else wirePoint1 wire
-          (moveX, moveY) = subtractPoint newPoint oldPoint
-          (wireX, wireY) = subtractPoint otherPoint oldPoint
-      in (oldPoint == wirePoint1 wire || oldPoint == wirePoint2 wire)
-         && moveX * wireY == moveY * wireX
-    wireKeepsOldPoint oldPoint newPoint wire
-      | not (pointOnWire oldPoint wire) = False
-      | oldPoint /= wirePoint1 wire && oldPoint /= wirePoint2 wire = True
-      | otherwise = not (wireEndpointCanMove wire oldPoint newPoint)
-    subtractPoint (x1, y1) (x2, y2) = (x1 - x2, y1 - y2)
     (busEntries, busEntryLandings) =
       synthesizeBusEntries busWires regularWires
     junctions = computeJunctions regularWires
@@ -304,21 +221,6 @@ generatePageSch uuidSeed cfg _project cacheSymbols multiUnits powerRefs textStyl
       , Just symbol <- [Map.lookup (compCell component) cacheSymbols]
       , pin <- cachePins symbol
       ]
-    powerPositions = Set.fromList
-      [ (powerHotX symbol, powerHotY symbol)
-      | symbol <- pagePowerSymbols page
-      ]
-
-    placedPinPoint component symbol pin =
-      let center@(centerX, centerY) = symbolOrigin symbol
-          (hotX, hotY) = forwardOrcadPoint
-            (fromIntegral (pinHotX pin), fromIntegral (pinHotY pin))
-            (compOrient component)
-            center
-      in ( round (fromIntegral (compX component) + hotX - centerX)
-         , round (fromIntegral (compY component) + hotY - centerY)
-         )
-
     emitJunction junctionIndex (x, y) =
       kNode "junction"
         [ kAt [kCoord x, kCoord y]

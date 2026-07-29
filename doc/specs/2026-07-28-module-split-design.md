@@ -87,9 +87,17 @@ Main → Convert → Emit.{Page,Symbol,Project} → Sexpr
 separate. `Text.Layout` does not depend on `Sexpr` — see the
 `componentFieldAt` split below.
 
-Every non-`Main` module carries an explicit export list, and the build adds
-`-Wmissing-export-lists`. Without a Cabal boundary, export lists are the only
-thing that makes the layering real rather than advisory.
+Every non-`Main` module carries an explicit export list.
+
+An earlier draft of this spec claimed export lists plus `-Wmissing-export-lists`
+were what made the layering real. That was wrong, and the final review caught
+it: GHC rejects import *cycles*, but a sideways or upward import inside an
+acyclic graph compiles perfectly well, and the warning build was never wired
+into anything that ships. Export lists narrow what a module can reach; they do
+not constrain which modules it may reach for. Enforcement is
+`tests/test_haskell_layering.py`, which parses every module's imports and
+asserts each one resolves to a strictly lower layer, that the module set matches
+the layer table exactly, and that every module has an export list.
 
 ## Configuration records
 
@@ -228,7 +236,8 @@ rationalise the difference.
    another. Baseline is 27 fail / 4 pass with the known PDF-alignment failures.
 4. **Warnings.** `-Wall -Wcompat -Wincomplete-uni-patterns
    -Wmissing-export-lists` clean on every module. The monolith is currently
-   clean under the first three.
+   clean under the first three. Note this is a developer-run build, not
+   something the wrapper or CI performs — see the enforcement note above.
 
 ## Risks
 

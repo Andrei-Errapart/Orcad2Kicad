@@ -7,12 +7,11 @@
 -- possible and keeps this module independent of how the program was invoked.
 module Convert (ConvertOptions(..), convertDsnBytes) where
 
-import Binary (unlessEither, lookupList)
+import Binary (unlessEither)
 import Container (parseOleStreams, parseStoredZip, isZipArchive, ZipMember(..))
 import qualified Data.ByteString as BS
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Dsn.Cache (parseCacheSymbols)
 import Dsn.Library
@@ -27,13 +26,12 @@ import Emit.Project
   )
 import Emit.Symbol (generateSymbolLibrary)
 import Model
-  ( Page(..), Component(..), PagePin(..), Pin(..)
-  , CacheSymbol(..)
+  ( Page(..)
   , RenderConfig(..)
   , detectMultiUnitComponents, assignPowerReferences
   , canonicalizePageNetNames, disambiguatePageOutputName
   )
-import Orcad.Geometry (forwardOrcadPoint, symbolOrigin)
+import Orcad.Geometry (refinePageComponents)
 import Sha256 (sha256)
 
 -- | The rendering-relevant options: everything the pure conversion needs,
@@ -124,63 +122,3 @@ convertStreams opts sourceBytes members = do
        , ("sym-lib-table", generateSymLibTable project)
        ]
     ++ worksheetFiles
-
-refinePageComponents :: Map.Map String CacheSymbol -> Page -> Page
-refinePageComponents cacheSymbols page = page
-  { pageComponents = map refine (pageComponents page)
-  }
-  where
-    refine component =
-      case Map.lookup (compCell component) cacheSymbols of
-        Nothing -> component
-        Just symbol ->
-          let pins = cachePins symbol
-              center = symbolOrigin symbol
-              originsFor orient = mapMaybe (pinOrigin orient pins center)
-                (compPagePins component)
-              candidates =
-                [ (orient, originsFor orient)
-                | orient <- [0..7]
-                , orient /= compOrient component
-                ]
-              (bestOrient, origins) = foldl chooseOrientation
-                (compOrient component, originsFor (compOrient component)) candidates
-          in if null origins || originSpread origins > 2
-               then component
-               else
-                 let (originX, originY) = meanPoint origins
-                     (centerX, centerY) = forwardOrcadPoint
-                       center (compOrient component) center
-                 in component
-                   { compX = round (originX + centerX)
-                   , compY = round (originY + centerY)
-                   , compOrient = bestOrient
-                   , compOriginX = Just originX
-                   , compOriginY = Just originY
-                   }
-
-    pinOrigin orient pins center pagePin = do
-      cachePin <- lookupList pins (pagePinNumber pagePin - 1)
-      let (hotX, hotY) = forwardOrcadPoint
-            (fromIntegral (pinHotX cachePin), fromIntegral (pinHotY cachePin))
-            orient
-            center
-      pure
-        ( fromIntegral (pagePinX pagePin) - hotX
-        , fromIntegral (pagePinY pagePin) - hotY
-        )
-
-    chooseOrientation current@(_, currentOrigins) candidate@(_, candidateOrigins)
-      | null candidateOrigins = current
-      | null currentOrigins = candidate
-      | originSpread candidateOrigins < originSpread currentOrigins = candidate
-      | otherwise = current
-
-    originSpread points =
-      let xs = map fst points
-          ys = map snd points
-      in max (maximum xs - minimum xs) (maximum ys - minimum ys)
-
-    meanPoint points =
-      let count = fromIntegral (length points)
-      in (sum (map fst points) / count, sum (map snd points) / count)

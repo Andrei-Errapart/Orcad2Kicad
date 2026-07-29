@@ -11,6 +11,7 @@ module Orcad.Geometry
   , BusEntry(..), synthesizeBusEntries, explicitAliasCovers
   , forwardOrcadPoint, symbolOrigin, symbolPinsForOutput
   , placedPinPoint, powerHotPoints
+  , refinePageComponents
   , directionFromVector, ellipsePoints, arcMidpoint, arcPoints
   , componentAngleFor
   , standardDevicePinPoint, transformPowerAnchor, offPageHotpoint
@@ -539,3 +540,70 @@ powerHotPoints page = Set.fromList
   [ (powerHotX symbol, powerHotY symbol)
   | symbol <- pagePowerSymbols page
   ]
+
+-- | Recover each placed component's body origin by matching its cache
+-- pins against the pin positions recorded on the page, trying every
+-- orientation and keeping the one whose implied origins agree most
+-- closely.  A component whose pins cannot be matched is left as parsed.
+--
+-- Pure coordinate work: it consumes the cache symbols and a page and
+-- returns the page, touching nothing above this layer.
+refinePageComponents :: Map.Map String CacheSymbol -> Page -> Page
+refinePageComponents cacheSymbols page = page
+  { pageComponents = map refine (pageComponents page)
+  }
+  where
+    refine component =
+      case Map.lookup (compCell component) cacheSymbols of
+        Nothing -> component
+        Just symbol ->
+          let pins = cachePins symbol
+              center = symbolOrigin symbol
+              originsFor orient = mapMaybe (pinOrigin orient pins center)
+                (compPagePins component)
+              candidates =
+                [ (orient, originsFor orient)
+                | orient <- [0..7]
+                , orient /= compOrient component
+                ]
+              (bestOrient, origins) = foldl chooseOrientation
+                (compOrient component, originsFor (compOrient component)) candidates
+          in if null origins || originSpread origins > 2
+               then component
+               else
+                 let (originX, originY) = meanPoint origins
+                     (centerX, centerY) = forwardOrcadPoint
+                       center (compOrient component) center
+                 in component
+                   { compX = round (originX + centerX)
+                   , compY = round (originY + centerY)
+                   , compOrient = bestOrient
+                   , compOriginX = Just originX
+                   , compOriginY = Just originY
+                   }
+
+    pinOrigin orient pins center pagePin = do
+      cachePin <- lookupList pins (pagePinNumber pagePin - 1)
+      let (hotX, hotY) = forwardOrcadPoint
+            (fromIntegral (pinHotX cachePin), fromIntegral (pinHotY cachePin))
+            orient
+            center
+      pure
+        ( fromIntegral (pagePinX pagePin) - hotX
+        , fromIntegral (pagePinY pagePin) - hotY
+        )
+
+    chooseOrientation current@(_, currentOrigins) candidate@(_, candidateOrigins)
+      | null candidateOrigins = current
+      | null currentOrigins = candidate
+      | originSpread candidateOrigins < originSpread currentOrigins = candidate
+      | otherwise = current
+
+    originSpread points =
+      let xs = map fst points
+          ys = map snd points
+      in max (maximum xs - minimum xs) (maximum ys - minimum ys)
+
+    meanPoint points =
+      let count = fromIntegral (length points)
+      in (sum (map fst points) / count, sum (map snd points) / count)

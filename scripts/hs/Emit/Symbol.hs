@@ -5,11 +5,7 @@
 -- as embedded per-page caches and the project-wide .kicad_sym), plus the
 -- bundled standard power/device glyphs used by --kicad-power / --kicad-rc.
 module Emit.Symbol
-  ( emitSymbolDefinitions, libSymbol, libMultiUnitSymbol
-  , libSymbolProperties, libPowerSymbol, libStandardPowerSymbol
-  , libStandardDeviceSymbol, symbolVisibilityNodes, symbolUnitNodes
-  , standardPin, powerLibName, standardPowerNameMap
-  , generateSymbolLibrary
+  ( emitSymbolDefinitions, powerLibName, generateSymbolLibrary
   ) where
 
 import Data.Char (toUpper)

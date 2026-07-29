@@ -56,6 +56,15 @@ Prefer deterministic output and structured parsers over ad hoc binary/string
 handling. `scripts/text_metrics_data.py` is generated; edit the generator instead
 of hand-editing the table.
 
+The Haskell converter (`scripts/dsn2kicad.hs` plus `scripts/hs/`) follows the
+same generated-file rule (`scripts/hs/Codepage/Tables.hs` and
+`scripts/hs/Text/MetricsTables.hs` are generated; edit the generator, not the
+table) plus two module-boundary rules: every non-`Main` module carries an
+explicit export list (checked by `-Wmissing-export-lists` in the warning
+build), and imports must respect the layer order in
+`doc/specs/2026-07-28-module-split-design.md` — a module may depend only on
+its own layer or lower, never sideways or up.
+
 ## Testing Guidelines
 
 Tests use `pytest`. Name test files `tests/test_*.py` and test functions

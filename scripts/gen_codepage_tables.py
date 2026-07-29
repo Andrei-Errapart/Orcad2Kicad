@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Andrei Errapart
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Generate the legacy-codepage decoding tables embedded in dsn2kicad.hs.
+"""Generate the legacy-codepage decoding tables for scripts/hs/Codepage/Tables.hs.
 
 OrCAD stores Library string-pool text in the Windows ANSI codepage of the
 machine that authored the design, and records nowhere which one that was (see
@@ -11,7 +11,8 @@ out anyway.
 
 The tables come from Python's own codecs, which are the standard Microsoft
 mappings, so this script needs no third-party package.  Run it after changing
-CODEPAGES; it rewrites the marked block in dsn2kicad.hs in place:
+CODEPAGES; it (re)writes the whole scripts/hs/Codepage/Tables.hs module in
+place:
 
     python3 gen_codepage_tables.py
 """

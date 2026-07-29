@@ -66,15 +66,47 @@ Everything happens in memory:
 
 **Key modules (all under `scripts/`):**
 
-- `dsn2kicad.hs` (~6700 lines) — **the converter.** Native Haskell, reached via
-  the `scripts/dsn2kicad` wrapper, which compiles and caches it with GHC. Reads
-  both ZIP-backed synthetic fixtures and regular OLE `.DSN` files through its own
-  Compound File reader, and emits complete KiCad projects with sheets, symbols,
-  graphics, connectivity, and worksheets. Imports only boot libraries (`base`,
+- **The converter.** Native Haskell, split into 20 modules under `scripts/hs/`
+  plus `Main` in `scripts/dsn2kicad.hs`, reached via the `scripts/dsn2kicad`
+  wrapper, which compiles and caches the whole tree with GHC (`-i scripts/hs`).
+  `scripts/dsn2kicad.hs` is **`Main` only** — CLI parsing, IO, `writeOutput`,
+  `CliOptions` — and is **not directly executable** (no shebang, not marked
+  executable); always go through the wrapper, never `runghc`/`./dsn2kicad.hs`
+  directly. Reads both ZIP-backed synthetic fixtures and regular OLE `.DSN`
+  files, and emits complete KiCad projects with sheets, symbols, graphics,
+  connectivity, and worksheets. Imports only boot libraries (`base`,
   `bytestring`, `containers`, `array`, `directory`, `filepath`) with no C FFI.
   Its core is pure — conversion returns `Either String [(FilePath, String)]` and
   all file I/O lives in `main` / `writeOutput` — which is what makes the intended
   WASM build tractable.
+
+  Modules form a DAG across eight dependency layers (each module may import
+  only from its own layer or lower):
+
+  ```
+  L0  Binary, Codepage.Tables, Sha256, Text.MetricsTables, Utf8
+  L1  Dsn.Record, Encoding, Model, Uuid
+  L2  Container, Dsn.Library, Orcad.Geometry
+  L3  Dsn.Cache, Dsn.Page, Sexpr, Text.Layout
+  L4  Emit.Project, Emit.Symbol
+  L5  Emit.Page
+  L6  Convert
+  L7  Main  (scripts/dsn2kicad.hs)
+  ```
+
+  Roughly: L0 is generated tables and dependency-free leaves (bytes, the SHA-256
+  hash, UTF-8 encoding); L1–L2 parse the DSN/OLE container into the domain
+  model; L3 turns parsed records into page/cache data plus the S-expression
+  and text-layout primitives used to emit them; L4–L5 render the project
+  files, symbol library, and per-page schematics; L6 (`Convert`) orchestrates
+  the whole pipeline; L7 (`Main`) is CLI and IO only. **New code goes in the
+  lowest layer that can hold it.** Before the split nothing enforced this —
+  e.g. `componentAngleFor`, a pure coordinate function, quietly took the CLI
+  `Options` record — and export lists plus the layer order are what now make
+  that mistake a compile error instead of an invisible habit. Full
+  module-by-module contents, the cycle-breaking moves, and the
+  `RenderConfig`/`ConvertOptions` split are in
+  `doc/specs/2026-07-28-module-split-design.md`.
 - `dsn2kicad_py.py` (~6400 lines) — the **feature-frozen** Python converter
   monolith, reached via the `scripts/dsn2kicad_py` wrapper. Roughly ordered as:
   `parse_*` (binary stream decoders) → `sch_*` / `lib_symbol_*` (KiCad
@@ -95,16 +127,15 @@ Everything happens in memory:
   Arial Narrow / Courier New advance widths, plus KiCad Newstroke).
   **`text_metrics_data.py` is generated** by `gen_text_metrics.py` — never
   hand-edit it; edit the generator and regenerate.
-- `gen_codepage_tables.py` — generates the CP932/CP936/CP950/CP1252 tables
-  **inline in `dsn2kicad.hs`**, between the `GENERATED CODEPAGE TABLES`
-  markers (~185 KB, about half that file). Same rule as the font tables: never
-  hand-edit the block, edit the generator. They decode the `Library` string
-  pool, which OrCAD writes in the authoring machine's Windows ANSI codepage
-  without recording which one — `detectSourceEncoding` infers it from the
-  design's font names, `--source-encoding` overrides. Read
-  `doc/ORCAD_FILE_FORMAT.md` § String encoding before touching any of this;
-  in particular, content sniffing alone must never select a double-byte
-  codepage (`0°C` is also valid GBK).
+- `gen_codepage_tables.py` — generates the CP932/CP936/CP950/CP1252 tables as
+  the whole **`scripts/hs/Codepage/Tables.hs`** module (~185 KB). Same rule as
+  the font tables: never hand-edit the generated module, edit the generator.
+  They decode the `Library` string pool, which OrCAD writes in the authoring
+  machine's Windows ANSI codepage without recording which one —
+  `detectSourceEncoding` infers it from the design's font names,
+  `--source-encoding` overrides. Read `doc/ORCAD_FILE_FORMAT.md` § String
+  encoding before touching any of this; in particular, content sniffing alone
+  must never select a double-byte codepage (`0°C` is also valid GBK).
 - `scripts/kicad_symbols/` — bundled `power.kicad_sym` / `Device.kicad_sym`
   (CC-BY-SA 4.0 + KiCad Library Exception, see `NOTICE`), used only for
   `--kicad-power` / `--kicad-rc` so no KiCad install is required.

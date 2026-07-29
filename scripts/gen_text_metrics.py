@@ -27,9 +27,12 @@ Sources
 
 Usage
 -----
-    python3 gen_text_metrics.py [--newstroke PATH_OR_URL]
+    python3 gen_text_metrics.py [--newstroke PATH_OR_URL] [--haskell-only]
 
-Writes ``text_metrics_data.py`` next to this script.
+Writes ``text_metrics_data.py`` next to this script, and the equivalent
+Haskell module at ``scripts/hs/Text/MetricsTables.hs``. ``--haskell-only``
+writes just the Haskell module and leaves the feature-frozen
+``text_metrics_data.py`` untouched.
 """
 
 import os
@@ -256,7 +259,7 @@ def _format_haskell_entry(name, key, upem, default_adv, glyphs):
 
 
 def _format_haskell_block(tables, provenance, ftver):
-    """Render the full Haskell font-metrics block (spliced between markers)."""
+    """Render the full contents of scripts/hs/Text/MetricsTables.hs."""
     names = ['fontMetricsEntry%d' % i for i in range(len(tables))]
     entries = [
         _format_haskell_entry(name, key, upem, default_adv, glyphs)

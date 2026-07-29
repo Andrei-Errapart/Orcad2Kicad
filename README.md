@@ -257,9 +257,10 @@ pytest
 ## Regenerating the codepage tables
 
 The legacy Windows codepage tables (CP932 / CP936 / CP950 / CP1252) used to
-decode `Library` string-pool text are generated into `scripts/dsn2kicad.hs`
-between the `GENERATED CODEPAGE TABLES` markers. They come from Python's own
-codecs, so no third-party package is needed:
+decode `Library` string-pool text are generated as the whole
+`scripts/hs/Codepage/Tables.hs` module (the Haskell converter's only consumer;
+there is no Python-side equivalent to keep in sync). They come from Python's
+own codecs, so no third-party package is needed:
 
 ```
 python3 scripts/gen_codepage_tables.py
@@ -270,12 +271,21 @@ unavailable, and the WASM target rules it out regardless.
 
 ## Regenerating the font tables
 
-`scripts/text_metrics_data.py` is generated and committed; runtime never needs
-fonts. To rebuild it (e.g. after changing the character set), install the dev
+`scripts/text_metrics_data.py` (the feature-frozen Python converter's table)
+and `scripts/hs/Text/MetricsTables.hs` (the Haskell converter's table) are both
+generated and committed from the same measurements; runtime never needs fonts.
+To rebuild them (e.g. after changing the character set), install the dev
 extras (`pip install -e ".[dev]"`, which adds `freetype-py` + `fonttools`) and run:
 
 ```
 python3 scripts/gen_text_metrics.py
+```
+
+Pass `--haskell-only` to write just `scripts/hs/Text/MetricsTables.hs` and
+leave the feature-frozen `scripts/text_metrics_data.py` untouched:
+
+```
+python3 scripts/gen_text_metrics.py --haskell-only
 ```
 
 It measures the **Liberation** fonts (Liberation Sans / Sans Narrow / Mono — the

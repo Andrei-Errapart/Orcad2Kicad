@@ -117,16 +117,21 @@ parseOptions argv =
               ++ intercalate ", " sourceEncodingNames ++ ")"
         case positional of
           [] -> Left "Missing DSN path"
-          dsn : outDir : _ ->
-            Right (makeOptions encoding dsn outDir)
           [dsn] ->
             Right (makeOptions encoding dsn (takeBaseName dsn ++ "_kicad"))
+          dsn : outDir : extra ->
+            if null extra
+              then Right (makeOptions encoding dsn outDir)
+              else Left ("Unexpected extra arguments: " ++ unwords extra)
 
 partitionArgs :: [String] -> ([String], [String])
 partitionArgs = go [] []
   where
+    -- Stop flag parsing at "--" and treat all following arguments as positional,
+    -- even if they start with "--".
     go flags positional [] = (reverse flags, reverse positional)
     go flags positional (arg:rest)
+      | arg == "--" = (reverse flags, reverse (rest ++ positional))
       | "--" `isPrefixOf` arg = go (arg:flags) positional rest
       | otherwise = go flags (arg:positional) rest
 

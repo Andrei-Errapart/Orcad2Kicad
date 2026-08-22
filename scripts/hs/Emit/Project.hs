@@ -23,7 +23,7 @@ generateRootSch uuidSeed project pages =
       [ kNode "version" [kInt 20260306]
       , kNode "generator" [kString "dsn2kicad"]
       , kNode "generator_version" [kString "0.1"]
-      , kUuid (stableObjectUuid uuidSeed 0 1)
+      , kUuid rootUuid
       , kNode "paper" [kString "A3"]
       , kNode "title_block" [kNode "title" [kString (project ++ " (DSN import)")]]
       , kNode "lib_symbols" []
@@ -35,6 +35,8 @@ generateRootSch uuidSeed project pages =
          , kNo "embedded_fonts"
          ]
   where
+    rootUuid = stableObjectUuid uuidSeed 0 1
+
     -- The index sheet is A3 (420 x 297 mm).  Columns are filled top to bottom;
     -- growing the column height before adding columns keeps wide designs on the
     -- sheet instead of running off the right edge.  At most 6 columns fit
@@ -71,6 +73,20 @@ generateRootSch uuidSeed project pages =
                "Sheetfile"
                (pageOutputName page)
                (kAt [kInt x, kDouble (fromIntegral y + 12.7), kInt 0])
+           -- Page number, keyed by the path of the sheet that holds this one:
+           -- the root.  Without it KiCad sees a blank page number, silently
+           -- renumbers the sheet on load, and then reports the schematic as
+           -- broken (SCH_SHEET_LIST::RepairPageNumbers, eeschema/files-io.cpp).
+           -- The root itself is page 1, so the pages below it start at 2.
+           , kNode "instances"
+               [ kNode "project"
+                   [ kString project
+                   , kNode "path"
+                       [ kString ('/' : rootUuid)
+                       , kNode "page" [kString (show (idx + 1))]
+                       ]
+                   ]
+               ]
            ]
 
 generateProject :: String -> Bool -> String

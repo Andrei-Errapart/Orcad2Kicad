@@ -497,11 +497,16 @@ def make_library(values, styles=None, title_block=None):
 
 
 def make_zip(members):
-    """Pack {member_name: bytes} into a ZIP archive and return its bytes."""
+    """Pack {member_name: bytes} into a ZIP archive and return its bytes.
+
+    Members carry a fixed timestamp: ``writestr`` would otherwise stamp the
+    current time at 2-second granularity, so the same fixture built twice
+    could differ, and output UUIDs are seeded from the container bytes.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name, data in members.items():
-            zf.writestr(name, data)
+            zf.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)), data)
     return buf.getvalue()
 
 

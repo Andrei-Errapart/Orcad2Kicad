@@ -1836,6 +1836,62 @@ def test_dsn2kicad_hk_root_matrix_and_worksheet(dsn_fixtures, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_root_sheets_carry_page_numbers(dsn_fixtures, tmp_path):
+    """Every hierarchical sheet needs page-number instance data of its own.
+
+    A sheet with a blank page number is a defect KiCad silently repairs on
+    load (SCH_SHEET_LIST::RepairPageNumbers), after which eeschema warns that
+    the schematic was broken and must be re-saved.  The root claims page 1
+    through its own sheet_instances, so the sheets below it claim 2..n+1, and
+    each records that under the root sheet's path.
+    """
+    members = {
+        f"Views/SCHEMATIC1/Pages/Page{page_number}": dsn_fixtures.make_page(
+            f"0{page_number}_PAGE"
+        )
+        for page_number in range(1, 4)
+    }
+    dsn = tmp_path / "layout.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip(members))
+
+    out_dir = tmp_path / "out"
+    result = subprocess.run(
+        hk_argv(dsn, out_dir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    root = kicad_sexpr.parse(
+        (out_dir / "layout.kicad_sch").read_text(encoding="utf-8")
+    )
+    root_uuid = kicad_sexpr.strip_quotes(kicad_sexpr.find_first(root, "uuid")[1])
+
+    numbered = []
+    for sheet in kicad_sexpr.find_all(root, "sheet"):
+        instances = kicad_sexpr.find_first(sheet, "instances")
+        assert instances is not None, "sheet has no page-number instance data"
+        project_node = kicad_sexpr.find_first(instances, "project")
+        assert kicad_sexpr.strip_quotes(project_node[1]) == "layout"
+        path = kicad_sexpr.find_first(project_node, "path")
+        assert kicad_sexpr.strip_quotes(path[1]) == f"/{root_uuid}"
+        numbered.append(
+            kicad_sexpr.strip_quotes(kicad_sexpr.find_first(path, "page")[1])
+        )
+
+    assert numbered == ["2", "3", "4"]
+
+    root_instance = kicad_sexpr.find_first(
+        kicad_sexpr.find_first(root, "sheet_instances"), "path"
+    )
+    assert kicad_sexpr.strip_quotes(root_instance[1]) == "/"
+    assert kicad_sexpr.strip_quotes(
+        kicad_sexpr.find_first(root_instance, "page")[1]
+    ) == "1"
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
     page = dsn_fixtures.make_page(
         "01_OPTIONS",

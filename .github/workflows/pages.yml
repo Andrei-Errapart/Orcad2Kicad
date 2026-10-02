@@ -1,0 +1,106 @@
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Build the converter for wasm32-wasi, run the whole test suite -- including
+# the wasm/native parity test, which must not skip here -- and publish web/
+# to GitHub Pages.  Pull requests build and test without deploying.
+# See doc/specs/2026-10-03-web-converter-design.md, Deployment.
+
+name: Web converter
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # ghc-wasm-meta is pinned by commit: its autogen.json fixes the GHC, wasi-sdk,
+  # binaryen, wasmtime and Node builds it installs.  Bump deliberately, and
+  # run the parity test locally against the same commit.
+  GHC_WASM_META_COMMIT: ded427a58615ce21597f945af25c778f9107e5f7
+  GHC_WASM_FLAVOUR: "9.14"
+  ORCAD2KICAD_REQUIRE_WASM: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.14.1"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Cache the wasm toolchain
+        id: ghc-wasm-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.ghc-wasm
+          key: ghc-wasm-${{ runner.os }}-${{ env.GHC_WASM_META_COMMIT }}-${{ env.GHC_WASM_FLAVOUR }}
+
+      # Installed into ~/.ghc-wasm, where scripts/build-wasm and the parity
+      # test find it.  Deliberately not added to PATH or the environment:
+      # ghc-wasm-meta's env puts wasi-sdk's clang first on PATH, which breaks
+      # the native GHC builds the tests also run.
+      - name: Install the wasm toolchain
+        if: steps.ghc-wasm-cache.outputs.cache-hit != 'true'
+        run: |
+          workdir=$(mktemp -d)
+          curl -fsSL --retry 5 \
+            "https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/archive/${GHC_WASM_META_COMMIT}/ghc-wasm-meta-${GHC_WASM_META_COMMIT}.tar.gz" \
+            | tar xz -C "$workdir" --strip-components=1
+          cd "$workdir"
+          FLAVOUR="$GHC_WASM_FLAVOUR" ./setup.sh
+
+      - name: Install Python test dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Build the converter for the web
+        run: scripts/build-wasm
+
+      - name: Python and Haskell tests, including wasm parity
+        run: pytest -q
+
+      - name: JavaScript tests
+        run: node --test tests/web/
+
+      - name: Stamp the build
+        run: printf '{"commit": "%s"}\n' "$GITHUB_SHA" > web/version.json
+
+      - uses: actions/configure-pages@v6
+        if: github.event_name != 'pull_request'
+
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request'
+        with:
+          path: web
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

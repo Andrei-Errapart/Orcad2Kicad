@@ -32,6 +32,7 @@ import Data.Bits ((.&.))
 import Data.Char (isAlpha, isAlphaNum, isDigit, ord, toUpper)
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
+import Data.Word (Word32)
 
 data Page = Page
   { pageStreamName :: FilePath
@@ -179,10 +180,14 @@ data TitleBlock = TitleBlock
 -- | Header of a page stream: the name and paper size, the page's
 -- modification time, and the property table that carries the
 -- title-block field values.  See `parsePageHeader`.
+--
+-- The modification time is the on-disk u32 Unix `time_t`, kept as `Word32`:
+-- `Int` is 32 bits on wasm32, where every stamp from 2038-01-19 on would wrap
+-- negative.
 data PageHeader = PageHeader
   { pageHeaderName :: String
   , pageHeaderPaper :: String
-  , pageHeaderModified :: Maybe Int
+  , pageHeaderModified :: Maybe Word32
   , pageHeaderProperties :: [(Int, Int)]
   }
   deriving Show

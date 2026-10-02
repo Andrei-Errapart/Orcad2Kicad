@@ -6,23 +6,33 @@
 #
 #   scripts/build-wasm [output.wasm]      (default: web/dsn2kicad.wasm)
 #
-# Needs the ghc-wasm-meta toolchain on PATH -- wasm32-wasi-ghc and wasm-opt;
-# locally that is `. ~/.ghc-wasm/env`.  CI runs this same script, so the
-# binary that is deployed is the one the tests exercised.
+# Needs the ghc-wasm-meta toolchain: wasm32-wasi-ghc and wasm-opt.  They are
+# taken from PATH, or else from an installation in $GHC_WASM_DIR (default
+# ~/.ghc-wasm).  Do not source that installation's `env` file in a shell that
+# also builds natively: it puts wasi-sdk's clang first on PATH and every
+# native GHC compile then fails in the assembler.  CI runs this same script,
+# so the binary that is deployed is the one the tests exercised.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(dirname -- "$SCRIPT_DIR")
 OUTPUT=${1:-"$REPO_DIR/web/dsn2kicad.wasm"}
+GHC_WASM_DIR=${GHC_WASM_DIR:-"${HOME:-}/.ghc-wasm"}
+
+for dir in "$GHC_WASM_DIR/wasm32-wasi-ghc/bin" "$GHC_WASM_DIR/binaryen/bin"; do
+    if [ -d "$dir" ]; then
+        PATH="$PATH:$dir"
+    fi
+done
 
 missing=
 for tool in wasm32-wasi-ghc wasm-opt; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
-    echo "build-wasm: not on PATH:$missing" >&2
-    echo "Install ghc-wasm-meta (https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta)" >&2
-    echo "and run '. ~/.ghc-wasm/env' first." >&2
+    echo "build-wasm: not found on PATH or under $GHC_WASM_DIR:$missing" >&2
+    echo "Install ghc-wasm-meta (https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta)," >&2
+    echo "or set GHC_WASM_DIR to where it is installed." >&2
     exit 1
 fi
 

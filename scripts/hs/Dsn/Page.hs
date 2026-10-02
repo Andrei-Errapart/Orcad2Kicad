@@ -25,6 +25,7 @@ import Data.Char (toUpper)
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Word (Word32)
 import Dsn.Record
   ( recordMarker, netTableAnchor, textRecordType
   , pageRectTag, pageLineTag, pageEllipseTag, pagePolygonTag
@@ -138,8 +139,9 @@ parsePageHeader values body =
         }
 
     plausibleTime raw = do
-      stamp <- fromIntegral <$> raw
+      stamp <- raw
       -- 1990-01-01 .. 2040-01-01, to reject zeroed or misaligned fields.
+      -- Compared as Word32: the upper bound does not fit a 32-bit Int.
       guard (stamp > 631152000 && stamp < 2208988800)
       pure stamp
 
@@ -199,10 +201,11 @@ resolveTitleBlock values header = TitleBlock
       ]
 
 -- | Unix `time_t` (UTC) as an ISO-8601 date, which is what KiCad's own
--- date field holds.  The DSN records no time zone.
-isoDateFromUnix :: Int -> String
+-- date field holds.  The DSN records no time zone.  The division happens in
+-- Word32; the resulting day count (under 50,000) fits any Int.
+isoDateFromUnix :: Word32 -> String
 isoDateFromUnix stamp =
-  let (y, m, d) = civilFromDays (stamp `div` 86400)
+  let (y, m, d) = civilFromDays (fromIntegral (stamp `div` 86400))
   in padNum 4 y ++ "-" ++ padNum 2 m ++ "-" ++ padNum 2 d
   where
     padNum width n =

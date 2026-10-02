@@ -225,3 +225,9 @@ __marimo__/
 *.o
 *.dyn_hi
 *.dyn_o
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

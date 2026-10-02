@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "Orcad2Kicad",
+  "project_id": "407beb1f-5ad8-42de-b5b1-6b126bf75aad"
+}

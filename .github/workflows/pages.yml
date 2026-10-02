@@ -81,7 +81,8 @@ jobs:
         run: node --test tests/web/
 
       - name: Stamp the build
-        run: printf '{"commit": "%s"}\n' "$GITHUB_SHA" > web/version.json
+        run: |
+          printf '{"commit": "%s"}\n' "$GITHUB_SHA" > web/version.json
 
       - uses: actions/configure-pages@v6
         if: github.event_name != 'pull_request'

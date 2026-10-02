@@ -231,3 +231,6 @@ __marimo__/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Web converter build product (scripts/build-wasm)
+web/dsn2kicad.wasm

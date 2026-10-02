@@ -1,0 +1,52 @@
+#!/bin/sh
+# Copyright (C) 2026 Andrei Errapart
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Build the converter as a wasm32-wasi command module for the web page.
+#
+#   scripts/build-wasm [output.wasm]      (default: web/dsn2kicad.wasm)
+#
+# Needs the ghc-wasm-meta toolchain on PATH -- wasm32-wasi-ghc and wasm-opt;
+# locally that is `. ~/.ghc-wasm/env`.  CI runs this same script, so the
+# binary that is deployed is the one the tests exercised.
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(dirname -- "$SCRIPT_DIR")
+OUTPUT=${1:-"$REPO_DIR/web/dsn2kicad.wasm"}
+
+missing=
+for tool in wasm32-wasi-ghc wasm-opt; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+if [ -n "$missing" ]; then
+    echo "build-wasm: not on PATH:$missing" >&2
+    echo "Install ghc-wasm-meta (https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta)" >&2
+    echo "and run '. ~/.ghc-wasm/env' first." >&2
+    exit 1
+fi
+
+if [ -n "${ORCAD2KICAD_WASM_CACHE:-}" ]; then
+    CACHE_DIR=$ORCAD2KICAD_WASM_CACHE
+elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    CACHE_DIR="$XDG_CACHE_HOME/orcad2kicad/wasm"
+elif [ -n "${HOME:-}" ] && [ "$(uname -s 2>/dev/null || echo unknown)" = "Darwin" ]; then
+    CACHE_DIR="$HOME/Library/Caches/orcad2kicad/wasm"
+elif [ -n "${HOME:-}" ]; then
+    CACHE_DIR="$HOME/.cache/orcad2kicad/wasm"
+else
+    CACHE_DIR="${TMPDIR:-/tmp}/orcad2kicad-wasm-${USER:-user}"
+fi
+
+# Object files persist in the cache between runs, so GHC recompiles only the
+# modules that changed.  The unoptimised link output lives there too; only
+# the wasm-opt result is written to OUTPUT.
+mkdir -p "$CACHE_DIR/objects" "$(dirname -- "$OUTPUT")"
+wasm32-wasi-ghc -O1 \
+    -i"$SCRIPT_DIR/hs" \
+    -outputdir "$CACHE_DIR/objects" \
+    "$SCRIPT_DIR/dsn2kicad.hs" \
+    -o "$CACHE_DIR/dsn2kicad.wasm" >&2
+
+wasm-opt -Oz "$CACHE_DIR/dsn2kicad.wasm" -o "$OUTPUT"
+echo "build-wasm: wrote $OUTPUT" >&2

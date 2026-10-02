@@ -4,8 +4,9 @@ Third-party data bundled with orcad2kicad
 This directory contains symbol-library files redistributed from the KiCad
 project so that the `--kicad-power` and `--kicad-rc` conversion options work
 without a local KiCad installation (e.g. when the converter runs in a browser
-via Pyodide). The orcad2kicad code itself is MIT-licensed; these data files are
-NOT — they keep their upstream license below.
+via Pyodide). The orcad2kicad code itself is licensed under GPL-2.0-or-later
+(see ../../LICENSE); these data files are NOT — they keep their upstream
+license below.
 
 power.kicad_sym
     Verbatim copy of KiCad's power symbol library.

@@ -14,6 +14,13 @@ formats are in `scripts/ksy/`. Project documentation is in `doc/`, while `README
 contains user-facing usage and limitations. Tests and fixtures live under `tests/`,
 including OLB fixture pairs in `tests/test_data_olb/`.
 
+The browser converter is a static page in `web/` (plain HTML and ES modules, no
+build step) that runs the Haskell converter compiled to wasm32-wasi by
+`scripts/build-wasm`; third-party code it serves is vendored in `web/vendor/`
+and recorded, with every local patch, in `web/vendor/README.md`. Its JavaScript
+tests and their generated fixtures are in `tests/web/`.
+`.github/workflows/pages.yml` builds, tests and deploys it to GitHub Pages.
+
 ## Implementation Policy: Haskell Is the Only Growing Converter
 
 `scripts/dsn2kicad.hs` is the converter. `scripts/dsn2kicad_py.py` is
@@ -32,8 +39,14 @@ including OLB fixture pairs in `tests/test_data_olb/`.
   not break them. If one does start failing, fix the Haskell side or narrow the
   comparison — do not add the missing feature to Python to make it pass.
 
-The intended endgame is a WebAssembly build of the Haskell converter replacing
-the Pyodide path, after which the Python implementation is deleted.
+The WebAssembly build of the Haskell converter now exists and powers the web
+page in `web/`; it supersedes the Pyodide path. Deleting the Python
+implementation is the remaining, separate step — until then it stays the
+differential oracle.
+
+A Haskell change must also hold on wasm32, where `Int` is 32 bits:
+`tests/test_wasm_parity.py` requires the wasm build's output to be
+byte-identical to the native build's and fails in CI if it differs.
 
 ## Build, Test, and Development Commands
 
@@ -46,6 +59,12 @@ the Pyodide path, after which the Python implementation is deleted.
 - `scripts/dsn_dump <file.DSN>`: inspect DSN internals for debugging.
 - `python3 scripts/gen_text_metrics.py`: regenerate committed text metric tables
   after changing the supported character/font set.
+- `scripts/build-wasm`: build `web/dsn2kicad.wasm` for the web page. Needs the
+  ghc-wasm-meta toolchain in `~/.ghc-wasm` (or `GHC_WASM_DIR`); do not source
+  its `env` file in a shell that also builds natively.
+- `node --test tests/web/`: the web page's JavaScript tests.
+- `python3 tests/web/make_fixtures.py`: regenerate the JavaScript tests'
+  committed fixtures.
 
 ## Coding Style & Naming Conventions
 
@@ -73,7 +92,11 @@ every import respects the layer table.
 Tests use `pytest`. Name test files `tests/test_*.py` and test functions
 `test_*`. Put shared fixtures in `tests/conftest.py` or small helper modules such
 as `tests/dsn_fixtures.py`. When changing binary parsing or conversion output,
-add focused fixture coverage and run `pytest` before submitting.
+add focused fixture coverage and run `pytest` before submitting. With the wasm
+toolchain installed `pytest` also runs the wasm parity test; set
+`ORCAD2KICAD_REQUIRE_WASM=1` to make a missing toolchain a failure rather than
+a skip. JavaScript tests use `node:test`, are named `tests/web/*.test.mjs`, and
+run with `node --test tests/web/`.
 
 ## Commit & Pull Request Guidelines
 

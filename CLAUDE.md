@@ -38,17 +38,30 @@ python3 scripts/gen_text_metrics.py     # needs dev extras (freetype-py + fontto
 
 # Regenerate the embedded Windows codepage tables (stdlib only, no dev extras)
 python3 scripts/gen_codepage_tables.py
+
+# Web converter (web/): build the wasm32-wasi converter, test, serve locally
+scripts/build-wasm                       # -> web/dsn2kicad.wasm; toolchain from ~/.ghc-wasm
+node --test tests/web/                   # JavaScript tests (fixtures: tests/web/make_fixtures.py)
+python3 -m http.server -d web 8000
 ```
 
 The only **runtime** dependency is `olefile` (pure Python) — `freetype-py` /
 `fonttools` are dev/tooling-only. The converter reads no font files
 and has no native deps, so the core path runs unchanged in a browser via Pyodide.
 
+The web converter needs the [ghc-wasm-meta](https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta)
+toolchain (flavour 9.14) installed in `~/.ghc-wasm` or `GHC_WASM_DIR`.
+`scripts/build-wasm` and `tests/test_wasm_parity.py` find it there. **Never
+`source ~/.ghc-wasm/env`** in a shell that also builds natively: it puts
+wasi-sdk's `clang` first on `PATH` and every native GHC compile then fails in
+the assembler ("unknown target triple").
+
 ## Architecture
 
 **The Python converter is feature-frozen — put new work in the Haskell one.**
 `scripts/dsn2kicad.hs` is the converter that grows; `scripts/dsn2kicad_py.py` is
-kept only for the browser/Pyodide path and as the differential netlist oracle in
+kept only for the browser/Pyodide path (now superseded by the WebAssembly build
+in `web/`) and as the differential netlist oracle in
 `tests/test_dsn2kicad_hk.py`. The two are **not** kept at feature parity, so a
 gap between them is expected rather than a bug. Do not port Haskell features
 into Python, and do not "fix" Python to close a parity gap. See `AGENTS.md`
@@ -64,8 +77,20 @@ Everything happens in memory:
 - `convert_dsn_bytes(data, ...)` (browser/Pyodide) takes raw bytes, returns the
   same dict. Both go through `open_dsn_container()` which sniffs magic bytes.
 
-**Key modules (all under `scripts/`):**
+**Key modules (under `scripts/` unless noted):**
 
+- **The web converter** — `web/`, a static page (plain ES modules, no build
+  step) deployed to GitHub Pages by `.github/workflows/pages.yml`. It runs the
+  unmodified `Main` compiled to wasm32-wasi (`scripts/build-wasm`) through a
+  vendored WASI shim in a Web Worker, against an in-memory filesystem
+  (`web/runner.js`), exactly as the CLI runs. `web/input.js` extracts the one
+  `.DSN` from an uploaded ZIP with bounded inflation; `web/preview.js` shows
+  sheets in a vendored KiCanvas; `web/archive.js` builds the download.
+  Everything third-party is in `web/vendor/`, and **every local patch is
+  recorded in `web/vendor/README.md`** — update it with any vendored change.
+  The page's Content-Security-Policy allows only its own origin; the worker
+  inherits it only because `app.js` starts it from a `blob:` URL. Design and
+  privacy model: `doc/specs/2026-10-03-web-converter-design.md`.
 - **The converter.** Native Haskell, split into 20 modules under `scripts/hs/`
   plus `Main` in `scripts/dsn2kicad.hs`, reached via the `scripts/dsn2kicad`
   wrapper, which compiles and caches the whole tree with GHC (`-i scripts/hs`).
@@ -165,6 +190,13 @@ Everything happens in memory:
   in `conftest.py`: `dsn2kicad`, `ole_zip`, `dsn_fixtures`.
 - Only OrCAD Capture format **v3.x** (records marked `FF E4 5C 39`, OrCAD 16.x+)
   is supported. v2.0 files use a different layout and are rejected.
+- **Haskell `Int` is 32 bits on wasm32.** A value that fits on a 64-bit host
+  can wrap in the web build (the page timestamp did: see `pageHeaderModified`).
+  `tests/test_wasm_parity.py` requires wasm output byte-identical to native —
+  under `wasmtime` and through `web/runner.js` — and CI sets
+  `ORCAD2KICAD_REQUIRE_WASM=1` so it cannot skip.
+  `ORCAD2KICAD_PARITY_DSN_DIR=<dir>` adds real designs (the parent repo's
+  corpus matched 33/33 when this was added).
 - Output UUIDs are **deterministic**: seeded with `SHA256(dsn_bytes + filename)`,
   so an edit on one page never churns UUIDs on unrelated pages.
 - Coordinate unit: `UNIT_TO_MM = 0.254` (OrCAD's 10-mil unit).

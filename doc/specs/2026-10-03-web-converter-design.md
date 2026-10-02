@@ -403,3 +403,27 @@ Each step maps to a child of the epic.
   proves insufficient.
 - **Pasting files** depends on what each browser exposes to the `paste` event;
   drag-and-drop and the file picker are the dependable routes.
+
+## Implementation notes
+
+Recorded after implementation (2026-10-03), where the build differs from or
+adds to the design above.
+
+- **JavaScript tests live in `tests/web/`, not `web/tests/`,** so the deployed
+  site root holds only what the page serves.
+- **No icon font is self-hosted.** With `controls="basic"` and
+  `controlslist="nodownload"` KiCanvas shows only SVG icons, so its Google
+  Fonts `<link>` is simply removed from the vendored bundle.
+- **`worker-src` allows `'self'` as well as `blob:`.** In a module worker the
+  modules it imports are fetched with the "worker" destination, so a policy of
+  `blob:` alone blocks `worker.js` itself.
+- **The vendored WASI shim carries a patch.** `args_sizes_get` counted UTF-16
+  code units while `args_get` wrote UTF-8, so a non-ASCII DSN name overflowed
+  the argument buffer. Details in `web/vendor/README.md`.
+- **The toolchain is found in `~/.ghc-wasm`, never sourced.** Its `env` file
+  breaks native GHC builds in the same shell; CI installs it without adding it
+  to `PATH`.
+- **Browser verification** of the checklist ran headless with Playwright in
+  Chromium, Firefox and WebKit: every route except drag-and-drop and paste,
+  no request to another origin, and a cross-origin `fetch` refused inside the
+  worker in all three engines.

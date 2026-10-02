@@ -21,6 +21,11 @@ PAGE = "Views/SCHEMATIC1/Pages/Page1"
 
 HS_DIR = SCRIPTS_DIR / "hs"
 
+# A guard against hangs, not a performance bound: runghc interprets the whole
+# module tree, and the first run on a fresh CI machine, with GHC's libraries
+# not yet in the page cache, has taken over 30 s where it takes ~1.5 s warm.
+HK_TIMEOUT = 300
+
 
 def hk_argv(*args):
     """argv for running the Haskell converter under runghc.
@@ -175,7 +180,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -236,7 +241,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
         hk_argv(dsn, repeat_out),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert repeat_result.returncode == 0, repeat_result.stderr
     assert page_sch == (repeat_out / "Page1.kicad_sch").read_text(encoding="utf-8")
@@ -248,7 +253,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
             [sys.executable, str(DSN2KICAD_PY), str(dsn), str(python_out)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert python_result.returncode == 0, python_result.stderr
 
@@ -270,7 +275,7 @@ def test_dsn2kicad_hk_native_zip_smoke(dsn_fixtures, tmp_path):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=HK_TIMEOUT,
             )
             assert export_result.returncode == 0, export_result.stderr
 
@@ -296,7 +301,7 @@ def test_dsn2kicad_wrapper_concurrent_first_launch(dsn_fixtures, tmp_path):
         )
         for index in range(2)
     ]
-    results = [process.communicate(timeout=60) for process in processes]
+    results = [process.communicate(timeout=HK_TIMEOUT) for process in processes]
 
     for process, (_stdout, stderr) in zip(processes, results):
         assert process.returncode == 0, stderr
@@ -310,7 +315,7 @@ def test_dsn2kicad_hk_rejects_python_only_debug_flags():
         hk_argv("--debug-bbox"),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -337,7 +342,7 @@ def test_dsn2kicad_hk_double_dash_keeps_positional_order(
     }[layout]
 
     result = subprocess.run(
-        hk_argv(*args), capture_output=True, text=True, timeout=60, cwd=tmp_path,
+        hk_argv(*args), capture_output=True, text=True, timeout=HK_TIMEOUT, cwd=tmp_path,
     )
 
     assert result.returncode == 0, result.stderr
@@ -373,7 +378,7 @@ def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -423,7 +428,7 @@ def test_dsn2kicad_hk_title_block_is_per_page(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -489,7 +494,7 @@ def test_pool_neighbours_may_be_stale_ancestors(dsn_fixtures, tmp_path):
 
     result = subprocess.run(
         hk_argv(dsn, out_dir),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -538,7 +543,7 @@ def test_pool_count_is_u32(dsn_fixtures, tmp_path):
 
     result = subprocess.run(
         hk_argv(dsn, out_dir),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -586,7 +591,7 @@ def test_part_number_is_not_mistaken_for_doc_number(dsn_fixtures, tmp_path):
 
     result = subprocess.run(
         hk_argv(dsn, out_dir),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -629,7 +634,7 @@ def test_dsn2kicad_hk_uuids_are_content_seeded(dsn_fixtures, tmp_path):
             hk_argv(dsn, out_dir),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert result.returncode == 0, result.stderr
 
@@ -666,7 +671,7 @@ def test_dsn2kicad_hk_uuids_do_not_depend_on_source_filename(
             hk_argv(dsn, out_dir),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert result.returncode == 0, result.stderr
 
@@ -708,7 +713,7 @@ def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path, sector_size):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -737,7 +742,7 @@ def test_dsn2kicad_hk_native_ole_smoke(dsn_fixtures, tmp_path, sector_size):
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         assert (("J1", "1"), ("J2", "1")) in _net_pin_groups(netlist)
@@ -764,7 +769,7 @@ def test_dsn2kicad_hk_discovers_pages_in_named_views(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -859,7 +864,7 @@ def test_dsn2kicad_hk_legacy_cache_and_page_records(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -925,7 +930,7 @@ def test_dsn2kicad_hk_legacy_cache_and_page_records(dsn_fixtures, tmp_path):
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         groups = _net_pin_groups(netlist)
@@ -943,7 +948,7 @@ def test_dsn2kicad_hk_rejects_dsn_without_page_streams(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode != 0
@@ -965,7 +970,7 @@ def test_dsn2kicad_hk_rejects_duplicate_page_output_names(dsn_fixtures, tmp_path
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode != 0
@@ -988,7 +993,7 @@ def test_dsn2kicad_hk_disambiguates_page_named_after_project(
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr
@@ -1032,7 +1037,7 @@ def test_dsn2kicad_hk_rejects_cyclic_ole_directory(
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
 
     assert result.returncode != 0
@@ -1066,7 +1071,7 @@ def test_dsn2kicad_hk_extends_pin_hotpoints_and_wires(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1218,7 +1223,7 @@ def test_dsn2kicad_hk_pins_land_exactly_on_their_wires(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1261,7 +1266,7 @@ def test_dsn2kicad_hk_multi_unit_symbols(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1299,7 +1304,7 @@ def test_dsn2kicad_hk_multi_unit_symbols(dsn_fixtures, tmp_path):
             [sys.executable, str(DSN2KICAD_PY), str(dsn), str(python_out)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert python_result.returncode == 0, python_result.stderr
 
@@ -1321,7 +1326,7 @@ def test_dsn2kicad_hk_multi_unit_symbols(dsn_fixtures, tmp_path):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=HK_TIMEOUT,
             )
             assert export_result.returncode == 0, export_result.stderr
         assert _net_pin_groups(hk_netlist) == _net_pin_groups(py_netlist)
@@ -1384,7 +1389,7 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1424,7 +1429,7 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
             [sys.executable, str(DSN2KICAD_PY), str(dsn), str(python_out)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert python_result.returncode == 0, python_result.stderr
 
@@ -1446,7 +1451,7 @@ def test_dsn2kicad_hk_sheet_connectivity(dsn_fixtures, tmp_path):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=HK_TIMEOUT,
             )
             assert export_result.returncode == 0, export_result.stderr
 
@@ -1544,7 +1549,7 @@ def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1624,7 +1629,7 @@ def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
             hk_argv("--kicad-rc", dsn, rc_out),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert rc_result.returncode == 0, rc_result.stderr
         groups = []
@@ -1638,7 +1643,7 @@ def test_dsn2kicad_hk_buses_aliases_page_names_and_symbol_details(
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=HK_TIMEOUT,
             )
             assert export_result.returncode == 0, export_result.stderr
             groups.append(_net_ref_groups(netlist))
@@ -1706,7 +1711,7 @@ def test_dsn2kicad_hk_uses_explicit_off_page_connectors(
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1746,7 +1751,7 @@ def test_dsn2kicad_hk_uses_explicit_off_page_connectors(
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         groups = _net_pin_groups(netlist)
@@ -1780,7 +1785,7 @@ def test_dsn2kicad_hk_repeated_net_names_stay_local(
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1804,7 +1809,7 @@ def test_dsn2kicad_hk_repeated_net_names_stay_local(
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         assert (("TP1", "1"), ("TP2", "1"), ("TP3", "1")) not in (
@@ -1828,7 +1833,7 @@ def test_dsn2kicad_hk_root_matrix_and_worksheet(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1855,7 +1860,7 @@ def test_dsn2kicad_hk_root_matrix_and_worksheet(dsn_fixtures, tmp_path):
         hk_argv("--no-worksheet", dsn, no_worksheet_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
     assert not (no_worksheet_dir / "layout.kicad_wks").exists()
@@ -1889,7 +1894,7 @@ def test_dsn2kicad_hk_root_sheets_carry_page_numbers(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1991,7 +1996,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
         hk_argv(dsn, default_out),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert default_result.returncode == 0, default_result.stderr
     default_schematic = (default_out / "Page1.kicad_sch").read_text(
@@ -2006,7 +2011,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
         hk_argv("--kicad-power", "--kicad-rc", "--kicad-fonts", dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -2034,7 +2039,7 @@ def test_dsn2kicad_hk_kicad_symbol_and_font_options(dsn_fixtures, tmp_path):
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         assert "CUSTOM_RAIL" in netlist.read_text(encoding="utf-8")
@@ -2076,7 +2081,7 @@ def test_dsn2kicad_hk_kicad_rc_uses_cache_hotpoints(dsn_fixtures, tmp_path):
     for args in ([str(dsn), str(default_out)],
                  ["--kicad-rc", str(dsn), str(rc_out)]):
         result = subprocess.run(
-            hk_argv(*args), capture_output=True, text=True, timeout=30,
+            hk_argv(*args), capture_output=True, text=True, timeout=HK_TIMEOUT,
         )
         assert result.returncode == 0, result.stderr
 
@@ -2088,7 +2093,7 @@ def test_dsn2kicad_hk_kicad_rc_uses_cache_hotpoints(dsn_fixtures, tmp_path):
             result = subprocess.run(
                 [kicad_cli, "sch", "export", "netlist", "--output", str(netlist),
                  str(output / "Page1.kicad_sch")],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=HK_TIMEOUT,
             )
             assert result.returncode == 0, result.stderr
             netlists.append(netlist)
@@ -2131,7 +2136,7 @@ def test_dsn2kicad_hk_native_power_symbols(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -2202,7 +2207,7 @@ def test_dsn2kicad_hk_native_power_symbols(dsn_fixtures, tmp_path):
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
         groups = _net_pin_groups(netlist)
@@ -2263,7 +2268,7 @@ def test_dsn2kicad_hk_component_fields_and_page_artwork(dsn_fixtures, tmp_path):
         hk_argv(dsn, out_dir),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HK_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
 
@@ -2335,7 +2340,7 @@ def test_dsn2kicad_hk_component_fields_and_page_artwork(dsn_fixtures, tmp_path):
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=HK_TIMEOUT,
         )
         assert export_result.returncode == 0, export_result.stderr
 
@@ -2385,7 +2390,7 @@ def test_dsn2kicad_hk_reference_placement_uses_font_metrics(
 
     flags = ["--kicad-fonts"] if kicad_fonts else []
     argv = hk_argv(*flags, dsn, out_dir)
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=HK_TIMEOUT)
     assert result.returncode == 0, result.stderr
 
     page_sch = (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")

@@ -78,7 +78,7 @@ jobs:
         run: pytest -q
 
       - name: JavaScript tests
-        run: node --test tests/web/
+        run: node --test tests/web/*.test.mjs
 
       - name: Stamp the build
         run: |

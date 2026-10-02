@@ -288,7 +288,7 @@ Walks the OLE compound document and prints all parseable records from every stre
 ```
 pip install -e ".[dev]"
 pytest
-node --test tests/web/       # the web page's JavaScript (Node 18+)
+node --test tests/web/*.test.mjs       # the web page's JavaScript (Node 18+)
 ```
 
 `tests/test_wasm_parity.py` builds the converter with `scripts/build-wasm` and

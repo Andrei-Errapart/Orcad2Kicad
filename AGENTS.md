@@ -62,7 +62,7 @@ byte-identical to the native build's and fails in CI if it differs.
 - `scripts/build-wasm`: build `web/dsn2kicad.wasm` for the web page. Needs the
   ghc-wasm-meta toolchain in `~/.ghc-wasm` (or `GHC_WASM_DIR`); do not source
   its `env` file in a shell that also builds natively.
-- `node --test tests/web/`: the web page's JavaScript tests.
+- `node --test tests/web/*.test.mjs`: the web page's JavaScript tests.
 - `python3 tests/web/make_fixtures.py`: regenerate the JavaScript tests'
   committed fixtures.
 
@@ -96,7 +96,7 @@ add focused fixture coverage and run `pytest` before submitting. With the wasm
 toolchain installed `pytest` also runs the wasm parity test; set
 `ORCAD2KICAD_REQUIRE_WASM=1` to make a missing toolchain a failure rather than
 a skip. JavaScript tests use `node:test`, are named `tests/web/*.test.mjs`, and
-run with `node --test tests/web/`.
+run with `node --test tests/web/*.test.mjs`.
 
 ## Commit & Pull Request Guidelines
 

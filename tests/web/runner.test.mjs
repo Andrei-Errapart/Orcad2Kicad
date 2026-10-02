@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Andrei Errapart
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// node --test tests/web/
+// node --test tests/web/*.test.mjs
 //
 // The converter contract of web/runner.js.  Byte-for-byte agreement with the
 // native CLI is checked by tests/test_wasm_parity.py; this covers what the

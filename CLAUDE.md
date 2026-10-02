@@ -41,7 +41,7 @@ python3 scripts/gen_codepage_tables.py
 
 # Web converter (web/): build the wasm32-wasi converter, test, serve locally
 scripts/build-wasm                       # -> web/dsn2kicad.wasm; toolchain from ~/.ghc-wasm
-node --test tests/web/                   # JavaScript tests (fixtures: tests/web/make_fixtures.py)
+node --test tests/web/*.test.mjs                   # JavaScript tests (fixtures: tests/web/make_fixtures.py)
 python3 -m http.server -d web 8000
 ```
 

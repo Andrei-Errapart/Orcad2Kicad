@@ -56,6 +56,8 @@ export async function convert(module, dsnBytes, projectName, options) {
             ])),
             output,
         ],
+        // The shim logs every call unless told otherwise explicitly.
+        { debug: false },
     );
 
     // A fresh instance, and so fresh memory, for every conversion.

@@ -35,3 +35,49 @@ Local patch, `wasi.js` only:
 | `wasi_defs.js` | `0db0f42ba330749a7b05095ea1fd0ff63fd2b30e84cead30fe4c28359d15f194` |
 | `debug.js` | `a91848ee180529e2a60c05dfb9584cad19cd4e1c6f391fdb76a938bcae4c0328` |
 | `strace.js` | `ece435d3784d928d02bff4d015b7cb686f8c06de8536ff9f8ebc38a8f403a3be` |
+
+## fflate
+
+- Source: npm `fflate` 0.8.3, `esm/browser.js` (renamed `fflate.js`) and
+  `LICENSE` (<https://github.com/101arrowz/fflate>).
+- Tarball SHA-256: `38c2cd824402407b43153c782274aec2ea83ea688e4aa0b743c5f2c305857d92`
+- Licence: MIT (`LICENSE`).
+- Used by `web/input.js` (the synchronous `Inflate`, fed 16 KiB at a time)
+  and `web/archive.js` (`zipSync`). Its async APIs start workers of their own
+  and are deliberately not used.
+- No local changes. `fflate.js` SHA-256:
+  `b7ca4450b19559a1d50eb381adcee94b82449674be4cd17789d9beba7e6122a1`
+
+## KiCanvas
+
+- Source: the published bundle <https://kicanvas.org/kicanvas/kicanvas.js>,
+  downloaded 2026-10-03 (unversioned; upstream `main` was at `b031159`), and
+  `LICENSE.md` from <https://github.com/theacodes/kicanvas>.
+- Downloaded bundle SHA-256: `ca910f25276c3efb9aacb3a5d6341d4d9af4736d4c875fb0440d2cc856865ab7`
+- Licence: MIT (`LICENSE.md`).
+- Used by `web/preview.js`, loaded on first preview.
+
+Local patch:
+
+- At load, the bundle appended a `<link>` to a `fonts.googleapis.com`
+  stylesheet (Material Symbols icons and the Nunito face) -- a request to a
+  third party, which the page's policy forbids anyway. The statement is
+  replaced by a comment. Nothing is lost in the page's configuration
+  (`controls="basic" controlslist="nodownload"`): the only toolbar icons left
+  are SVG ones, and text falls back to the system font.
+
+| File | SHA-256 |
+|---|---|
+| `kicanvas.js` (patched) | `65b2a537b07fc420a3b0123bb8a5d0a5fa0bc3da989852a9c3c7bbc0e2fd2f6e` |
+
+Known upstream quirks, harmless here:
+
+- Each embed requests the literal URL `$$:0:$$` from this site and gets a
+  404: its SVG icon template is parsed with a placeholder `xlink:href` before
+  the real value is filled in.
+- Replacing an embed while it is still initialising (switching sheets or
+  files quickly) can log "DisposableStack ... already been disposed" or a
+  `setTransform` error from the discarded embed. The new embed is unaffected.
+- The theme is chosen through KiCanvas's own `localStorage` key
+  `kc:prefs:theme`; if a future bundle renames it, the preview falls back to
+  KiCanvas's dark default rather than breaking.

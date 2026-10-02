@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Nothing on this page may contact another origin.  The worker inherits this
+  policy because app.js starts it from a blob: URL.  'self' still allows a
+  request to this site itself; that the visitor's file is never sent anywhere
+  is a property of the code, not of this policy.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; base-uri 'none'; form-action 'none'">
+<meta name="description" content="Convert OrCAD Capture .DSN schematics to KiCad projects in your browser. Your file never leaves your computer.">
+<title>OrCAD to KiCad</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="masthead">
+  <h1>OrCAD <span aria-hidden="true">→</span><span class="visually-hidden">to</span> KiCad</h1>
+  <p class="lede">Converts an OrCAD Capture <code>.DSN</code> schematic into a KiCad project.</p>
+  <p class="privacy">Conversion runs entirely in this browser tab. Your file is not uploaded anywhere.</p>
+</header>
+
+<main>
+  <section id="drop" class="drop" data-over="false" aria-labelledby="drop-title">
+    <h2 id="drop-title">Drop a <code>.DSN</code> file here</h2>
+    <p>or a <code>.zip</code> archive containing exactly one.
+       You can also paste a copied file.</p>
+    <label class="button primary">
+      Choose a file…
+      <input id="picker" type="file" accept=".dsn,.DSN,.zip,application/zip">
+    </label>
+  </section>
+
+  <form id="options" class="options">
+    <fieldset>
+      <legend>Options</legend>
+      <label><input type="checkbox" name="kicadPower"> Use KiCad power symbols</label>
+      <label><input type="checkbox" name="kicadRc"> Use KiCad resistor and capacitor symbols</label>
+      <label><input type="checkbox" name="kicadFonts"> Use KiCad’s font instead of the design’s</label>
+      <label><input type="checkbox" name="noWorksheet"> Omit the drawing-sheet file</label>
+      <label class="select">Text encoding of the design
+        <select name="sourceEncoding">
+          <option value="">Detect automatically</option>
+          <option value="cp1252">Western (Windows-1252)</option>
+          <option value="cp932">Japanese (Shift JIS, CP932)</option>
+          <option value="cp936">Simplified Chinese (GBK, CP936)</option>
+          <option value="cp950">Traditional Chinese (Big5, CP950)</option>
+          <option value="utf-8">UTF-8</option>
+        </select>
+      </label>
+    </fieldset>
+  </form>
+
+  <div id="status" class="status" data-state="idle" role="status" aria-live="polite">
+    <span id="status-text"></span>
+    <button id="cancel" class="button" type="button" hidden>Cancel</button>
+  </div>
+
+  <section id="result" class="result" hidden aria-labelledby="result-name">
+    <div class="result-bar">
+      <div>
+        <h2 id="result-name"></h2>
+        <p id="result-detail" class="detail"></p>
+      </div>
+      <button id="download" class="button primary" type="button">Download</button>
+    </div>
+    <div class="preview">
+      <nav id="sheets" class="sheets" aria-label="Sheets"></nav>
+      <div id="viewer" class="viewer"></div>
+    </div>
+    <p id="preview-note" class="preview-note" hidden></p>
+    <p class="detail">The preview is drawn by KiCanvas and is indicative only; open the
+       downloaded project in KiCad to check it. Every sheet’s title block shows
+       sheet 1/1 in the preview.</p>
+  </section>
+</main>
+
+<footer class="footer">
+  <p>
+    <a href="https://github.com/Andrei-Errapart/Orcad2Kicad">orcad2kicad</a>
+    is free software under the GNU GPL, version 2 or later.
+    This build: <a id="version" href="https://github.com/Andrei-Errapart/Orcad2Kicad">development build</a>.
+  </p>
+  <p>
+    Preview by <a href="https://kicanvas.org">KiCanvas</a> (MIT).
+    Uses <a href="https://github.com/bjorn3/browser_wasi_shim">browser_wasi_shim</a> (MIT or Apache-2.0)
+    and <a href="https://github.com/101arrowz/fflate">fflate</a> (MIT).
+    Only OrCAD Capture 16.x and later designs are supported.
+  </p>
+</footer>
+</body>
+</html>

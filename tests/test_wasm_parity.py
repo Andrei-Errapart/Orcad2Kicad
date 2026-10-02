@@ -5,8 +5,9 @@
 The web page runs the converter compiled for wasm32-wasi, where Haskell's
 `Int` is 32 bits.  Code that is correct on a 64-bit host can silently differ
 there -- the page timestamp was the first case found -- so every fixture here
-is converted natively and under wasmtime, and the two output directories
-must match file for file and byte for byte.
+is converted natively, under wasmtime, and through web/runner.js -- the
+code the page runs in its worker, with the browser WASI shim -- under Node.
+All three output directories must match file for file and byte for byte.
 
 The toolchain is found on PATH or in $GHC_WASM_DIR (default ~/.ghc-wasm),
 the same way scripts/build-wasm finds it.  Skipped when it is absent so a
@@ -26,6 +27,7 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_DIR / "scripts"
 BUILD_WASM = SCRIPTS_DIR / "build-wasm"
 DSN2KICAD = SCRIPTS_DIR / "dsn2kicad"
+WEB_RUNNER = REPO_DIR / "tests" / "web" / "run_converter.mjs"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 import kicad_sexpr  # noqa: E402
@@ -36,6 +38,7 @@ WASM_TOOLS = {
     "wasm32-wasi-ghc": "wasm32-wasi-ghc/bin",
     "wasm-opt": "binaryen/bin",
     "wasmtime": "wasmtime/bin",
+    "node": "nodejs/bin",
 }
 
 
@@ -93,6 +96,18 @@ def convert_wasm(wasm, dsn, out_dir, flags=()):
     return out_dir
 
 
+def convert_web_runner(wasm, dsn, out_dir, flags=()):
+    result = subprocess.run(
+        [
+            find_wasm_tool("node"), str(WEB_RUNNER),
+            str(wasm), str(dsn), str(out_dir), *flags,
+        ],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    return out_dir
+
+
 def assert_identical_trees(expected_dir, actual_dir):
     expected = sorted(p.name for p in expected_dir.iterdir())
     actual = sorted(p.name for p in actual_dir.iterdir())
@@ -108,7 +123,8 @@ def assert_parity(wasm, dsn, tmp_path, flags=()):
     native = convert_native(dsn, tmp_path / "native", flags)
     converted = convert_wasm(wasm, dsn, tmp_path / "wasm", flags)
     assert_identical_trees(native, converted)
-    return native, converted
+    web = convert_web_runner(wasm, dsn, tmp_path / "web", flags)
+    assert_identical_trees(native, web)
 
 
 # --- Fixtures --------------------------------------------------------------
@@ -236,12 +252,14 @@ def test_page_timestamps_survive_32_bit_int(wasm_binary, dsn_fixtures, tmp_path)
     dsn = timestamp_dsn(dsn_fixtures, tmp_path / "in" / "stamps.DSN")
     native = convert_native(dsn, tmp_path / "native")
     converted = convert_wasm(wasm_binary, dsn, tmp_path / "wasm")
+    web = convert_web_runner(wasm_binary, dsn, tmp_path / "web")
 
     for index, (stamp, expected) in enumerate(TIMESTAMP_CASES):
         name = f"P{index:02d}.kicad_sch"
         assert title_block_date(native / name) == expected, f"native, stamp {stamp}"
         assert title_block_date(converted / name) == expected, f"wasm, stamp {stamp}"
     assert_identical_trees(native, converted)
+    assert_identical_trees(native, web)
 
 
 @pytest.mark.parametrize("flags", [

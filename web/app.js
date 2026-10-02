@@ -35,6 +35,8 @@ let current = null; // {name, bytes} of the file last chosen
 let result = null; // {projectName, files} of the last successful conversion
 let requestId = 0;
 let inFlight = false; // a conversion request is with the worker
+// Event handlers are registered before start-up finishes; see start().
+const started = Promise.resolve().then(() => start());
 
 // A worker loaded from a network URL gets its policy from that script's own
 // response headers -- and GitHub Pages sends none we control -- so it would
@@ -110,16 +112,21 @@ async function acceptFile(file) {
     runConversion();
 }
 
-function runConversion() {
+async function runConversion() {
     if (!current) return;
+    requestId += 1;
+    const id = requestId;
+    setBusy(`Opening ${current.name}…`);
+    // The worker starts once the build's version is known (it names the
+    // converter URL); a file chosen before then waits for it here.
+    await started;
+    if (id !== requestId) return; // superseded while waiting
     // A new request supersedes one still running.
     if (inFlight) restartWorker();
     inFlight = true;
-    requestId += 1;
-    setBusy(`Opening ${current.name}…`);
     worker.postMessage({
         type: "convert",
-        id: requestId,
+        id,
         wasmUrl,
         fileName: current.name,
         // Copied, not transferred: the page keeps the original so that an
@@ -236,21 +243,23 @@ ui.download.addEventListener("click", download);
 // --- Start-up ---------------------------------------------------------------
 
 // The deploy workflow writes the commit into version.json; the commit also
-// busts caches of the converter binary.
-try {
-    const response = await fetch(new URL("version.json", import.meta.url));
-    if (response.ok) {
-        const info = await response.json();
-        if (info.commit) {
-            version = info.commit;
-            wasmUrl = `${wasmUrl}?v=${encodeURIComponent(info.commit)}`;
+// busts caches of the converter binary.  Never rejects.
+async function start() {
+    try {
+        const response = await fetch(new URL("version.json", import.meta.url));
+        if (response.ok) {
+            const info = await response.json();
+            if (info.commit) {
+                version = info.commit;
+                wasmUrl = `${wasmUrl}?v=${encodeURIComponent(info.commit)}`;
+            }
         }
+    } catch {
+        // Local development: no version.json.
     }
-} catch {
-    // Local development: no version.json.
+    ui.version.textContent = version;
+    if (version !== "development build") {
+        ui.version.href = `https://github.com/Andrei-Errapart/Orcad2Kicad/tree/${version}`;
+    }
+    startWorker();
 }
-ui.version.textContent = version;
-if (version !== "development build") {
-    ui.version.href = `https://github.com/Andrei-Errapart/Orcad2Kicad/tree/${version}`;
-}
-startWorker();

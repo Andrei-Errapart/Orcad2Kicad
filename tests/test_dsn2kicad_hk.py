@@ -319,6 +319,36 @@ def test_dsn2kicad_hk_rejects_python_only_debug_flags():
 
 
 @pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+@pytest.mark.parametrize("layout", ["all-after", "split", "flag-like-name"])
+def test_dsn2kicad_hk_double_dash_keeps_positional_order(
+    dsn_fixtures, tmp_path, layout,
+):
+    """Everything after "--" is positional, in the order given."""
+    dsn_name = "--odd.DSN" if layout == "flag-like-name" else "board.DSN"
+    (tmp_path / dsn_name).write_bytes(dsn_fixtures.make_zip({
+        PAGE: dsn_fixtures.make_page(
+            "Page1", nets={1: "N1"}, wires=[(1, 10, 10, 40, 10)],
+        ),
+    }))
+    args = {
+        "all-after": ["--no-worksheet", "--", dsn_name, "out"],
+        "split": ["--no-worksheet", dsn_name, "--", "out"],
+        "flag-like-name": ["--no-worksheet", "--", dsn_name, "out"],
+    }[layout]
+
+    result = subprocess.run(
+        hk_argv(*args), capture_output=True, text=True, timeout=60, cwd=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    project = Path(dsn_name).stem
+    out_dir = tmp_path / "out"
+    assert (out_dir / f"{project}.kicad_sch").is_file()
+    # The flag before "--" still applied.
+    assert not (out_dir / f"{project}.kicad_wks").exists()
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
 def test_dsn2kicad_hk_preserves_title_block(dsn_fixtures, tmp_path):
     pool = ["filler"]
     entries, properties = dsn_fixtures.title_block_properties(

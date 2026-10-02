@@ -131,7 +131,7 @@ partitionArgs = go [] []
     -- even if they start with "--".
     go flags positional [] = (reverse flags, reverse positional)
     go flags positional (arg:rest)
-      | arg == "--" = (reverse flags, reverse (rest ++ positional))
+      | arg == "--" = (reverse flags, reverse positional ++ rest)
       | "--" `isPrefixOf` arg = go (arg:flags) positional rest
       | otherwise = go flags (arg:positional) rest
 

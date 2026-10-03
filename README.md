@@ -1,5 +1,7 @@
 # Orcad2Kicad
 
+[![Tests and deploy](https://github.com/Andrei-Errapart/Orcad2Kicad/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/Andrei-Errapart/Orcad2Kicad/actions/workflows/pages.yml)
+
 Convert OrCAD Capture `.DSN` schematics to multi-page KiCad schematic projects.
 
 Generates KiCad `.kicad_sch` files with wires, buses, net labels, power symbols,

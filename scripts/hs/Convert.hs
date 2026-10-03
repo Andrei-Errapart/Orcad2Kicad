@@ -7,7 +7,7 @@
 -- possible and keeps this module independent of how the program was invoked.
 module Convert (ConvertOptions(..), convertDsnBytes) where
 
-import Binary (unlessEither)
+import Binary (naturalSortKey, unlessEither)
 import Container (parseOleStreams, parseStoredZip, isZipArchive, ZipMember(..))
 import qualified Data.ByteString as BS
 import Data.List (sortOn)
@@ -71,8 +71,15 @@ convertStreams
 convertStreams opts sourceBytes members = do
   let memberMap = Map.fromList members
       libraryBody = Map.lookup "Library" memberMap
+      -- OrCAD presents and prints pages by name; the page list in the
+      -- `Schematic` stream is in some other (creation?) order and does not
+      -- match its own PDF export.  Numbers in the names order by value, and
+      -- the plain names break ties such as "1" against "01".
       pageMembers =
-        sortOn (\(viewName, pageName, _, _) -> (viewName, pageName))
+        sortOn
+          (\(viewName, pageName, _, _) ->
+            ( naturalSortKey viewName, naturalSortKey pageName
+            , viewName, pageName ))
           [ (viewName, pageName, name, body)
           | (name, body) <- members
           , Just (viewName, pageName) <- [pageStreamPath name]

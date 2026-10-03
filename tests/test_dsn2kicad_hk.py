@@ -2399,3 +2399,221 @@ def test_dsn2kicad_hk_reference_placement_uses_font_metrics(
     # Char-count width would make these identical (both 6 glyphs); real metrics
     # separate them by the difference in rendered width of 'M'*6 vs 'i'*6.
     assert wide_x - narrow_x > 1.0, (wide_x, narrow_x)
+
+
+def _convert_hk(dsn, out_dir, *flags):
+    result = subprocess.run(
+        hk_argv(*flags, dsn, out_dir),
+        capture_output=True, text=True, timeout=HK_TIMEOUT,
+    )
+    assert result.returncode == 0, result.stderr
+    return out_dir
+
+
+def _root_sheet_files(out_dir, project):
+    root = kicad_sexpr.parse(
+        (out_dir / f"{project}.kicad_sch").read_text(encoding="utf-8")
+    )
+    files = []
+    for sheet in kicad_sexpr.find_all(root, "sheet"):
+        for prop in kicad_sexpr.find_all(sheet, "property"):
+            if kicad_sexpr.strip_quotes(prop[1]) == "Sheetfile":
+                files.append(kicad_sexpr.strip_quotes(prop[2]))
+    return files
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_pages_are_in_natural_order(dsn_fixtures, tmp_path):
+    """Numbers inside page names order by value: Page2 before Page10.
+
+    OrCAD's default page names are not zero-padded, and sorting them as plain
+    strings puts Page10 between Page1 and Page2.  The 20- and 21-digit names
+    pin the comparison to arbitrary precision: neither fits a machine Int,
+    which is 32 bits in the wasm build.
+    """
+    names = [
+        "Page10", "Page2", "Page1", "Page9",
+        "N100000000000000000000", "N99999999999999999999",
+    ]
+    dsn = tmp_path / "order.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        f"Views/SCHEMATIC1/Pages/{name}": dsn_fixtures.make_page(name)
+        for name in names
+    }))
+
+    out_dir = _convert_hk(dsn, tmp_path / "out")
+
+    assert _root_sheet_files(out_dir, "order") == [
+        "N99999999999999999999.kicad_sch",
+        "N100000000000000000000.kicad_sch",
+        "Page1.kicad_sch", "Page2.kicad_sch", "Page9.kicad_sch",
+        "Page10.kicad_sch",
+    ]
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_rejects_a_net_table_that_does_not_parse_whole(
+    dsn_fixtures, tmp_path,
+):
+    """A net table is used only if every entry it announces can be read.
+
+    The parser tries the last table anchor first.  Here that is a stray match
+    announcing two nets of which the second is malformed; taking its first
+    entry alone would rename net 1.  The real table before it must win.
+    """
+    page = dsn_fixtures.make_page(
+        "01_NETS", nets={1: "GOOD_NET"}, wires=[(1, 10, 10, 40, 10)],
+        aliases=[("GOOD_NET", 10, 10)],
+    )
+    stray = (
+        dsn_fixtures.NET_TABLE_ANCHOR
+        + struct.pack("<HH", 0, 2)
+        + struct.pack("<H", 7) + b"BAD_NET" + b"\x00" + struct.pack("<I", 1)
+        # Second entry: the byte after the name is not the NUL terminator.
+        + struct.pack("<H", 3) + b"XYZ" + b"\x41" + struct.pack("<I", 2)
+    )
+    dsn = tmp_path / "nets.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page + stray + bytes(32)}))
+
+    out_dir = _convert_hk(dsn, tmp_path / "out")
+
+    text = (out_dir / "Page1.kicad_sch").read_text(encoding="utf-8")
+    assert "GOOD_NET" in text
+    assert "BAD_NET" not in text
+
+
+def _placed_symbols(out_dir, page):
+    tree = kicad_sexpr.parse(
+        (out_dir / f"{page}.kicad_sch").read_text(encoding="utf-8")
+    )
+    return tree, [
+        node for node in tree[1:]
+        if isinstance(node, list) and node and node[0] == "symbol"
+    ]
+
+
+def _unquote_sexpr(token):
+    """Undo kicad_sexpr's quoting, including backslash escapes."""
+    body = token[1:-1] if token.startswith('"') else token
+    return re.sub(r"\\(.)", r"\1", body)
+
+
+def _property_value(node, name):
+    for prop in kicad_sexpr.find_all(node, "property"):
+        if _unquote_sexpr(prop[1]) == name:
+            return _unquote_sexpr(prop[2])
+    return None
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+def test_dsn2kicad_hk_ignores_an_impossible_pin_skip_count(dsn_fixtures, tmp_path):
+    """A skip count larger than the records that follow cannot be a count.
+
+    The word after the placement says how many display-property records
+    precede the pin records.  Read as 0xFFFF it used to skip every record, so
+    the component lost its pins -- and with them the evidence that it is
+    rotated, which here only the pin positions carry.
+    """
+    def build(skip_count):
+        page = bytearray(dsn_fixtures.make_page(
+            "01_SKIP",
+            nets={1: "TOP", 2: "BOTTOM"},
+            wires=[(1, 100, 180, 100, 150), (2, 100, 220, 100, 250)],
+            components=[
+                # Placed unrotated, but its pins sit above and below it.
+                ("TWO", "U1", 0, 100, 200, 0, [(1, 100, 180, 1), (2, 100, 220, 2)]),
+            ],
+        ))
+        token = b"TWO.Normal\x00"
+        skip_at = page.index(token) + len(token) + 20
+        assert page[skip_at:skip_at + 2] == b"\x00\x00"
+        struct.pack_into("<H", page, skip_at, skip_count)
+        return bytes(page)
+
+    cache = dsn_fixtures.make_cache({
+        "TWO": [("A", -20, 0, -10, 0, 0x21), ("B", 20, 0, 10, 0, 0x21)],
+    })
+
+    def placed_angle(label, skip_count):
+        dsn = tmp_path / f"{label}.DSN"
+        dsn.write_bytes(dsn_fixtures.make_zip(
+            {PAGE: build(skip_count), "Cache": cache}
+        ))
+        out_dir = _convert_hk(dsn, tmp_path / f"out-{label}")
+        _tree, symbols = _placed_symbols(out_dir, "Page1")
+        (two,) = [
+            symbol for symbol in symbols
+            if _unquote_sexpr(kicad_sexpr.find_first(symbol, "lib_id")[1]) == "TWO"
+        ]
+        return kicad_sexpr.to_float(kicad_sexpr.find_first(two, "at")[3])
+
+    sane = placed_angle("sane", 0)
+    assert sane in (90, 270), "the pins should have turned the symbol upright"
+    assert placed_angle("corrupt", 0xFFFF) == sane
+
+
+@pytest.mark.skipif(shutil.which("runghc") is None, reason="runghc not installed")
+@pytest.mark.parametrize("flags", [(), ("--kicad-power",)], ids=["orcad", "kicad-power"])
+def test_dsn2kicad_hk_symbol_ids_avoid_characters_kicad_forbids(
+    dsn_fixtures, tmp_path, flags,
+):
+    """Symbol names and lib_ids never contain  < > " \\ :  or control characters.
+
+    KiCad's LIB_ID rejects those in an item name, and a colon would make it
+    read the part before it as a library nickname.  Cell names cannot carry
+    them (the component scanner admits only letters, digits and _./+#-()),
+    but a power symbol is named after its net, which can.  KiCad's own repair
+    replaces each with an underscore; so does the converter, identically in
+    the symbol library, the page's embedded copy and the placed symbol -- whose
+    Value, which *is* the net name in KiCad, keeps the original spelling.
+    """
+    net = 'V:3<3>"A\\B'
+    page = dsn_fixtures.make_page(
+        "01_IDS",
+        nets={1: net, 2: "SIG"},
+        wires=[(1, 0, 0, 20, 0), (2, 60, 100, 90, 100)],
+        components=[("IC1", "U1", 0, 100, 100, 0, [(1, 90, 100, 2)])],
+        power_symbols=[("VCC_BAR", 0, 0)],
+    )
+    cache = dsn_fixtures.make_cache({"IC1": [("P", -10, 0, -5, 0, 0x21)]})
+    dsn = tmp_path / "ids.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({PAGE: page, "Cache": cache}))
+
+    out_dir = _convert_hk(dsn, tmp_path / "out", *flags)
+
+    forbidden = set('<>"\\:\t\n\r')
+
+    def legal(lib_id):
+        # At most one colon, separating an optional library nickname.
+        assert lib_id.count(":") <= 1, lib_id
+        assert not (forbidden & set(lib_id.split(":")[-1])), lib_id
+        return lib_id
+
+    def defined(tree):
+        names = set()
+        for symbol in tree[1:]:
+            if isinstance(symbol, list) and symbol and symbol[0] == "symbol":
+                names.add(legal(_unquote_sexpr(symbol[1])))
+                # The unit sub-symbols repeat the item name.
+                for unit in kicad_sexpr.find_all(symbol, "symbol"):
+                    legal("x:" + _unquote_sexpr(unit[1]))
+        return names
+
+    page_tree, placed_symbols = _placed_symbols(out_dir, "Page1")
+    library = defined(kicad_sexpr.parse(
+        (out_dir / "ids.kicad_sym").read_text(encoding="utf-8")
+    ))
+    embedded = defined(kicad_sexpr.find_first(page_tree, "lib_symbols"))
+    placed = {
+        legal(_unquote_sexpr(kicad_sexpr.find_first(symbol, "lib_id")[1])): symbol
+        for symbol in placed_symbols
+    }
+
+    (power_id,) = [lib_id for lib_id in placed if lib_id.startswith("power:")]
+    if not flags:
+        assert power_id == "power:V_3_3__A_B"
+    # Every placed symbol resolves in both the page's cache and the library.
+    assert set(placed) <= embedded
+    assert set(placed) <= library
+    # The net keeps its real name.
+    assert _property_value(placed[power_id], "Value") == net

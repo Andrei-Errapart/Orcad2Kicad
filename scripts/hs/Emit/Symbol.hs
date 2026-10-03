@@ -18,7 +18,7 @@ import Model
   , CacheSymbol(..), MultiUnitRegistry(..)
   , RenderConfig(..)
   , emptyCacheSymbol
-  , componentUnitInfo, componentLibName
+  , componentUnitInfo, componentLibName, kicadItemName
   , pinElectricalType, symbolPinVisibility
   )
 import Orcad.Geometry
@@ -78,24 +78,29 @@ emitSymbolDefinitions cfg cacheSymbols multiUnits components powerSymbols =
                Nothing -> libSymbol
                  (libName, Map.findWithDefault emptyCacheSymbol libName cacheSymbols)
 
+    -- Keyed by library ID, which is the net name made legal for KiCad; the
+    -- net name itself rides along as the definition's default Value.
     powerDefinitions = Map.toAscList $ Map.fromListWith preferPowerStyle
-      [ (powerLibName cfg symbol, powerStyle symbol)
+      [ (powerLibName cfg symbol, (powerNetName symbol, powerStyle symbol))
       | symbol <- powerSymbols
       , not (null (powerNetName symbol))
       ]
 
-    preferPowerStyle PowerGround _ = PowerGround
-    preferPowerStyle _ PowerGround = PowerGround
+    preferPowerStyle (name, PowerGround) _ = (name, PowerGround)
+    preferPowerStyle _ (name, PowerGround) = (name, PowerGround)
     preferPowerStyle new _ = new
 
-    emitPowerDefinition (name, style)
-      | useKicadPower cfg = libStandardPowerSymbol name
-      | otherwise = libPowerSymbol name style
+    emitPowerDefinition (libName, (netName, style))
+      | useKicadPower cfg = libStandardPowerSymbol libName
+      | otherwise = libPowerSymbol libName netName style
 
-libPowerSymbol :: String -> PowerStyle -> KExpr
-libPowerSymbol name style =
+-- | An OrCAD-style power glyph.  `libName` identifies the symbol and so must
+-- be legal in a KiCad library ID; `name` is the net it stands for, shown as
+-- the Value and pin name, spelled as in the design.
+libPowerSymbol :: String -> String -> PowerStyle -> KExpr
+libPowerSymbol libName name style =
   kNode "symbol" $
-    [ kString ("power:" ++ name)
+    [ kString ("power:" ++ libName)
     , kNode "power" []
     , kNode "pin_numbers" [kAtom "hide"]
     , kNode "pin_names" [kNode "offset" [kInt 0], kAtom "hide"]
@@ -106,9 +111,9 @@ libPowerSymbol name style =
         (kAt [kInt 0, kDouble referenceY, kInt 0])
     , kProperty "Value" name
         (kAt [kInt 0, kDouble valueY, kInt 0])
-    , kNode "symbol" (kString (name ++ "_0_1") : glyph)
+    , kNode "symbol" (kString (libName ++ "_0_1") : glyph)
     , kNode "symbol"
-        [ kString (name ++ "_1_1")
+        [ kString (libName ++ "_1_1")
         , kNode "pin"
             [ kAtom "power_in"
             , kAtom "line"
@@ -142,9 +147,10 @@ libPowerSymbol name style =
         , kCircleShape 0 1.905 0.635
         ]
 
+-- | The item name of a power symbol's library ID ("power:<this>").
 powerLibName :: RenderConfig -> PowerSymbol -> String
 powerLibName cfg symbol
-  | not (useKicadPower cfg) = powerNetName symbol
+  | not (useKicadPower cfg) = kicadItemName (powerNetName symbol)
   | otherwise =
       Map.findWithDefault fallbackName
         (map toUpper (powerNetName symbol)) standardPowerNameMap

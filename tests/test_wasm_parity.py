@@ -279,6 +279,25 @@ def test_artwork_fixture_parity(wasm_binary, dsn_fixtures, tmp_path):
     assert_parity(wasm_binary, dsn, tmp_path)
 
 
+def test_page_order_parity(wasm_binary, dsn_fixtures, tmp_path):
+    """Numbers in page names order by value on wasm32 too.
+
+    The 20- and 21-digit runs exceed even a 64-bit Int; the sort key holds
+    them as Integer, and an Int would wrap differently on each target.
+    """
+    names = [
+        "Page10", "Page2", "Page1",
+        "N100000000000000000000", "N99999999999999999999",
+    ]
+    (tmp_path / "in").mkdir()
+    dsn = tmp_path / "in" / "order.DSN"
+    dsn.write_bytes(dsn_fixtures.make_zip({
+        f"Views/SCHEMATIC1/Pages/{name}": dsn_fixtures.make_page(name)
+        for name in names
+    }))
+    assert_parity(wasm_binary, dsn, tmp_path)
+
+
 def _corpus():
     root = os.environ.get("ORCAD2KICAD_PARITY_DSN_DIR")
     if not root:

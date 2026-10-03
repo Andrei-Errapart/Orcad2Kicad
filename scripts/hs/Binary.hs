@@ -12,13 +12,14 @@ module Binary
   , word64ToInt, word32ToInt, maybeWord32ToInt, showHex32
   , need, unlessEither, firstJust, lookupList, listAt, orElse
   , unique, splitSlash, stripStringPrefix, dedupeConsecutive
-  , commonStringPrefix, trimTrailingUnderscores
+  , commonStringPrefix, trimTrailingUnderscores, naturalSortKey
   ) where
 
 import Control.Monad (guard)
 import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import Data.Char (isDigit)
 import Data.Int (Int16, Int32)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word8, Word16, Word32, Word64)
@@ -94,6 +95,22 @@ dedupeConsecutive (x:xs) = x : go x xs
     go prev (value:rest)
       | value == prev = go prev rest
       | otherwise = value : go value rest
+
+-- | A sort key under which the numbers inside a name order by value, so
+-- that "Page2" precedes "Page10".  Digit runs become `Left` numbers and
+-- everything between them `Right` text, compared as before.  The numbers are
+-- `Integer`: a long digit run does not fit an `Int`, least of all the 32-bit
+-- one of the wasm build.  Names equal under this key ("1" and "01") need a
+-- tie-break from the caller.
+naturalSortKey :: String -> [Either Integer String]
+naturalSortKey [] = []
+naturalSortKey value@(c:_)
+  | isDigit c =
+      let (digits, rest) = span isDigit value
+      in Left (read digits) : naturalSortKey rest
+  | otherwise =
+      let (text, rest) = break isDigit value
+      in Right text : naturalSortKey rest
 
 unique :: Ord a => [a] -> [a]
 unique = go Map.empty

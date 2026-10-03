@@ -236,22 +236,18 @@ parseNetTable body =
       let netCountPos = anchorPos + 14 + fromIntegral extraCount * 4
       netCount <- word16LE body netCountPos
       guard (netCount >= 1 && netCount <= 1000)
-      let entries = parseNetEntries (netCountPos + 2) (fromIntegral netCount)
-      guard (not (Map.null entries))
-      pure entries
+      parseNetEntries (netCountPos + 2) (fromIntegral netCount)
 
-    parseNetEntries :: Int -> Int -> Map.Map Int String
-    parseNetEntries _ 0 = Map.empty
-    parseNetEntries pos count =
-      case parseOne pos of
-        Just (nextPos, netId, name) ->
-          -- Later entries are OrCAD's canonical spelling/alias for a reused ID.
-          Map.insertWith
-            (\_ laterName -> laterName)
-            netId
-            name
-            (parseNetEntries nextPos (count - 1))
-        Nothing -> Map.empty
+    -- All `count` entries or nothing.  The anchor is a byte pattern that can
+    -- occur by chance; a match whose table breaks off part-way is not a net
+    -- table, and keeping the entries read so far would rename real nets.
+    parseNetEntries :: Int -> Int -> Maybe (Map.Map Int String)
+    parseNetEntries _ 0 = Just Map.empty
+    parseNetEntries pos count = do
+      (nextPos, netId, name) <- parseOne pos
+      -- Later entries are OrCAD's canonical spelling/alias for a reused ID.
+      Map.insertWith (\_ laterName -> laterName) netId name
+        <$> parseNetEntries nextPos (count - 1)
 
     parseOne pos = do
       nameLen <- word16LE body pos
@@ -411,8 +407,16 @@ parsePagePins nets body cellEnd searchEnd =
   in if null modern then legacyPins else modern
   where
     markerOffsets = filter (< searchEnd) (findAllFrom recordMarker cellEnd body)
+    -- How many display-property records precede the pin records.  A value
+    -- larger than the number of records the component has cannot be that
+    -- count -- the field was misread or is corrupt -- and honouring it would
+    -- skip every pin, so it is ignored and each record is judged on its own.
+    -- A count equal to the number of records is legitimate: a part with
+    -- display properties and no pins.
     skipCount :: Int
-    skipCount = maybe 0 fromIntegral (word16LE body (cellEnd + 20))
+    skipCount =
+      let declared = maybe 0 fromIntegral (word16LE body (cellEnd + 20))
+      in if declared > length markerOffsets then 0 else declared
     pinStrideMax = 50
     legacyPinPrefix = BS.pack [0x10, 0x00, 0x00]
     legacyPins = mapMaybe parseLegacyPin $

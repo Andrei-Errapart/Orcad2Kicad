@@ -17,7 +17,7 @@ module Model
   , emptyCacheSymbol, cacheSymbolIsEmpty
   , busMemberPrefix, isBusNetName
   , componentUnitInfo, componentLibName, powerReferenceName
-  , isRefDesignator, sanitizePageName
+  , isRefDesignator, sanitizePageName, kicadItemName
   , isGroundPowerName, powerRecordStyle
   , pinElectricalType, symbolPinVisibility
   , detectMultiUnitComponents, assignPowerReferences
@@ -282,6 +282,17 @@ busMemberPrefix = go []
         _ -> Nothing
       pure (reverse prefix)
     go prefix (char:rest) = go (char:prefix) rest
+
+-- | A name KiCad accepts as the item part of a symbol's library ID.  Its
+-- `LIB_ID` forbids  < > " \ :  and control characters there -- a colon
+-- would even be read as ending a library nickname -- and its own repair
+-- (`LIB_ID::FixIllegalChars`) substitutes an underscore, as this does.
+kicadItemName :: String -> String
+kicadItemName = map fix
+  where
+    fix char
+      | char < ' ' || char `elem` ("<>\"\\:" :: String) = '_'
+      | otherwise = char
 
 sanitizePageName :: String -> String
 sanitizePageName = trimUnderscores . collapseUnderscores . map sanitize
